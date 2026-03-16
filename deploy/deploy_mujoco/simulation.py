@@ -30,14 +30,14 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 # SIMULATION NODE
 ############################################################################
 
-class AsyncSimNode(Node):
+class SimulationNode(Node):
     """
     Asynchronous simulation node that runs the Mujoco simulation.
     """
 
     def __init__(self, config_path: str):
 
-        super().__init__('async_sim_node')
+        super().__init__('sim_node')
 
         # load config file
         self.config = self.load_config(config_path)
@@ -61,8 +61,9 @@ class AsyncSimNode(Node):
         self.qpos_joints_des = None
         self.state = 0
 
-        # create a timer to run the simulation loop
-        self.timer = self.create_timer(0.0, self.step_simulation)  # runs as fast as possible
+        # create a timer to run the simulation loop 
+        sim_period = 0.0 # run as fast as possible, real-time sync is handled in the loop
+        self.timer = self.create_timer(sim_period, self.step_simulation)
 
         # create timers for publishing
         imu_sensor_period = self.sim_dt  # or whatever period you want
@@ -70,6 +71,7 @@ class AsyncSimNode(Node):
         self.imu_timer = self.create_timer(imu_sensor_period, self.publish_imu)             
         self.joint_timer = self.create_timer(joint_sensor_period, self.publish_joint_state)
 
+        print("Simulation node initialized.")
 
     #################################################################
     # INITIALIZATION
@@ -93,8 +95,8 @@ class AsyncSimNode(Node):
         self.Kd = np.array(self.config['kds'])
 
         # set the default state
-        self.default_base = np.array(self.config['default_base'])
-        self.default_joints = np.array(self.config['default_angles'])
+        self.default_base = np.array(self.config['default_base_pos'])
+        self.default_joints = np.array(self.config['default_joint_pos'])
 
 
     # initialize the mujoco simulation
@@ -126,6 +128,14 @@ class AsyncSimNode(Node):
         # launch the viewer
         self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
         self.viewer_render_hz = 50.0
+        self._last_viewer_sync = 0.0
+
+        print(f"Loaded Mujoco model from [{xml_path}].")
+        print(f"    Sim dt: {self.sim_dt} seconds.")
+        print(f"    nq: {self.nq}")
+        print(f"    nv: {self.nv}")
+        print(f"    nu: {self.nu}")
+
 
     #################################################################
     # HELPERS 
@@ -196,9 +206,11 @@ class AsyncSimNode(Node):
         time_msg.data = self.mj_data.time
         self.time_pub.publish(time_msg)
 
-        # sync viewer
-        if self.viewer.is_running():
+        # sync viewer at viewer_render_hz
+        now = time.time()
+        if self.viewer.is_running() and (now - self._last_viewer_sync) >= 1.0 / self.viewer_render_hz:
             self.viewer.sync()
+            self._last_viewer_sync = now
 
         # real-time sync
         elapsed = time.time() - start_time
@@ -230,7 +242,7 @@ def main(args=None):
     args = parser.parse_args()
 
     # create the simulation node
-    sim_node = AsyncSimNode(args.config)
+    sim_node = SimulationNode(args.config)
 
     # execute the simulation
     try:
@@ -241,11 +253,9 @@ def main(args=None):
         pass
 
     finally:
-
         # close everything
         sim_node.destroy_node()
         rclpy.shutdown()
-
 
 
 if __name__ == "__main__":

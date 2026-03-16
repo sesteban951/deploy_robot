@@ -1,11 +1,7 @@
-# Policy
 policy_path: "g1_29dof_srb_jump.onnx"
-
-# MuJoCo scene
 xml_path: "g1_27dof_zach.xml"
 
 # Robot
-num_joints: 29
 default_joint_pos: [
   -0.413, 0.0, 0.0, 0.807, -0.374, 0.0,
   -0.413, 0.0, 0.0, 0.807, -0.374, 0.0,
@@ -18,3 +14,23 @@ default_joint_pos: [
 simulation_dt: 0.002
 control_decimation: 10
 control_dt: 0.02
+
+# PD gains
+kps: [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40,
+      100, 100, 100,
+      100, 100, 100, 100, 100, 100, 100,
+      100, 100, 100, 100, 100, 100, 100]
+kds: [2, 2, 2, 4, 2, 2, 2, 2, 2, 4, 2, 2,
+      2, 2, 2,
+      2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2, 2]
+
+# Base
+default_base_pos: [0, 0, 0.78, 1, 0, 0, 0]
+
+# Scaling
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+action_scale: 0.25
+cmd_scale: [2.0, 2.0, 0.25]

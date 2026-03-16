@@ -4,6 +4,8 @@
 #
 ##
 
+import numpy as np
+
 
 def get_gravity_orientation(quaternion):
     qw = quaternion[0]
