@@ -42,7 +42,7 @@ class AsyncSimNode(Node):
         # load config file
         self.config = self.load_config(config_path)
 
-        # load policy params
+        # load params
         self.init_params()
 
         # initialize mujoco

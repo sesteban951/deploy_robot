@@ -12,3 +12,4 @@ dependencies:
   - pip:
     - "mujoco>=3.5.0"
     - "warp-lang>=1.11.1"
+    - onnx
