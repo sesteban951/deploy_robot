@@ -125,16 +125,25 @@ class SimulationNode(Node):
         self.mj_data.qpos[:7] = self.default_base
         self.mj_data.qpos[7:7+self.nu] = self.default_joints
 
-        # launch the viewer
-        self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
-        self.viewer_render_hz = 50.0
-        self._last_viewer_sync = 0.0
-
         print(f"Loaded Mujoco model from [{xml_path}].")
         print(f"    Sim dt: {self.sim_dt} seconds.")
         print(f"    nq: {self.nq}")
         print(f"    nv: {self.nv}")
         print(f"    nu: {self.nu}")
+
+        # launch the viewer
+        self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
+        self.viewer_render_hz = 50.0
+        self._last_viewer_sync = 0.0
+        self._real_start_time = time.perf_counter()
+        self._next_step_deadline = self._real_start_time + self.sim_dt
+
+        # adjust viewer font
+        self._viewer_font_scale = getattr(
+            mujoco.mjtFontScale,
+            'mjFONTSCALE_250',
+            getattr(mujoco.mjtFontScale, 'mjFONTSCALE_200', mujoco.mjtFontScale.mjFONTSCALE_150),
+        )
 
 
     #################################################################
@@ -188,9 +197,6 @@ class SimulationNode(Node):
 
     # step the simulation
     def step_simulation(self):
-
-        start_time = time.time()
-
         # compute the action torque
         if self.qpos_joints_des is not None:
             tau = self.compute_torque(self.qpos_joints_des)
@@ -207,15 +213,29 @@ class SimulationNode(Node):
         self.time_pub.publish(time_msg)
 
         # sync viewer at viewer_render_hz
-        now = time.time()
+        now = time.perf_counter()
         if self.viewer.is_running() and (now - self._last_viewer_sync) >= 1.0 / self.viewer_render_hz:
+            # update the viewer with the current simulation state
             self.viewer.sync()
+
+            # display sim time first and wall-clock elapsed time second
+            real_elapsed = now - self._real_start_time
+            self.viewer.set_texts((
+                self._viewer_font_scale,
+                mujoco.mjtGridPos.mjGRID_TOPLEFT,
+                f"Sim time:   {self.mj_data.time:.2f}s\nReal time: {real_elapsed:.2f}s",
+                "",
+            ))
+            
             self._last_viewer_sync = now
 
-        # real-time sync
-        elapsed = time.time() - start_time
-        if elapsed < self.sim_dt:
-            time.sleep(self.sim_dt - elapsed)
+        # Real-time sync against an absolute schedule so drift does not accumulate.
+        remaining = self._next_step_deadline - time.perf_counter()
+        if remaining > 0.0:
+            time.sleep(remaining)
+
+        # Keep a fixed absolute schedule so the loop can catch up after overruns.
+        self._next_step_deadline += self.sim_dt
 
 
 
