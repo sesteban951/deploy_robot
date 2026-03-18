@@ -1,11 +1,16 @@
 policy_path: "g1_29dof_srb_jump_up.onnx"
-xml_path: "g1_29dof.xml"
+xml_path: "g1_29dof_rl.xml"
 
 # Timing
 control_dt: 0.02
 
 # Base
 default_base_pos: [0, 0, 0.78, 1, 0, 0, 0]
+default_joint_pos: [-0.1,  0.0,  0.0,  0.3, -0.2, 0.0,   # left leg
+                    -0.1,  0.0,  0.0,  0.3, -0.2, 0.0,   # right leg
+                     0.0, 0.0, 0.0,                      # waist
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # left arm
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # right arm
 
 # Motion
 motion_npz_path: "srb_jump_up.npz"

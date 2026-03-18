@@ -1,11 +1,12 @@
 ##
 #
-# Control node for the MuJoCo simulation.
+# Control node for BeyondMimic motion tracking policies.
 #
 ##
 
 # standard imports
 import argparse
+import xml.etree.ElementTree as ET    # for parsing joint names in the XML file
 
 # other imports
 import numpy as np
@@ -14,7 +15,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
 import sys
@@ -23,8 +24,37 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.unitree_rotation import get_gravity_orientation
+from utils.math_utils import quat_conjugate, quat_multiply, quat_to_rot6d
 from utils.policy import Policy
+
+
+############################################################################
+# JOINT ORDER MAPPING
+############################################################################
+
+def parse_xml_joint_names(xml_path):
+    """Parse actuated joint names from MuJoCo XML (skips floating base)."""
+    joint_names = []
+    tree = ET.parse(xml_path)
+    for joint in tree.getroot().iter("joint"):
+        name = joint.attrib.get("name")
+        if name is not None:
+            joint_names.append(name)
+    # first joint is the floating base
+    return joint_names[1:]
+
+
+def build_joint_mappings(xml_joint_names, onnx_joint_names):
+    """Build index mappings between MuJoCo (XML) and Isaac (ONNX) joint orders."""
+    xml_to_onnx = []
+    for name in xml_joint_names:
+        xml_to_onnx.append(onnx_joint_names.index(name))
+
+    onnx_to_xml = []
+    for name in onnx_joint_names:
+        onnx_to_xml.append(xml_joint_names.index(name))
+
+    return np.array(xml_to_onnx), np.array(onnx_to_xml)
 
 
 ############################################################################
@@ -47,10 +77,9 @@ class ControlNode(Node):
         self.init_policy()
 
         # ROS publishers
-        self.action_pub = self.create_publisher(Float32MultiArray, 'action', 10)
+        self.command_pub = self.create_publisher(Float32MultiArray, 'command', 10)
 
         # ROS subscribers
-        self.cmd_sub = self.create_subscription(Float32MultiArray, 'command', self.cmd_callback, 10)
         self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'imu_data', self.imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'joint_data', self.joint_sensor_callback, 10)
         self.time_sub = self.create_subscription(Float64, 'sim_time', self.time_callback, 10)
@@ -58,18 +87,18 @@ class ControlNode(Node):
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
-        # sensor state
-        self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
-        self.omega = np.zeros(3)
-        self.qpos_joints = np.zeros(len(self.qpos_joints_default))
-        self.qvel_joints = np.zeros(len(self.qpos_joints_default))
+        # sensor state (MuJoCo order)
+        self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # (w, x, y, z)
+        self.omega = np.zeros(3, dtype=np.float32)
+        self.qpos_joints = np.zeros(self.num_joints, dtype=np.float32)
+        self.qvel_joints = np.zeros(self.num_joints, dtype=np.float32)
         self.sim_time = 0.0
 
-        # initialize command
-        self.cmd = np.zeros(3)
+        # policy state (ONNX/Isaac order)
+        self.action = np.zeros(self.num_joints, dtype=np.float32)
 
-        # initialize the action
-        self.action = np.zeros(self.act_size)
+        # motion playback state
+        self.motion_frame_idx = 0
 
         print("Control node initialized.")
 
@@ -87,57 +116,65 @@ class ControlNode(Node):
         print(f"Loaded config from [{config_path_full}].")
 
         return config
-    
+
     # initialize the policy
     def init_policy(self):
-
-        # default joint positions
-        self.qpos_joints_default = np.array(self.config['default_joint_pos'])
-
-        # scaling params
-        self.ang_vel_scale = self.config["ang_vel_scale"]
-        self.dof_pos_scale = self.config["dof_pos_scale"]
-        self.dof_vel_scale = self.config["dof_vel_scale"]
-        self.action_scale = self.config["action_scale"]
-        self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
 
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
 
-        # import the policy
-        policy_path = self.config['policy_path']
-        policy_path_full = ROOT_DIR + "/policy/" + policy_path
-        
         # load the policy
-        self.policy = Policy(policy_path_full)
+        policy_path = ROOT_DIR + "/policy/" + self.config['policy_path']
+        self.policy = Policy(policy_path)
+        meta = self.policy.metadata
+
+        # joint info from ONNX metadata (all in ONNX/Isaac order)
+        self.num_joints = meta["num_joints"]
+        self.onnx_joint_names = meta["joint_names"]
+        self.default_joint_pos = meta["default_joint_pos"]
+        self.action_scale = meta["action_scale"]
+        self.kps = meta["kps"]
+        self.kds = meta["kds"]
+        self.observation_names = meta["observation_names"]
+
+        # joint order mapping (MuJoCo XML <-> ONNX)
+        xml_path = ROOT_DIR + "/models/" + self.config['xml_path']
+        self.xml_joint_names = parse_xml_joint_names(xml_path)
+        self.xml_to_onnx, self.onnx_to_xml = build_joint_mappings(
+            self.xml_joint_names, self.onnx_joint_names
+        )
+
+        # load motion trajectory
+        motion_path = ROOT_DIR + "/motions/" + self.config['motion_npz_path']
+        self.motion = np.load(motion_path)
+        self.motion_num_frames = self.motion["joint_pos"].shape[0]
 
         # alias for convenience
         self.obs_size = self.policy.input_size
         self.act_size = self.policy.output_size
 
-        print(f"Loading policy from [{policy_path_full}].")
-        print(f"    Policy type: {self.policy._policy_type}")
-        print(f"    Input size: {self.obs_size}")
-        print(f"    Output size: {self.act_size}")
-        print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
+        print(f"Policy: {policy_path}")
+        print(f"    Obs size: {self.obs_size}, Act size: {self.act_size}")
+        print(f"    Control freq: {1.0 / self.ctrl_dt} Hz")
+        print(f"    Observations: {self.observation_names}")
+        print(f"    Motion: {motion_path} ({self.motion_num_frames} frames)")
 
 
     #################################################################
-    # HELPERS
+    # JOINT ORDER CONVERSION
     #################################################################
 
-    # command from the command node
-    def cmd_callback(self, msg):
-        data = np.array(msg.data, dtype=np.float32)
-        
-        # joystick
-        joystick_is_connected = (data[0] > 0.5)
-        vx_cmd = data[1]
-        vy_cmd = data[2]
-        omega_cmd = data[3]
+    def isaac_to_mujoco(self, arr):
+        """Convert array from ONNX/Isaac order to MuJoCo/XML order."""
+        return arr[self.onnx_to_xml]
 
-        # update the command with the scaling
-        self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
+    def mujoco_to_isaac(self, arr):
+        """Convert array from MuJoCo/XML order to ONNX/Isaac order."""
+        return arr[self.xml_to_onnx]
+
+    #################################################################
+    # CALLBACKS
+    #################################################################
 
     # IMU data: [quat(4), omega(3)]
     def imu_sensor_callback(self, msg):
@@ -148,7 +185,7 @@ class ControlNode(Node):
     # joint data: [qpos(n), qvel(n)]
     def joint_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        n = len(self.qpos_joints_default)
+        n = self.num_joints
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
@@ -156,52 +193,81 @@ class ControlNode(Node):
     def time_callback(self, msg):
         self.sim_time = msg.data
 
-    # build the observation vector for the policy
+    #################################################################
+    # OBSERVATION BUILDERS
+    #################################################################
+
+    def obs_command_imitate(self):
+        """Reference joint pos and vel from the motion trajectory (ONNX order)."""
+        joint_pos = self.motion["joint_pos"][self.motion_frame_idx]
+        joint_vel = self.motion["joint_vel"][self.motion_frame_idx]
+        return np.concatenate([joint_pos, joint_vel]).astype(np.float32)
+
+    def obs_motion_anchor_ori_b(self):
+        """Orientation error between motion anchor body and robot, as 6D encoding."""
+        motion_quat = self.motion["body_quat_w"][self.motion_frame_idx, 0]  # anchor body
+        q_inv = quat_conjugate(self.quat)
+        q_rel = quat_multiply(q_inv, motion_quat)
+        return quat_to_rot6d(q_rel)
+
+    def obs_base_ang_vel(self):
+        """Angular velocity of the robot base."""
+        return self.omega
+
+    def obs_joint_pos(self):
+        """Joint positions relative to default pose (ONNX order)."""
+        return self.mujoco_to_isaac(self.qpos_joints) - self.default_joint_pos
+
+    def obs_joint_vel(self):
+        """Joint velocities (ONNX order)."""
+        return self.mujoco_to_isaac(self.qvel_joints)
+
+    def obs_actions(self):
+        """Previous action output."""
+        return self.action
+
     def build_observation(self):
+        """Build observation vector by calling obs functions in metadata-specified order."""
+        obs_parts = []
+        for name in self.observation_names:
+            func = getattr(self, f"obs_{name}")
+            obs_parts.append(func())
+        return np.concatenate(obs_parts).astype(np.float32)
 
-        # base orientation state
-        omega = self.omega * self.ang_vel_scale
-        gravity_orientation = get_gravity_orientation(self.quat)
+    #################################################################
+    # CONTROL LOOP
+    #################################################################
 
-        # joint position and velocity errors
-        qj = (self.qpos_joints - self.qpos_joints_default) * self.dof_pos_scale
-        dqj = self.qvel_joints * self.dof_vel_scale
-
-        # compute the phase
-        period = 0.8
-        phase = self.sim_time % period / period
-        sin_phase = np.sin(2 * np.pi * phase)
-        cos_phase = np.cos(2 * np.pi * phase)
-        
-        # build the observation vector
-        obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[:3] = omega
-        obs[3:6] = gravity_orientation
-        obs[6:9] = self.cmd * self.cmd_scale
-        obs[9 : 9 + self.act_size] = qj
-        obs[9 + self.act_size : 9 + 2 * self.act_size] = dqj
-        obs[9 + 2 * self.act_size : 9 + 3 * self.act_size] = self.action
-        obs[9 + 3 * self.act_size : 9 + 3 * self.act_size + 2] = np.array([sin_phase, cos_phase])
-
-        return obs
-
-    # control published at the control frequency
+    # control callback at the control frequency
     def control_callback(self):
 
-        # get the current observation
+        # build observation
         obs = self.build_observation()
-        
-        # target joint positions (PD control)
-        self.action = self.policy.inference(obs)
 
-        # scale the action
-        qpos_joints_des = self.action * self.action_scale + self.qpos_joints_default
+        # run ONNX inference with obs and time_step
+        obs_input = obs.reshape(1, -1).astype(np.float32)
+        time_step_input = np.array([[self.motion_frame_idx]], dtype=np.float32)
+        outputs = self.policy._onnx_session.run(None, {
+            "obs": obs_input,
+            "time_step": time_step_input,
+        })
+        self.action = outputs[0].squeeze().astype(np.float32)
 
-        # publish the action
-        action_msg = Float32MultiArray()
-        action_msg.data = qpos_joints_des.tolist()
+        # compute desired joint positions (ONNX order -> MuJoCo order)
+        qpos_des = self.isaac_to_mujoco(self.default_joint_pos + self.action * self.action_scale)
+        qvel_des = np.zeros(self.num_joints, dtype=np.float32)
+        tau_ff = np.zeros(self.num_joints, dtype=np.float32)
+        kps = self.isaac_to_mujoco(self.kps)
+        kds = self.isaac_to_mujoco(self.kds)
 
-        self.action_pub.publish(action_msg)
+        # publish [qpos_des, qvel_des, tau_ff, kp, kd]
+        cmd_msg = Float32MultiArray()
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, tau_ff, kps, kds]).tolist()
+        self.command_pub.publish(cmd_msg)
+
+        # advance motion frame
+        if self.motion_frame_idx < self.motion_num_frames - 1:
+            self.motion_frame_idx += 1
 
 
 ############################################################################
@@ -215,30 +281,26 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Simulation Node using Mujoco.'
+        description='BeyondMimic control node for MuJoCo simulation.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the Mujoco config yaml file. Example: "g1_29dof.yaml".'
+        help='Config file name. Example: "g1_29dof_beyond.yaml".'
     )
     args = parser.parse_args()
 
-    # create the simulation node
+    # create the control node
     ctrl_node = ControlNode(args.config)
 
-    # execute the policy
+    # spin
     try:
-        # spin the node
         rclpy.spin(ctrl_node)
-    
     except KeyboardInterrupt:
         pass
-
     finally:
-        # close everything
         ctrl_node.destroy_node()
         rclpy.shutdown()
 
