@@ -53,14 +53,14 @@ class JoystickState:
     U_DPAD: float = 0.0  # D-PAD up
     D_DPAD: float = 0.0  # D-PAD down
 
-class CommandsNode(Node):
+class JoystickNode(Node):
     """
     Use joystick to publish commands to the simulation and control nodes.
     """
 
     def __init__(self, config_path: str = None):
 
-        super().__init__('command_node')
+        super().__init__('joystick_node')
 
         # initialize joystick
         self.deadzone = 0.05
@@ -68,7 +68,7 @@ class CommandsNode(Node):
         self.init_joystick()
 
         # ROS2 publishers
-        self.command_pub = self.create_publisher(Float32MultiArray, 'command', 10)
+        self.command_pub = self.create_publisher(Float32MultiArray, 'joystick', 10)
 
         # create timer to publish commands at a fixed rate
         command_freq = 100.0
@@ -213,8 +213,8 @@ def main():
     # init ROS2
     rclpy.init()
 
-    # create command node
-    cmd_node = CommandsNode()
+    # create joystick node
+    cmd_node = JoystickNode()
 
     # execute the commands
     try:
