@@ -19,7 +19,6 @@ from rclpy.node import Node
 from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
-import sys
 import os
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
