@@ -19,6 +19,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
+import sys
 import os
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
@@ -356,10 +357,10 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].kp = self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
-        # [Stage 3]: regular control loop (reads from ROS2 command subscriber)
+        # [Stage 3]: control loop (reads from ROS2 command subscriber)
         else:
             if self.stage == 2:
-                print("[Stage 3]: Running regular control loop...")
+                print("[Stage 3]: Running control loop...")
                 self.stage = 3
             with self.cmd_lock:
                 q_cmd = self.q_cmd.copy()
@@ -424,14 +425,41 @@ def main(args=None):
     ctrl_node.Init()
 
     # spin ROS2 node in background thread
-    ros_thread = threading.Thread(target=rclpy.spin, args=(ctrl_node,), daemon=True)
+    ros_running = True
+    def spin_ros():
+        while ros_running and rclpy.ok():
+            try:
+                rclpy.spin_once(ctrl_node, timeout_sec=0.1)
+            except Exception:
+                break
+    ros_thread = threading.Thread(target=spin_ros, daemon=True)
     ros_thread.start()
 
     # start the control loop
     ctrl_node.Start()
 
-    while True:
-        time.sleep(1)
+    # run normally
+    try:
+        while True:
+            time.sleep(1)
+    # ctrl + C
+    except KeyboardInterrupt:
+        print("\nExiting...")
+    # graceful shutdown on any exception
+    finally:
+        ros_running = False
+        ros_thread.join(timeout=1.0)
+        try:
+            ctrl_node.destroy_node()
+        except Exception:
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
+    
+    print("Shutdown complete.")
 
 
 if __name__ == "__main__":
