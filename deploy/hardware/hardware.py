@@ -8,13 +8,15 @@
 import argparse
 import numpy as np
 import time
+import threading
 
-# other imports 
+# other imports
 import yaml
 
 # ROS2 imports
 import rclpy
-import rclpy.node
+from rclpy.node import Node
+from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
 import os
@@ -24,7 +26,6 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.utils.crc import CRC
@@ -33,7 +34,7 @@ from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwi
 
 
 ########################################################################
-# GLOBAL VARIABLES
+# GLOBAL VARIABLES (DO NOT CHANGE)
 ########################################################################
 
 G1_NUM_MOTOR = 29
@@ -83,13 +84,17 @@ class Mode:
 # low-level control frequency 
 low_level_control_dt = 0.001  # [sec]
 
+# ROS2 sensor publishing frequency
+ros_publish_dt = 0.01  # [sec]
+
 
 ########################################################################
 # CONTROL
 ########################################################################
 
-class Custom:
+class ControlNode(Node):
     def __init__(self, config_path: str):
+        super().__init__("hardware_node")
 
         # import config
         self.config = self.load_config(config_path)
@@ -109,18 +114,28 @@ class Custom:
         self.ddq = np.zeros(G1_NUM_MOTOR)      # joint accelerations
         self.tau_est = np.zeros(G1_NUM_MOTOR)  # estimated joint torques
 
-        # flag for which part of startup we are in 
+        # command arrays
+        self.q_cmd = np.array(self.default_joint_pos, dtype=np.float64)
+        self.dq_cmd = np.zeros(G1_NUM_MOTOR)
+        self.Kp_cmd = np.array(self.Kp, dtype=np.float64)
+        self.Kd_cmd = np.array(self.Kd, dtype=np.float64)
+        self.tau_ff_cmd = np.zeros(G1_NUM_MOTOR)
+
+        # locks for thread safety
+        self.sensor_lock = threading.Lock()    # protects sensor state arrays
+        self.cmd_lock = threading.Lock()       # protects command arrays
+
+        # flag for which part of startup we are in
         self.stage = 0
-        self.wall_clock_start_ = None
 
         # other stuff from unitree's example
         self.time_ = 0.0
-        self.counter_ = 0
         self.mode_machine_ = 0
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()  
         self.low_state = None 
         self.update_mode_machine_ = False
         self.crc = CRC()
+
 
     # load the config file
     def load_config(self, config_path: str):
@@ -132,7 +147,8 @@ class Custom:
         print("Config file loaded successfully from: [{}].".format(config_path_full))
 
         return config
-    
+
+
     # load params from config
     def load_params(self):
 
@@ -178,7 +194,7 @@ class Custom:
         self.msc.SetTimeout(5.0)
         self.msc.Init()
 
-        # wait until we have control of the robot before proceeding
+        # wait until we have low-level control of the robot before proceeding
         status, result = self.msc.CheckMode()
         while result['name']:
             self.msc.ReleaseMode()
@@ -189,9 +205,78 @@ class Custom:
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.lowcmd_publisher_.Init()
 
-        # create subscriber # 
+        # create subscriber #
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self.LowStateHandler, 10)
+
+        print("Unitree SDK publishers and subscribers initialized successfully.")
+
+        # ROS2 publishers
+        self.imu_state_pub = self.create_publisher(Float32MultiArray, "imu_state", 10)
+        self.joint_state_pub = self.create_publisher(Float32MultiArray, "joint_state", 10)
+        self.hardware_time_pub = self.create_publisher(Float64, "hardware_time", 10)
+
+        # ROS2 subscriber for commands
+        self.command_sub = self.create_subscription(Float32MultiArray, "command", self.command_callback, 10)
+
+        # 100Hz publish timer
+        self.pub_timer = self.create_timer(ros_publish_dt, self.publish_sensor_data)
+
+        print("ROS2 publishers and subscribers initialized successfully.")
+
+
+    # publish sensor data to ROS2 topics
+    def publish_sensor_data(self):
+        # read sensor data under lock
+        with self.sensor_lock:
+            # joint state
+            q = self.q.copy()
+            dq = self.dq.copy()
+            ddq = self.ddq.copy()
+            tau_est = self.tau_est.copy()
+            # IMU state
+            imu_rpy = np.array(self.imu_rpy, dtype=np.float64) if self.imu_rpy is not None else np.zeros(3)
+            imu_quat = np.array(self.imu_quaternion, dtype=np.float64) if self.imu_quaternion is not None else np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            imu_gyro = np.array(self.imu_gyroscope, dtype=np.float64) if self.imu_gyroscope is not None else np.zeros(3)
+            imu_accel = np.array(self.imu_accelerometer, dtype=np.float64) if self.imu_accelerometer is not None else np.zeros(3)
+
+        # imu_state: [rpy(3), quaternion(4), gyroscope(3), accelerometer(3)] = 13 floats
+        imu_msg = Float32MultiArray()
+        imu_msg.data = np.concatenate([imu_rpy, imu_quat, imu_gyro, imu_accel]).tolist()
+
+        # joint_state: [q(29), dq(29), ddq(29), tau_est(29)] = 116 floats
+        joint_msg = Float32MultiArray()
+        joint_msg.data = np.concatenate([q, dq, ddq, tau_est]).tolist()
+
+        # hardware_time: single float
+        time_msg = Float64()
+        time_msg.data = self.time_
+
+        # publish to ROS2 topics
+        self.imu_state_pub.publish(imu_msg)
+        self.joint_state_pub.publish(joint_msg)
+        self.hardware_time_pub.publish(time_msg)
+
+
+    # callback to receive command messages from ROS2
+    def command_callback(self, msg: Float32MultiArray):
+
+        # expected layout: [q(29), dq(29), Kp(29), Kd(29), tau_ff(29)] = 145 floats
+        data = np.array(msg.data, dtype=np.float64)
+
+        # safety check on command length
+        if len(data) != 5 * G1_NUM_MOTOR:
+            self.get_logger().warn(f"Expected {5 * G1_NUM_MOTOR} values in command, got {len(data)}")
+            return
+        
+        # update command arrays under lock
+        nu = G1_NUM_MOTOR
+        with self.cmd_lock:
+            self.q_cmd[:] =  data[0*nu : 1*nu]
+            self.dq_cmd[:] = data[1*nu : 2*nu]
+            self.Kp_cmd[:] = data[2*nu : 3*nu]
+            self.Kd_cmd[:] = data[3*nu : 4*nu]
+            self.tau_ff_cmd[:] = data[4*nu : 5*nu]
 
 
     # create a thread to run the low-level control loop
@@ -207,8 +292,8 @@ class Custom:
         
         # start the low-level control thread
         if self.update_mode_machine_ == True:
-            print("Low-level control thread started successfully.")
             self.lowCmdWriteThreadPtr.Start()
+            print("Low-level robot control thread started successfully.")
 
 
     # callback to receive low state messages
@@ -219,27 +304,26 @@ class Custom:
             self.mode_machine_ = self.low_state.mode_machine
             self.update_mode_machine_ = True
         
-        # update IMU states
-        self.imu_rpy = self.low_state.imu_state.rpy
-        self.imu_quaternion = self.low_state.imu_state.quaternion
-        self.imu_gyroscope = self.low_state.imu_state.gyroscope
-        self.imu_accelerometer = self.low_state.imu_state.accelerometer
+        # update sensor states under lock
+        with self.sensor_lock:
+            # update IMU states
+            self.imu_rpy = self.low_state.imu_state.rpy
+            self.imu_quaternion = self.low_state.imu_state.quaternion
+            self.imu_gyroscope = self.low_state.imu_state.gyroscope
+            self.imu_accelerometer = self.low_state.imu_state.accelerometer
 
-        # update joint states
-        for i in range(G1_NUM_MOTOR):
-            self.q[i] = self.low_state.motor_state[i].q
-            self.dq[i] = self.low_state.motor_state[i].dq
-            self.ddq[i] = self.low_state.motor_state[i].ddq
-            self.tau_est[i] = self.low_state.motor_state[i].tau_est
+            # update joint states
+            for i in range(G1_NUM_MOTOR):
+                self.q[i] = self.low_state.motor_state[i].q
+                self.dq[i] = self.low_state.motor_state[i].dq
+                self.ddq[i] = self.low_state.motor_state[i].ddq
+                self.tau_est[i] = self.low_state.motor_state[i].tau_est
 
 
     # main control loop to send low-level commands
     def LowCmdWrite(self):
 
-        if self.wall_clock_start_ is None:
-            self.wall_clock_start_ = time.perf_counter()
         self.time_ += low_level_control_dt
-        self.wall_clock_time_ = time.perf_counter() - self.wall_clock_start_
 
         # [Stage 1]: interpolate to default joint positions
         if self.time_ < self.interp_default_pos_duration :
@@ -272,26 +356,26 @@ class Custom:
                 self.low_cmd.motor_cmd[i].kp = self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
-        # [Stage 3]: regular control loop
+        # [Stage 3]: regular control loop (reads from ROS2 command subscriber)
         else:
             if self.stage == 2:
                 print("[Stage 3]: Running regular control loop...")
                 self.stage = 3
+            with self.cmd_lock:
+                q_cmd = self.q_cmd.copy()
+                dq_cmd = self.dq_cmd.copy()
+                Kp_cmd = self.Kp_cmd.copy()
+                Kd_cmd = self.Kd_cmd.copy()
+                tau_ff_cmd = self.tau_ff_cmd.copy()
             for i in range(G1_NUM_MOTOR):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
-                self.low_cmd.motor_cmd[i].tau = 0. 
-                self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
-                self.low_cmd.motor_cmd[i].dq = 0. 
-                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
-                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
-
-        # print time error every 0.1s
-        self.counter_ += 1
-        if self.counter_ % 100 == 0:
-            time_error = self.time_ - self.wall_clock_time_
-            print(f"Time error: {time_error:.5f}s (accumulated: {self.time_:.5f}s, wall: {self.wall_clock_time_:.5f}s)")
+                self.low_cmd.motor_cmd[i].mode = 1  # 1:Enable, 0:Disable
+                self.low_cmd.motor_cmd[i].tau = tau_ff_cmd[i]
+                self.low_cmd.motor_cmd[i].q = q_cmd[i]
+                self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
+                self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
+                self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
 
         # check sum commands for safety and then publish
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
@@ -336,11 +420,17 @@ def main(args=None):
     ChannelFactoryInitialize(0, args.network)
 
     # instantiate the custom control class
-    custom = Custom(args.config)
-    custom.Init()
-    custom.Start()
+    ctrl_node = ControlNode(args.config)
+    ctrl_node.Init()
 
-    while True:        
+    # spin ROS2 node in background thread
+    ros_thread = threading.Thread(target=rclpy.spin, args=(ctrl_node,), daemon=True)
+    ros_thread.start()
+
+    # start the control loop
+    ctrl_node.Start()
+
+    while True:
         time.sleep(1)
 
 
