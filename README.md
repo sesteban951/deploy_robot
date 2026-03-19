@@ -1,5 +1,12 @@
 # Deploy Robot in Simulation and on Hardware
-This repo is for deploying asynchronous sim and real robot code for Unitree G1 robot. 
+This repo is for deploying asynchronous sim and real robot code for the Unitree G1 robot. 
+
+A brief overview of the repo structure is as follows:
+- `deploy`: main deployment code for both sim and real robot. The `simulation` folder contains code for sim deployment, and the `hardware` folder contains code for real robot deployment.
+- `models`: contains the Mujoco XML files and mesh files for the robot.
+- `motions`: contains motion files for the robot.
+- `policy`: contains the policies to use for controlling the robot.
+- `utils`: contains utility code.
 
 # Installation
 ## Setting the environment variable
@@ -28,16 +35,29 @@ TODO: add instructions for sim deployment.
 
 ## Hardware
 ### Turning the robot on
-Press the power button twice and hold on the second press. You should see the robot's eyes light up and hear a sounds. After a while of setup, the robot will say "zero torque mode". This means the robot is on and ready to receive commands.
+Press the power button twice and hold on the second press. You should see the robot's eyes light up and hear fan sounds from the motors. After a while of setup, the robot will say "zero torque mode".
+
+This means the robot is on and ready to receive commands.
 
 ### Network Configuration
-First ensure that you are somehow connected to the robot via an ethernet cable. Then go to Ubuntu settings and configure the IPv4 Method to be `Manual`, set the Address to `192.168.123.99`, and the Netmask to `255.255.255.0`. 
+First ensure that you are somehow connected to the robot via an ethernet cable. Then go to Ubuntu settings and configure the IPv4 Method to `Manual`, set the Address to `192.168.123.99`, and the Netmask to `255.255.255.0`. 
 
-You can find the network interface name (e.g. `enp8s0`) via `ifconfig`. You will need it to run hardware deployment code.
+You can find the network interface name (e.g. `enp8s0`) via `ifconfig` command in a terminal. You will need it to run hardware deployment code.
 
 ### Sanity Check
 To make sure everything is working and you can communicate with the robot, you can run the example low level control script where the robot moves its arms and ankles. Run:
 ```bash
-python deploy/deploy_real/g1_low_level_example.py <network_interface_name>
+python deploy/hardware/g1_low_level_example.py <network_interface_name>
 ```
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
+
+# Small details
+If you want VS Code to recognize the Unitree SDK source code, just add the following to your `.vscode/settings.json` that is located in your root directory:
+```json
+{
+  "python.analysis.extraPaths": [
+    "<path-to>/unitree_sdk2_python"
+  ]
+}
+```
+To be clear this is only so you can do the `ctrl + click` to jump to the source code of the Unitree SDK. You don't need this for the code to run.

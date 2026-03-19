@@ -1,6 +1,6 @@
 ##
 #
-# Example from unitree SDk repo to test that everything is hooked up and working. 
+# Example from unitree SDK repo to test that everything is hooked up and working. 
 # https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/example/g1/low_level/g1_low_level_example.py
 #
 ##

@@ -265,7 +265,7 @@ def main(args=None):
         '--config',
         type=str,
         required=True,
-        help='Path to the Mujoco config yaml file. Example: "g1_29dof.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof.yaml".'
     )
     args = parser.parse_args()
 
