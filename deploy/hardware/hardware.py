@@ -16,7 +16,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Float32MultiArray
+from std_msgs.msg import Int32, Float64, Float32MultiArray
 
 # directory imports
 import os
@@ -126,7 +126,7 @@ class ControlNode(Node):
         self.cmd_lock = threading.Lock()       # protects command arrays
 
         # flag for which part of startup we are in
-        self.stage = 0
+        self.stage = -1
 
         # other stuff from unitree's example
         self.time_ = 0.0
@@ -215,6 +215,7 @@ class ControlNode(Node):
         self.imu_state_pub = self.create_publisher(Float32MultiArray, "imu_state", 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, "joint_state", 10)
         self.hardware_time_pub = self.create_publisher(Float64, "hardware_time", 10)
+        self.state_machine_pub = self.create_publisher(Int32, "state_machine", 10)
 
         # ROS2 subscriber for commands
         self.command_sub = self.create_subscription(Float32MultiArray, "command", self.command_callback, 10)
@@ -252,10 +253,15 @@ class ControlNode(Node):
         time_msg = Float64()
         time_msg.data = self.time_
 
+        # stage
+        state_machine_msg = Int32()
+        state_machine_msg.data = self.stage
+
         # publish to ROS2 topics
         self.imu_state_pub.publish(imu_msg)
         self.joint_state_pub.publish(joint_msg)
         self.hardware_time_pub.publish(time_msg)
+        self.state_machine_pub.publish(state_machine_msg)
 
 
     # callback to receive command messages from ROS2
@@ -325,12 +331,12 @@ class ControlNode(Node):
 
         self.time_ += low_level_control_dt
 
-        # [Stage 1]: interpolate to default joint positions
+        # [Stage 0]: interpolate to default joint positions
         if self.time_ < self.interp_default_pos_duration :
             ratio = np.clip(self.time_ / self.interp_default_pos_duration, 0.0, 1.0)
-            if self.stage == 0:
-                print(f"[Stage 1]: Interpolating to default joint positions ({self.interp_default_pos_duration:.1f}s)...")
-                self.stage = 1
+            if self.stage == -1:
+                print(f"[Stage 0]: Interpolating to default joint positions ({self.interp_default_pos_duration:.1f}s)...")
+                self.stage = 0
             for i in range(G1_NUM_MOTOR):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
@@ -341,11 +347,11 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].kp = self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
-        # [Stage 2]: hold default joint positions
+        # [Stage 1]: hold default joint positions
         elif self.time_ < self.interp_default_pos_duration + self.hold_default_pos_duration:
-            if self.stage == 1:
-                print(f"[Stage 2]: Holding default joint positions ({self.hold_default_pos_duration:.1f}s)...")
-                self.stage = 2
+            if self.stage == 0:
+                print(f"[Stage 1]: Holding default joint positions ({self.hold_default_pos_duration:.1f}s)...")
+                self.stage = 1
             for i in range(G1_NUM_MOTOR):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
@@ -356,11 +362,11 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].kp = self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
-        # [Stage 3]: control loop (reads from ROS2 command subscriber)
+        # [Stage 2]: control loop (reads from ROS2 command subscriber)
         else:
-            if self.stage == 2:
-                print("[Stage 3]: Running control loop...")
-                self.stage = 3
+            if self.stage == 1:
+                print("[Stage 2]: Running control loop...")
+                self.stage = 2
             with self.cmd_lock:
                 q_cmd = self.q_cmd.copy()
                 dq_cmd = self.dq_cmd.copy()
