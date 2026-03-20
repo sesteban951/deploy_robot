@@ -34,7 +34,7 @@ Kd: [
 motion_path: "srb_jump_up_mujoco.npz"
 
 # playback speed scaling
-playback_speed: 1.0
+playback_speed: 0.25
 
 # control frequency
 control_dt: 0.01  # [sec]

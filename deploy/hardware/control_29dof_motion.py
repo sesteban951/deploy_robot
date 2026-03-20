@@ -63,6 +63,9 @@ class ControlNode(Node):
         self.hardware_time = 0.0
         self.state_machine = 0
 
+        # control timer for internal use
+        self.control_time = 0.0
+
         print("Control node initialized.")
 
     #################################################################
@@ -127,10 +130,11 @@ class ControlNode(Node):
         assert self.n_frames > 0, "Motion trajectory must have at least one frame."
         assert fps > 0, "FPS must be positive."
         assert playback_speed > 0, "Playback speed must be positive."
+        assert playback_speed <= 1.5, "Playback speed greater than 1.5 is too risky."
         assert self.ctrl_dt > 0, "Control dt must be positive."
 
         # create time array
-        frame_dt = 1.0 / fps * playback_speed
+        frame_dt = 1.0 / (fps * playback_speed)
         self.time_array = np.arange(self.n_frames) * frame_dt
         self.T = self.time_array[-1]
 
@@ -155,15 +159,47 @@ class ControlNode(Node):
     def state_machine_callback(self, msg):
         self.state_machine = msg.data
 
+    # linear interpolation between two arrays
+    def lerp(self, a, b, alpha):
+        return (1.0 - alpha) * a + alpha * b
+
     # publish position command at control frequency
     def control_publish(self):
 
-        # wait until hardware has finished its interp/hold stages
+        # safety: abort if hardware is not ready for control
         if self.state_machine < 2:
-            return
+            print(f"\nWarning: Hardware is not ready to take commands (state_machine = {self.state_machine}). "
+                  f"Wait until hardware is ready before starting. Shutting down.")
+            print("Shutting down control node.")
+            sys.exit(1)
+
+        # increment control time
+        self.control_time += self.ctrl_dt
+
+        # [Stage 0]: interpolate from default pos to first motion frame
+        if self.control_time < self.interp_duration:
+            alpha = self.control_time / self.interp_duration
+            qpos_des = self.lerp(self.default_joint_pos, self.qpos[0, :], alpha)
+            print(f"[interp] t={self.control_time:.2f}/{self.interp_duration:.2f}  alpha={alpha:.3f}\r", end="")
+
+        # [Stage 1]: hold first motion frame
+        elif self.control_time < self.interp_duration + self.hold_duration:
+            qpos_des = self.qpos[0, :].copy()
+            t_hold = self.control_time - self.interp_duration
+            print(f"[hold] t={t_hold:.2f}/{self.hold_duration:.2f}\r", end="")
+
+        # [Stage 2]: play motion trajectory with linear interpolation between frames
+        else:
+            t_motion = self.control_time - self.interp_duration - self.hold_duration
+            i = np.searchsorted(self.time_array, t_motion) - 1
+            i = np.clip(i, 0, self.n_frames - 2)
+            j = i + 1
+            alpha = (t_motion - self.time_array[i]) / (self.time_array[j] - self.time_array[i])
+            alpha = np.clip(alpha, 0.0, 1.0)
+            qpos_des = self.lerp(self.qpos[i, :], self.qpos[j, :], alpha)
+            print(f"[motion] t={t_motion:.2f}/{self.T:.2f}  frame={i}-{j}  alpha={alpha:.3f}\r", end="")
 
         # publish command: [q(29), dq(29), Kp(29), Kd(29), tau_ff(29)]
-        qpos_des = self.default_joint_pos.copy()
         dq_des = np.zeros(G1_NUM_MOTOR, dtype=np.float64)
         tau_ff = np.zeros(G1_NUM_MOTOR, dtype=np.float64)
         cmd_msg = Float32MultiArray()
@@ -196,6 +232,20 @@ def main(args=None):
 
     # create the simulation node
     ctrl_node = ControlNode(args.config)
+
+    # spin briefly to receive state_machine updates before prompting
+    for _ in range(50):
+        rclpy.spin_once(ctrl_node, timeout_sec=0.01)
+
+    print(f"\nHardware state_machine = {ctrl_node.state_machine}")
+    while input("Press [Enter] to continue: ") != "":
+        pass
+    print()
+
+    # TODO: / WARNING: this is really bad design, redesign ASAP
+    # spin again to get latest state after user presses Enter
+    for _ in range(10):
+        rclpy.spin_once(ctrl_node, timeout_sec=0.01)
 
     # execute the policy
     try:
