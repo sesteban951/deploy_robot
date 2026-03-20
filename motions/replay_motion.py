@@ -142,3 +142,17 @@ if __name__ == "__main__":
         print("\nClosed visualization.")
 
     viewer.close()
+
+    # save the motion trajectory as a new npz file with MuJoCo joint ordering
+    save_path = motion_path_full.replace(".npz", "_mujoco.npz")
+    np.savez(
+        save_path,
+        fps=fps,
+        joint_pos=qpos[:, reorder],
+        joint_vel=qvel[:, reorder],
+        body_pos_w=body_pos_w,
+        body_quat_w=body_quat_w,
+        body_lin_vel_w=body_lin_vel_w,
+        body_ang_vel_w=body_ang_vel_w,
+    )
+    print(f"Saved MuJoCo-ordered motion to: {save_path}")
