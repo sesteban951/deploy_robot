@@ -1,11 +1,8 @@
 ##
 #
-# Run joystick commands
+# Run joystick commands (using pygame)
 #
 ##
-
-# standard imports
-from dataclasses import dataclass
 
 # other imports
 import pygame
@@ -16,42 +13,18 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
 # directory imports
+import sys
 import os
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
+sys.path.append(ROOT_DIR)
+
+# custom imports
+from utils.joystick_utils import JoystickState, pygame_to_joystick_state
 
 
 ############################################################################
 # COMMAND NODE
 ############################################################################
-
-# Xbox buttons
-@dataclass
-class JoystickState:
-    
-    # Buttons
-    A: int = 0
-    B: int = 0
-    X: int = 0
-    Y: int = 0
-    LB: int = 0
-    RB: int = 0
-    LMB: int = 0   # left middle button
-    RMB: int = 0   # right middle button
-    LS: int = 0    # left stick press
-    RS: int = 0    # right stick press
-    MB: int = 0    # middle button between LMB and RMB
-
-    # Axes
-    LS_X: float = 0.0
-    LS_Y: float = 0.0
-    RS_X: float = 0.0
-    RS_Y: float = 0.0
-    LT: float = 0.0
-    RT: float = 0.0
-    L_DPAD: float = 0.0  # D-PAD left
-    R_DPAD: float = 0.0  # D-PAD right
-    U_DPAD: float = 0.0  # D-PAD up
-    D_DPAD: float = 0.0  # D-PAD down
 
 class JoystickNode(Node):
     """
@@ -68,7 +41,7 @@ class JoystickNode(Node):
         self.init_joystick()
 
         # ROS2 publishers
-        self.command_pub = self.create_publisher(Float32MultiArray, 'joystick', 10)
+        self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joystick', 10)
 
         # create timer to publish commands at a fixed rate
         command_freq = 100.0
@@ -113,59 +86,7 @@ class JoystickNode(Node):
 
         # update
         try:
-            LS_X = -self.joystick.get_axis(0) # invert x-axis
-            LS_Y = -self.joystick.get_axis(1) # invert y-axis
-            RS_X = -self.joystick.get_axis(3) # invert x-axis
-            RS_Y = -self.joystick.get_axis(4) # invert y-axis
-            self.joystick_state.LS_X = LS_X if abs(LS_X) > self.deadzone else 0.0
-            self.joystick_state.LS_Y = LS_Y if abs(LS_Y) > self.deadzone else 0.0
-            self.joystick_state.RS_X = RS_X if abs(RS_X) > self.deadzone else 0.0
-            self.joystick_state.RS_Y = RS_Y if abs(RS_Y) > self.deadzone else 0.0
-
-            # triggers
-            LT = 0.5 * self.joystick.get_axis(2) + 0.5
-            RT = 0.5 * self.joystick.get_axis(5) + 0.5
-            self.joystick_state.LT = LT if LT > self.deadzone else 0.0
-            self.joystick_state.RT = RT if RT > self.deadzone else 0.0
-
-            # D-PAD
-            DPAD = self.joystick.get_hat(0)
-            
-            DPAD_X = DPAD[0]
-            if DPAD_X <= -0.5:
-                self.joystick_state.L_DPAD = 1.0
-                self.joystick_state.R_DPAD = 0.0
-            elif DPAD_X >= 0.5:
-                self.joystick_state.L_DPAD = 0.0
-                self.joystick_state.R_DPAD = 1.0
-            else:
-                self.joystick_state.L_DPAD = 0.0
-                self.joystick_state.R_DPAD = 0.0
-
-            DPAD_Y = DPAD[1]
-            if DPAD_Y <= -0.5:
-                self.joystick_state.U_DPAD = 0.0
-                self.joystick_state.D_DPAD = 1.0
-            elif DPAD_Y >= 0.5:
-                self.joystick_state.U_DPAD = 1.0
-                self.joystick_state.D_DPAD = 0.0
-            else:
-                self.joystick_state.U_DPAD = 0.0
-                self.joystick_state.D_DPAD = 0.0
-
-            # buttons
-            self.joystick_state.A = self.joystick.get_button(0)
-            self.joystick_state.B = self.joystick.get_button(1)
-            self.joystick_state.X = self.joystick.get_button(2)
-            self.joystick_state.Y = self.joystick.get_button(3)
-            self.joystick_state.LB = self.joystick.get_button(4)
-            self.joystick_state.RB = self.joystick.get_button(5)
-            self.joystick_state.LMB = self.joystick.get_button(6)
-            self.joystick_state.RMB = self.joystick.get_button(7)
-            self.joystick_state.LS = self.joystick.get_button(9)
-            self.joystick_state.RS = self.joystick.get_button(10)
-            self.joystick_state.MB = self.joystick.get_button(11)
-
+            self.joystick_state = pygame_to_joystick_state(self.joystick)
         except pygame.error:
             print("Joystick error.")
             self.joystick = None

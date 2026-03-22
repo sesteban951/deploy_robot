@@ -18,6 +18,12 @@ export DEPLOY_ROOT_DIR="/home/sergio/projects/deploy_robot"
 ## ROS2
 Use `ROS2 Humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
 
+If you don't have the ROS `joy` package, you can install it via:
+```bash
+sudo apt update
+sudo apt install ros-humble-joy
+```
+
 ## Conda Environment
 Use `conda` and install via:
 ```bash
@@ -60,4 +66,4 @@ If you want VS Code to recognize the Unitree SDK source code, just add the follo
   ]
 }
 ```
-To be clear this is only so you can do the `ctrl + click` to jump to the source code of the Unitree SDK. You don't need this for the code to run.
+To be clear, this is only so you can do the `ctrl + click` to jump to the source code of the Unitree SDK. You don't need this for the code to run.

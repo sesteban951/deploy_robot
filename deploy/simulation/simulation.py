@@ -75,6 +75,8 @@ class SimulationNode(Node):
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
 
         print("Simulation node initialized.")
+        print("    Press [Shift + Tab] to toggle the right UI (command display)") 
+        print("    Press [Tab] to toggle the left UI (sim time display).")
 
     #################################################################
     # INITIALIZATION
@@ -142,16 +144,17 @@ class SimulationNode(Node):
             'mjFONTSCALE_250',
             getattr(mujoco.mjtFontScale, 'mjFONTSCALE_200', mujoco.mjtFontScale.mjFONTSCALE_150),
         )
+        
+        # camera settings
+        self.viewer.cam.azimuth   = 135    # degrees, horizontal rotation
+        self.viewer.cam.elevation = -20    # degrees, negative looks down
+        self.viewer.cam.distance  = 2.5    # meters from lookat point
+        self.viewer.cam.lookat[:] = list(self.default_base[0:3]) # (x, y, z) point to look at
+
         self.viewer_render_hz = 50.0
         self._last_viewer_sync = 0.0
         self._real_start_time = time.perf_counter()
         self._next_step_deadline = self._real_start_time + self.sim_dt
-
-        # camera settings
-        self.viewer.cam.azimuth   = 135    # degrees, horizontal rotation
-        self.viewer.cam.elevation = -10    # degrees, negative looks down
-        self.viewer.cam.distance  = 2.5    # meters from lookat point
-        self.viewer.cam.lookat[:] = list(self.default_base[0:3]) # (x, y, z) point to look at
     
 
     #################################################################
@@ -289,6 +292,7 @@ def main(args=None):
     # create the simulation node
     sim_node = SimulationNode(args.config)
 
+    # run normally
     try:
         while rclpy.ok() and sim_node.viewer.is_running():
             rclpy.spin_once(sim_node, timeout_sec=0.1)
