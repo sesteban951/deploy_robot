@@ -61,29 +61,26 @@ def parse_float_csv(s):
 def parse_str_csv(s):
     return [x.strip() for x in s.split(",") if x.strip()]
 
-# load metadata embedded in an ONNX model (BeyondMimic-style exports)
-# returns a dictionary with parsed numpy arrays and string lists
+# load metadata embedded in an ONNX model
 def load_policy_metadata(onnx_model):
-
-    # parse all metadata_props from the ONNX model
-    raw = {}
+    metadata = {}
     for prop in onnx_model.metadata_props:
-        raw[prop.key] = prop.value
+        value = prop.value
 
-    joint_names = parse_str_csv(raw["joint_names"])
+        # try parsing as floats first
+        try:
+            parsed = parse_float_csv(value)
+            if len(parsed) > 0:
+                metadata[prop.key] = parsed
+                continue
+        except ValueError:
+            pass
 
-    metadata = {
-        "joint_names": joint_names,
-        "num_joints": len(joint_names),
-        "default_joint_pos": parse_float_csv(raw["default_joint_pos"]),
-        "action_scale": parse_float_csv(raw["action_scale"]),
-        "kps": parse_float_csv(raw["joint_stiffness"]),
-        "kds": parse_float_csv(raw["joint_damping"]),
-        "observation_names": parse_str_csv(raw["observation_names"]),
-        "command_names": parse_str_csv(raw["command_names"]),
-        "anchor_body_name": raw.get("anchor_body_name", ""),
-        "body_names": parse_str_csv(raw.get("body_names", "")),
-    }
+        # try parsing as string list (if it contains commas)
+        if "," in value:
+            metadata[prop.key] = parse_str_csv(value)
+        else:
+            metadata[prop.key] = value.strip()
 
     return metadata
 
@@ -154,13 +151,13 @@ class Policy:
 
     # get important properties of the policy
     def _get_policy_properties(self):
-        
-        # I/O sizes
+        # I/O names and sizes
+        self.input_size = None
+        self.output_size = None
         if self._policy_type == "torch":
             self.input_size, self.output_size = get_policy_io_size_torch(self.policy)
         elif self._policy_type == "onnx":
             self.input_size, self.output_size = get_policy_io_size_onnx(self.policy)
-        
 
     # inference the policy given an input
     def inference(self, input):
@@ -171,15 +168,20 @@ class Policy:
 
 
 ############################################################################
-# EXAMPLE USAGE
+# TEST POLICY
 ############################################################################
 
-if __name__ == "__main__":
+def main(args=None):
+    
     import os
     ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
-    policy_path = ROOT_DIR + "/policy/2026-03-19_19-11-15.onnx"
+
+    # specify the policy name
+    # policy_name = "g1_29dof_srb_jump_up.onnx"
+    policy_name = "g1_29dof_mjlab.onnx"
 
     # load the policy
+    policy_path = ROOT_DIR + "/policy/" + policy_name
     policy = Policy(policy_path)
     print(f"Policy loaded from [{policy_path}]")
     print(f"    Type: {policy._policy_type}")
@@ -188,12 +190,15 @@ if __name__ == "__main__":
 
     # print metadata if available
     if hasattr(policy, 'metadata'):
-        print(f"    Num joints: {policy.metadata['num_joints']}")
-        print(f"    Joint names: {policy.metadata['joint_names']}")
-        print(f"    Observations: {policy.metadata['observation_names']}")
+        for key, value in policy.metadata.items():
+            print(f"{key}: {value}")
 
     # test inference with a zero input
     obs = np.zeros(policy.input_size, dtype=np.float32)
     action = policy.inference(obs)
     print(f"    Test action shape: {action.shape}")
     print(f"    Test action: {action}")
+
+
+if __name__ == "__main__":
+    main()
