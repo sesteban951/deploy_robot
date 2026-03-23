@@ -26,7 +26,6 @@ class JoystickState:
     RMB: int = 0   # right middle button
     LS: int = 0    # left stick press
     RS: int = 0    # right stick press
-    MB: int = 0    # middle button between LMB and RMB
     XBOX: int = 0  # XBOX button in the middle of the controller
 
     # Axes
@@ -94,9 +93,9 @@ def pygame_to_joystick_state(joystick):
     state.RB = joystick.get_button(5)
     state.LMB = joystick.get_button(6)
     state.RMB = joystick.get_button(7)
+    state.XBOX = joystick.get_button(8)
     state.LS = joystick.get_button(9)
     state.RS = joystick.get_button(10)
-    state.MB = joystick.get_button(11)
 
     return state
 
@@ -117,22 +116,22 @@ def rosjoy_to_joystick_state(joy_msg):
     state.RT = -0.5 * joy_msg.axes[5] + 0.5
 
     # D-PAD axes
-    DPAD_horizontal = joy_msg.axes[6]
-    if DPAD_horizontal == 1.0:
+    DPAD_X = joy_msg.axes[6]
+    if DPAD_X == 1.0:
         state.L_DPAD = 1.0
         state.R_DPAD = 0.0
-    elif DPAD_horizontal == -1.0:
+    elif DPAD_X == -1.0:
         state.L_DPAD = 0.0
         state.R_DPAD = 1.0
     else:
         state.L_DPAD = 0.0
         state.R_DPAD = 0.0
 
-    DPAD_vertical = joy_msg.axes[7]
-    if DPAD_vertical == -1.0:
+    DPAD_Y = joy_msg.axes[7]
+    if DPAD_Y == -1.0:
         state.U_DPAD = 0.0
         state.D_DPAD = 1.0
-    elif DPAD_vertical == 1.0:
+    elif DPAD_Y == 1.0:
         state.U_DPAD = 1.0
         state.D_DPAD = 0.0
     else:
@@ -151,6 +150,5 @@ def rosjoy_to_joystick_state(joy_msg):
     state.XBOX = joy_msg.buttons[8]
     state.LS = joy_msg.buttons[9]
     state.RS = joy_msg.buttons[10]
-    state.MB = joy_msg.buttons[11]
 
     return state
