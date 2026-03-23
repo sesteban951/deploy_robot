@@ -85,7 +85,7 @@ python deploy/hardware/g1_low_level_example.py <network_interface_name>
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
 ### Launching
-You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
+You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
 
 Terminal 1:
 ```bash

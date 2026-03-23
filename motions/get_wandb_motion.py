@@ -39,7 +39,7 @@ def main(args=None):
     # download to a temp location, then copy npz files with the motion name
     output_dir = Path(ROOT_DIR) / "motions"
     output_dir.mkdir(parents=True, exist_ok=True)
-    download_path = artifact.download()
+    download_path = artifact.download(root=str(output_dir))
 
     # copy npz files with the motion name
     npz_files = list(Path(download_path).glob("*.npz"))
