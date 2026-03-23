@@ -4,6 +4,7 @@
   <statistic meansize="0.144785" extent="1.23314" center="0.025392 2.0634e-05 -0.245975"/>
   <default>
     <joint damping="0.001" armature="0.01" frictionloss="0.1"/>
+    <site group="5" rgba="1 0 0 1"/>
   </default>
 
   <asset>
@@ -40,6 +41,8 @@
     <body name="pelvis" pos="0 0 0.793">
       <inertial pos="0.0144905 0.000151462 0.144068" quat="0.999881 -0.000505543 -0.0154276 0.000328408" mass="17.7349" diaginertia="0.552723 0.454092 0.211762"/>
       <joint name="floating_base_joint" type="free" limited="false" actuatorfrclimited="false"/>
+      <site name="imu_in_pelvis" pos="0.04525 0 -0.08339" size="0.01"/>
+      <site name="imu_in_torso" pos="-0.0436 -0.00224 0.19192" size="0.01"/>
       <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="pelvis"/>
       <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="pelvis_contour_link"/>
       <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="pelvis_contour_link"/>
@@ -163,6 +166,46 @@
     <motor name="right_ankle_pitch_joint" joint="right_ankle_pitch_joint"/>
     <motor name="right_ankle_roll_joint" joint="right_ankle_roll_joint"/>
   </actuator>
+
+  <sensor>
+    <!-- torso IMU -->
+    <framequat name="torso_imu_quat_sensor" objtype="site" objname="imu_in_torso" noise="0.01"/>
+    <gyro name="torso_imu_gyro_sensor" site="imu_in_torso" noise="0.01"/>
+    <accelerometer name="torso_imu_acc_sensor" site="imu_in_torso" noise="0.01"/>
+
+    <!-- pelvis IMU -->
+    <framequat name="pelvis_imu_quat_sensor" objtype="site" objname="imu_in_pelvis" noise="0.01"/>
+    <gyro name="pelvis_imu_gyro_sensor" site="imu_in_pelvis" noise="0.01"/>
+    <accelerometer name="pelvis_imu_acc_sensor" site="imu_in_pelvis" noise="0.01"/>
+
+    <!-- Left Leg -->
+    <jointpos name="left_hip_pitch_joint_pos_sensor" joint="left_hip_pitch_joint" noise="0.001"/>
+    <jointpos name="left_hip_roll_joint_pos_sensor" joint="left_hip_roll_joint" noise="0.001"/>
+    <jointpos name="left_hip_yaw_joint_pos_sensor" joint="left_hip_yaw_joint" noise="0.001"/>
+    <jointpos name="left_knee_joint_pos_sensor" joint="left_knee_joint" noise="0.001"/>
+    <jointpos name="left_ankle_pitch_joint_pos_sensor" joint="left_ankle_pitch_joint" noise="0.001"/>
+    <jointpos name="left_ankle_roll_joint_pos_sensor" joint="left_ankle_roll_joint" noise="0.001"/>
+    <jointvel name="left_hip_pitch_joint_vel_sensor" joint="left_hip_pitch_joint" noise="0.001"/>
+    <jointvel name="left_hip_roll_joint_vel_sensor" joint="left_hip_roll_joint" noise="0.001"/>
+    <jointvel name="left_hip_yaw_joint_vel_sensor" joint="left_hip_yaw_joint" noise="0.001"/>
+    <jointvel name="left_knee_joint_vel_sensor" joint="left_knee_joint" noise="0.001"/>
+    <jointvel name="left_ankle_pitch_joint_vel_sensor" joint="left_ankle_pitch_joint" noise="0.001"/>
+    <jointvel name="left_ankle_roll_joint_vel_sensor" joint="left_ankle_roll_joint" noise="0.001"/>
+
+    <!-- Right Leg -->
+    <jointpos name="right_hip_pitch_joint_pos_sensor" joint="right_hip_pitch_joint" noise="0.001"/>
+    <jointpos name="right_hip_roll_joint_pos_sensor" joint="right_hip_roll_joint" noise="0.001"/>
+    <jointpos name="right_hip_yaw_joint_pos_sensor" joint="right_hip_yaw_joint" noise="0.001"/>
+    <jointpos name="right_knee_joint_pos_sensor" joint="right_knee_joint" noise="0.001"/>
+    <jointpos name="right_ankle_pitch_joint_pos_sensor" joint="right_ankle_pitch_joint" noise="0.001"/>
+    <jointpos name="right_ankle_roll_joint_pos_sensor" joint="right_ankle_roll_joint" noise="0.001"/>
+    <jointvel name="right_hip_pitch_joint_vel_sensor" joint="right_hip_pitch_joint" noise="0.001"/>
+    <jointvel name="right_hip_roll_joint_vel_sensor" joint="right_hip_roll_joint" noise="0.001"/>
+    <jointvel name="right_hip_yaw_joint_vel_sensor" joint="right_hip_yaw_joint" noise="0.001"/>
+    <jointvel name="right_knee_joint_vel_sensor" joint="right_knee_joint" noise="0.001"/>
+    <jointvel name="right_ankle_pitch_joint_vel_sensor" joint="right_ankle_pitch_joint" noise="0.001"/>
+    <jointvel name="right_ankle_roll_joint_vel_sensor" joint="right_ankle_roll_joint" noise="0.001"/>
+  </sensor>
 
   <!-- setup scene -->
   <statistic center="1.0 0.7 1.0" extent="0.8"/>
