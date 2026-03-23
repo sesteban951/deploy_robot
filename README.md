@@ -8,6 +8,8 @@ A brief overview of the repo structure is as follows:
 - `policy`: contains the policies to use for controlling the robot.
 - `utils`: contains utility code.
 
+---
+
 # Installation
 ## Setting the environment variable
 Set the directory of this repo as a environment variable in your `~/.bashrc` file, for example:
@@ -18,7 +20,7 @@ export DEPLOY_ROOT_DIR="/home/sergio/projects/deploy_robot"
 ## ROS2
 Use `ROS2 Humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
 
-If you don't have the ROS `joy` package, you can install it via:
+If your scripts use the joystick, you can install `joy` package via:
 ```bash
 sudo apt update
 sudo apt install ros-humble-joy
@@ -35,9 +37,25 @@ conda activate env_deploy
 After the `conda` environment is set up, install the Unitree SDK inside the conda environment.
 Make sure you are in the `env_deploy` conda environment by using `conda activate env_deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
 
+---
+
 # Deployment
 ## Simulation
-TODO: add instructions for sim deployment.
+### Launching
+You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
+
+Terminal 1:
+```bash
+python deploy/joystick/joystick_ros.py 
+```
+Terminal 2:
+```bash
+python deploy/simulation/<control_script>.py --config <your-config-file>.yaml
+```
+Terminal 3:
+```bash
+python deploy/simulation/simulation.py --config <your-config-file>.yaml
+```
 
 ## Hardware
 ### Turning the robot on
@@ -57,13 +75,29 @@ python deploy/hardware/g1_low_level_example.py <network_interface_name>
 ```
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
+### Launching
+You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
+
+Terminal 1:
+```bash
+python deploy/joystick/joystick_ros.py 
+```
+Terminal 2:
+```bash
+python deploy/hardware/<control_script>.py --config <your-config-file>.yaml
+```
+Terminal 3:
+```bash
+python deploy/hardware/hardware.py --config <your-config-file>.yaml
+```
+
+---
+
 # Small details
 If you want VS Code to recognize the Unitree SDK source code, just add the following to your `.vscode/settings.json` that is located in your root directory:
 ```json
 {
-  "python.analysis.extraPaths": [
-    "<path-to>/unitree_sdk2_python"
-  ]
+  "python.analysis.extraPaths": ["<path-to>/unitree_sdk2_python"]
 }
 ```
 To be clear, this is only so you can do the `ctrl + click` to jump to the source code of the Unitree SDK. You don't need this for the code to run.
