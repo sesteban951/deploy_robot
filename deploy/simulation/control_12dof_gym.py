@@ -61,8 +61,8 @@ class ControlNode(Node):
         # sensor state
         self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
         self.omega = np.zeros(3)
-        self.qpos_joints = np.zeros(len(self.qpos_joints_default))
-        self.qvel_joints = np.zeros(len(self.qpos_joints_default))
+        self.qpos_joints = np.array(self.qpos_joints_default.copy())
+        self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.sim_time = 0.0
 
         # initialize command
