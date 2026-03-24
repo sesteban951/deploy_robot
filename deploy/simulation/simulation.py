@@ -52,6 +52,7 @@ class SimulationNode(Node):
         self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/pelvis_imu_state', 10)
         self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/torso_imu_state', 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
+        self.base_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/base_state', 10) # (fake, not for hardware)
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
 
         # ROS subscribers
@@ -72,9 +73,11 @@ class SimulationNode(Node):
         # create timers for publishing
         imu_state_period = self.sim_dt  
         joint_state_period = self.sim_dt
+        base_state_period = self.sim_dt
         self.pelvis_imu_timer = self.create_timer(imu_state_period, self.publish_pelvis_imu)
         self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
+        self.base_state_timer = self.create_timer(base_state_period, self.publish_base_state)
 
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
@@ -214,6 +217,17 @@ class SimulationNode(Node):
         joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints]).tolist()
 
         self.joint_state_pub.publish(joint_state_msg)
+
+    # publish base state: [pos(3), quat(4), lin_vel(3), ang_vel(3)] (fake, not for hardware)
+    def publish_base_state(self):
+        pos = self.mj_data.qpos[:3].copy()            # world-frame position
+        quat = self.mj_data.qpos[3:7].copy()          # world-frame orientation (w,x,y,z)
+        lin_vel = self.mj_data.qvel[:3].copy()         # world-frame linear velocity
+        ang_vel = self.mj_data.qvel[3:6].copy()        # world-frame angular velocity
+
+        msg = Float32MultiArray()
+        msg.data = np.concatenate([pos, quat, lin_vel, ang_vel]).tolist()
+        self.base_state_pub.publish(msg)
 
     #################################################################
     # SIMULATION

@@ -1,6 +1,6 @@
 ##
 #
-# Control node for 29DoF MjLab velocity tracking robot.
+# Control node for 29DoF MjLab mimic tracking.
 #
 ##
 
@@ -9,6 +9,7 @@
 import argparse
 
 # other imports
+import mujoco
 import numpy as np
 import yaml
 
@@ -24,8 +25,13 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.unitree_rotation import get_gravity_orientation
 from utils.policy import Policy
+from utils.math_utils import (
+    quat_conjugate,
+    quat_multiply,
+    quat_to_rotation_matrix,
+    quat_to_rot6d,
+)
 
 
 ############################################################################
@@ -34,7 +40,7 @@ from utils.policy import Policy
 
 class ControlNode(Node):
     """
-    Asynchronous control node that runs the policy and sends actions to the simulation.
+    Asynchronous control node that runs the mimic policy and sends actions to the simulation.
     """
 
     def __init__(self, config_path: str):
@@ -51,23 +57,22 @@ class ControlNode(Node):
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
         # ROS subscribers
-        self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
+        self.base_state_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/base_state', self.base_state_callback, 10)
         self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
 
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
         # sensor state
-        self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
-        self.omega = np.zeros(3)
+        self.pelvis_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # (w, x, y, z)
+        self.pelvis_omega = np.zeros(3, dtype=np.float32)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
+        self.base_pos = np.array(self.config['default_base_pos'][:3], dtype=np.float32)
+        self.base_lin_vel_w = np.zeros(3, dtype=np.float32)
         self.sim_time = 0.0
-
-        # initialize command
-        self.cmd = np.zeros(3)
 
         # initialize the action
         self.action = np.zeros(self.act_size)
@@ -89,7 +94,7 @@ class ControlNode(Node):
         print(f"Loaded config from [{config_path_full}].")
 
         return config
-    
+
     # initialize the policy
     def init_policy(self):
 
@@ -97,8 +102,7 @@ class ControlNode(Node):
         self.qpos_joints_default = np.array(self.config['default_joint_pos'])
 
         # scaling params
-        self.action_scale = self.config["action_scale"]
-        self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
+        self.action_scale = np.array(self.config["action_scale"], dtype=np.float32)
 
         # PD gains
         self.Kp = np.array(self.config["kps"], dtype=np.float32)
@@ -110,7 +114,7 @@ class ControlNode(Node):
         # import the policy
         policy_path = self.config['policy_path']
         policy_path_full = ROOT_DIR + "/policy/" + policy_path
-        
+
         # load the policy
         self.policy = Policy(policy_path_full)
 
@@ -124,29 +128,39 @@ class ControlNode(Node):
         print(f"    Output size: {self.act_size}")
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
 
+        # load motion reference data
+        motion_path = ROOT_DIR + "/motions/" + self.config['motion_path']
+        motion = np.load(motion_path)
+        self.motion_fps = float(motion['fps'])
+        self.motion_joint_pos = motion['joint_pos'].astype(np.float32)
+        self.motion_joint_vel = motion['joint_vel'].astype(np.float32)
+        self.motion_body_pos_w = motion['body_pos_w'].astype(np.float32)
+        self.motion_body_quat_w = motion['body_quat_w'].astype(np.float32)
+        self.motion_num_frames = self.motion_joint_pos.shape[0]
+
+        print(f"Loaded motion from [{motion_path}].")
+        print(f"    FPS: {self.motion_fps}")
+        print(f"    Frames: {self.motion_num_frames}")
+        print(f"    Duration: {self.motion_num_frames / self.motion_fps:.1f}s")
+
+        # find anchor body index in the motion file using the MuJoCo model body ordering
+        xml_path = ROOT_DIR + "/models/" + self.config['xml_path']
+        mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        anchor_name = self.policy.metadata.get('anchor_body_name', 'torso_link')
+        self.anchor_body_idx = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, anchor_name)
+
+        print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
+
 
     #################################################################
-    # HELPERS
+    # CALLBACKS
     #################################################################
-
-    # command from the command node
-    def cmd_callback(self, msg):
-        data = np.array(msg.data, dtype=np.float32)
-        
-        # joystick
-        joystick_is_connected = (data[0] > 0.5)
-        vx_cmd = data[1]
-        vy_cmd = data[2]
-        omega_cmd = data[3]
-
-        # update the command with the scaling
-        self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
 
     # pelvis IMU data: [quat(4), gyro(3), acc(3)]
     def pelvis_imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        self.quat = data[:4]
-        self.omega = data[4:7]
+        self.pelvis_quat = data[:4]
+        self.pelvis_omega = data[4:7]
 
     # joint data: [qpos(n), qvel(n)]
     def joint_sensor_callback(self, msg):
@@ -155,32 +169,71 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
+    # base state: [pos(3), quat(4), lin_vel(3), ang_vel(3)] in world frame
+    def base_state_callback(self, msg):
+        data = np.array(msg.data, dtype=np.float32)
+        self.base_pos = data[0:3]
+        self.base_lin_vel_w = data[7:10]
+
     # sim time
     def time_callback(self, msg):
         self.sim_time = msg.data
 
+
+    #################################################################
+    # OBSERVATION
+    #################################################################
+
     # build the observation vector for the policy
+    # ['command', 'motion_anchor_pos_b', 'motion_anchor_ori_b',
+    #  'base_lin_vel', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
     def build_observation(self):
 
-        # base orientation state
-        gravity_orientation = get_gravity_orientation(self.quat)
+        # motion frame from sim time
+        frame = int(self.sim_time * self.motion_fps) % self.motion_num_frames
 
-        # joint position and velocity errors
-        qj = (self.qpos_joints - self.qpos_joints_default)
+        # --- command (58) : motion reference joint_pos + joint_vel ---
+        command = np.concatenate([
+            self.motion_joint_pos[frame],
+            self.motion_joint_vel[frame],
+        ])
+
+        # --- motion_anchor_pos_b (3) : desired anchor position in base frame ---
+        motion_anchor_pos_w = self.motion_body_pos_w[frame, self.anchor_body_idx]
+        motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
+        R_pelvis = quat_to_rotation_matrix(self.pelvis_quat)
+        anchor_pos_b = R_pelvis.T @ (motion_anchor_pos_w - self.base_pos)
+
+        # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
+        rel_quat = quat_multiply(quat_conjugate(self.pelvis_quat), motion_anchor_quat_w)
+        anchor_ori_b = quat_to_rot6d(rel_quat)
+
+        # --- base_lin_vel (3) : linear velocity in pelvis frame ---
+        base_lin_vel_b = R_pelvis.T @ self.base_lin_vel_w
+
+        # --- base_ang_vel (3) : angular velocity in pelvis frame (from pelvis IMU gyro) ---
+        base_ang_vel_b = self.pelvis_omega
+
+        # --- joint_pos (29) : relative to default ---
+        qj = self.qpos_joints - self.qpos_joints_default
+
+        # --- joint_vel (29) ---
         dqj = self.qvel_joints
-        
-        # build the observation vector
-        # ['base_ang_vel', 'projected_gravity', 'joint_pos', 'joint_vel', 'actions', 'command']
-        n = len(qj)
-        obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[0:3]           = self.omega
-        obs[3:6]           = gravity_orientation
-        obs[6:6+n]         = qj
-        obs[6+n:6+2*n]     = dqj
-        obs[6+2*n:6+3*n]   = self.action
-        obs[6+3*n:6+3*n+3] = self.cmd * self.cmd_scale
+
+        # --- actions (29) : previous action ---
+        # concatenate: 58 + 3 + 6 + 3 + 3 + 29 + 29 + 29 = 160
+        obs = np.concatenate([
+            command, anchor_pos_b, anchor_ori_b,
+            base_lin_vel_b, base_ang_vel_b,
+            qj, dqj, self.action,
+        ]).astype(np.float32)
 
         return obs
+
+
+    #################################################################
+    # CONTROL
+    #################################################################
 
     # control published at the control frequency
     def control_callback(self):
@@ -188,8 +241,11 @@ class ControlNode(Node):
         # get the current observation
         obs = self.build_observation()
 
+        # compute time_step for ONNX (control step index)
+        time_step = self.sim_time / self.ctrl_dt
+
         # target joint positions (PD control)
-        self.action = self.policy.inference(obs)
+        self.action = self.policy.inference(obs, time_step=time_step)
 
         # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
@@ -213,14 +269,14 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Simulation Node using Mujoco.'
+        description='Asynchronous Control Node for MjLab Mimic Policy.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the Mujoco config yaml file. Example: "g1_29dof.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof_mjlab_mimic.yaml".'
     )
     args = parser.parse_args()
 
@@ -231,7 +287,7 @@ def main(args=None):
     try:
         # spin the node
         rclpy.spin(ctrl_node)
-    
+
     except KeyboardInterrupt:
         pass
 
