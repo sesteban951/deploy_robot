@@ -9,7 +9,6 @@
 import argparse
 
 # other imports
-import mujoco
 import numpy as np
 import yaml
 
@@ -138,11 +137,10 @@ class ControlNode(Node):
         print(f"    Frames: {self.motion_num_frames}")
         print(f"    Duration: {self.motion_num_frames / self.motion_fps:.1f}s")
 
-        # find anchor body index in the motion file using the MuJoCo model body ordering
-        xml_path = ROOT_DIR + "/models/" + self.config['xml_path']
-        mj_model = mujoco.MjModel.from_xml_path(xml_path)
-        anchor_name = self.policy.metadata.get('anchor_body_name', 'torso_link')
-        self.anchor_body_idx = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, anchor_name)
+        # find anchor body index in the motion file using body_names from policy metadata
+        anchor_name = self.policy.metadata.get('anchor_body_name', 'pelvis')
+        body_names = self.policy.metadata.get('body_names')
+        self.anchor_body_idx = body_names.index(anchor_name)
 
         print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
 
@@ -208,7 +206,7 @@ class ControlNode(Node):
             qj, dqj, self.action,
         ]).astype(np.float32)
 
-        return obs
+        return obs, frame
 
 
     #################################################################
@@ -218,14 +216,11 @@ class ControlNode(Node):
     # control published at the control frequency
     def control_callback(self):
 
-        # get the current observation
-        obs = self.build_observation()
-
-        # compute time_step for ONNX (control step index)
-        time_step = self.sim_time / self.ctrl_dt
+        # get the current observation and motion frame index
+        obs, frame = self.build_observation()
 
         # target joint positions (PD control)
-        self.action = self.policy.inference(obs, time_step=time_step)
+        self.action = self.policy.inference(obs, time_step=frame)
 
         # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
