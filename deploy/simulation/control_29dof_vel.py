@@ -106,8 +106,8 @@ class ControlNode(Node):
         self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
 
         # PD gains
-        self.Kp = np.array(self.config["kps"], dtype=np.float32)
-        self.Kd = np.array(self.config["kds"], dtype=np.float32)
+        self.Kp = np.array(self.config["Kp"], dtype=np.float32)
+        self.Kd = np.array(self.config["Kd"], dtype=np.float32)
 
         # control frequency
         self.ctrl_dt = self.config["control_dt"]

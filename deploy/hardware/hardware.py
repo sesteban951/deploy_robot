@@ -132,8 +132,9 @@ class ControlNode(Node):
         # finite state machine state
         self.fsm_state = "init"
         self.prev_fsm_state = "init"
-        self.state_start_time = 0.0
-        self.state_start_q = np.zeros(G1_NUM_MOTOR)
+        self.fsm_start_time = 0.0
+        self.fsm_start_q = np.zeros(G1_NUM_MOTOR)
+        self.fsm_time = 0.0
 
         # other stuff from unitree's example
         self.time_ = 0.0
@@ -219,12 +220,13 @@ class ControlNode(Node):
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
         # ROS2 publishers
-        self.imu_state_pub = self.create_publisher(Float32MultiArray, "imu_state", 10)
-        self.joint_state_pub = self.create_publisher(Float32MultiArray, "joint_state", 10)
-        self.hardware_time_pub = self.create_publisher(Float64, "hardware_time", 10)
+        self.hardware_time_pub = self.create_publisher(Float64, "deploy_robot/hardware_time", 10)
+        self.fsm_time_pub = self.create_publisher(Float64, "deploy_robot/fsm_time", 10)
+        self.imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/imu_state", 10)
+        self.joint_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/joint_state", 10)
 
         # ROS2 subscribers
-        self.command_sub = self.create_subscription(Float32MultiArray, "command", self.command_callback, 10)
+        self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 10)
         self.fsm_sub = self.create_subscription(String, "deploy_robot/fsm", self.fsm_callback, 10)
 
         # sensor publish timer
@@ -308,10 +310,15 @@ class ControlNode(Node):
         time_msg = Float64()
         time_msg.data = self.time_
 
+        # fsm_time: time since entering current state
+        fsm_time_msg = Float64()
+        fsm_time_msg.data = self.fsm_time
+
         # publish to ROS2 topics
         self.imu_state_pub.publish(imu_msg)
         self.joint_state_pub.publish(joint_msg)
         self.hardware_time_pub.publish(time_msg)
+        self.fsm_time_pub.publish(fsm_time_msg)
 
 
     #################################################################
@@ -344,7 +351,8 @@ class ControlNode(Node):
 
     # main control loop to send low-level commands
     def LowCmdWrite(self):
-
+        
+        # update hardware time
         self.time_ += low_level_control_dt
 
         # read FSM state under lock
@@ -354,10 +362,13 @@ class ControlNode(Node):
         # detect state transition
         if fsm_state != self.prev_fsm_state:
             print(f"FSM: {self.prev_fsm_state} -> {fsm_state}")
-            self.state_start_time = self.time_
+            self.fsm_start_time = self.time_
             with self.sensor_lock:
-                self.state_start_q = self.q.copy()
+                self.fsm_start_q = self.q.copy()
             self.prev_fsm_state = fsm_state
+
+        # update fsm time
+        self.fsm_time = self.time_ - self.fsm_start_time
 
         # [init]: zero out all commands
         if fsm_state == "init":
@@ -385,17 +396,28 @@ class ControlNode(Node):
 
         # [home]: interpolate to default joint positions and gains
         elif fsm_state == "home":
-            elapsed = self.time_ - self.state_start_time
-            ratio = np.clip(elapsed / self.home_pos_duration, 0.0, 1.0)
+            ratio = np.clip(self.fsm_time / self.home_pos_duration, 0.0, 1.0)
             for i in range(G1_NUM_MOTOR):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
                 self.low_cmd.motor_cmd[i].mode = 1
                 self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.state_start_q[i] + ratio * self.default_joint_pos[i]
+                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.fsm_start_q[i] + ratio * self.default_joint_pos[i]
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
+
+        # [control]: hold default position for now
+        elif fsm_state == "control":
+            for i in range(G1_NUM_MOTOR):
+                self.low_cmd.mode_pr = Mode.PR
+                self.low_cmd.mode_machine = self.mode_machine_
+                self.low_cmd.motor_cmd[i].mode = 1
+                self.low_cmd.motor_cmd[i].tau = 0.0
+                self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
+                self.low_cmd.motor_cmd[i].dq = 0.0
+                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
+                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
         # # [Stage 0]: interpolate to default joint positions
         # if self.time_ < self.interp_default_pos_duration :

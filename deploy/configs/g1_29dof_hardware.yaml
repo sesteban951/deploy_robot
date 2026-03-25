@@ -1,6 +1,6 @@
 
 # interpolate to default position duration
-home_pos_duration: 5.0  # [sec]
+home_pos_duration: 3.0  # [sec]
 
 # default joint positions
 default_joint_pos: [
