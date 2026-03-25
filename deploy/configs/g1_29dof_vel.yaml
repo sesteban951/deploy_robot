@@ -32,4 +32,4 @@ action_scale: [0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
                0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075]
 
 control_dt: 0.02
-cmd_scale: [1.0, 1.0, 0.75] # mjlab doesnt use this, but can scale
+cmd_scale: [0.5, 0.5, 0.25] # mjlab doesnt use this, but can scale
