@@ -30,6 +30,7 @@ from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitial
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import IMUState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
@@ -84,7 +85,7 @@ class Mode:
     AB = 1  # Parallel Control for A/B Joints
 
 # low-level control frequency 
-low_level_control_dt = 0.001  # [sec]
+low_level_control_dt = 0.002  # [sec]
 
 # ROS2 sensor publishing frequency
 ros_sensor_publish_dt = 0.01  # [sec]
@@ -106,10 +107,14 @@ class ControlNode(Node):
         self.load_params()
 
         # IMU states
-        self.imu_rpy = None            # roll, pitch, yaw
-        self.imu_quaternion = None     # orientation
-        self.imu_gyroscope = None      # angular velocity
-        self.imu_accelerometer = None  # linear acceleration
+        self.pelvis_imu_rpy = None            # roll, pitch, yaw
+        self.pelvis_imu_quaternion = None     # orientation
+        self.pelvis_imu_gyroscope = None      # angular velocity
+        self.pelvis_imu_accelerometer = None  # linear acceleration
+        self.torso_imu_rpy = None
+        self.torso_imu_quaternion = None
+        self.torso_imu_gyroscope = None
+        self.torso_imu_accelerometer = None
 
         # Joint states
         self.q = np.zeros(G1_NUM_MOTOR)        # joint positions
@@ -213,17 +218,20 @@ class ControlNode(Node):
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.lowcmd_publisher_.Init()
 
-        # create subscriber #
+        # create subscribers
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self.LowStateHandler, 10)
+        self.torso_imu_subscriber = ChannelSubscriber("rt/secondary_imu", IMUState_)
+        self.torso_imu_subscriber.Init(self.TorsoIMUHandler, 10)
 
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
         # ROS2 publishers
         self.hardware_time_pub = self.create_publisher(Float64, "deploy_robot/hardware_time", 10)
         self.fsm_time_pub = self.create_publisher(Float64, "deploy_robot/fsm_time", 10)
-        self.imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/imu_state", 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/joint_state", 10)
+        self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/pelvis_imu_state", 10)
+        self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/torso_imu_state", 10)
 
         # ROS2 subscribers
         self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 10)
@@ -287,20 +295,27 @@ class ControlNode(Node):
     def publish_sensor_data(self):
         # read sensor data under lock
         with self.sensor_lock:
+            # pelvis IMU state
+            pelvis_imu_rpy = np.array(self.pelvis_imu_rpy, dtype=np.float64) if self.pelvis_imu_rpy is not None else np.zeros(3)
+            pelvis_imu_quat = np.array(self.pelvis_imu_quaternion, dtype=np.float64) if self.pelvis_imu_quaternion is not None else np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            pelvis_imu_gyro = np.array(self.pelvis_imu_gyroscope, dtype=np.float64) if self.pelvis_imu_gyroscope is not None else np.zeros(3)
+            pelvis_imu_accel = np.array(self.pelvis_imu_accelerometer, dtype=np.float64) if self.pelvis_imu_accelerometer is not None else np.zeros(3)
+            # torso IMU state
+            torso_imu_rpy = np.array(self.torso_imu_rpy, dtype=np.float64) if self.torso_imu_rpy is not None else np.zeros(3)
+            torso_imu_quat = np.array(self.torso_imu_quaternion, dtype=np.float64) if self.torso_imu_quaternion is not None else np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            torso_imu_gyro = np.array(self.torso_imu_gyroscope, dtype=np.float64) if self.torso_imu_gyroscope is not None else np.zeros(3)
+            torso_imu_accel = np.array(self.torso_imu_accelerometer, dtype=np.float64) if self.torso_imu_accelerometer is not None else np.zeros(3)
             # joint state
             q = self.q.copy()
             dq = self.dq.copy()
             ddq = self.ddq.copy()
             tau_est = self.tau_est.copy()
-            # IMU state
-            imu_rpy = np.array(self.imu_rpy, dtype=np.float64) if self.imu_rpy is not None else np.zeros(3)
-            imu_quat = np.array(self.imu_quaternion, dtype=np.float64) if self.imu_quaternion is not None else np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-            imu_gyro = np.array(self.imu_gyroscope, dtype=np.float64) if self.imu_gyroscope is not None else np.zeros(3)
-            imu_accel = np.array(self.imu_accelerometer, dtype=np.float64) if self.imu_accelerometer is not None else np.zeros(3)
 
         # imu_state: [rpy(3), quaternion(4), gyroscope(3), accelerometer(3)] = 13 floats
-        imu_msg = Float32MultiArray()
-        imu_msg.data = np.concatenate([imu_rpy, imu_quat, imu_gyro, imu_accel]).tolist()
+        pelvis_imu_msg = Float32MultiArray()
+        pelvis_imu_msg.data = np.concatenate([pelvis_imu_rpy, pelvis_imu_quat, pelvis_imu_gyro, pelvis_imu_accel]).tolist()
+        torso_imu_msg = Float32MultiArray()
+        torso_imu_msg.data = np.concatenate([torso_imu_rpy, torso_imu_quat, torso_imu_gyro, torso_imu_accel]).tolist()
 
         # joint_state: [q(29), dq(29), ddq(29), tau_est(29)] = 116 floats
         joint_msg = Float32MultiArray()
@@ -315,7 +330,8 @@ class ControlNode(Node):
         fsm_time_msg.data = self.fsm_time
 
         # publish to ROS2 topics
-        self.imu_state_pub.publish(imu_msg)
+        self.pelvis_imu_state_pub.publish(pelvis_imu_msg)
+        self.torso_imu_state_pub.publish(torso_imu_msg)
         self.joint_state_pub.publish(joint_msg)
         self.hardware_time_pub.publish(time_msg)
         self.fsm_time_pub.publish(fsm_time_msg)
@@ -336,10 +352,10 @@ class ControlNode(Node):
         # update sensor states under lock
         with self.sensor_lock:
             # update IMU states
-            self.imu_rpy = self.low_state.imu_state.rpy
-            self.imu_quaternion = self.low_state.imu_state.quaternion
-            self.imu_gyroscope = self.low_state.imu_state.gyroscope
-            self.imu_accelerometer = self.low_state.imu_state.accelerometer
+            self.pelvis_imu_rpy = self.low_state.imu_state.rpy
+            self.pelvis_imu_quaternion = self.low_state.imu_state.quaternion
+            self.pelvis_imu_gyroscope = self.low_state.imu_state.gyroscope
+            self.pelvis_imu_accelerometer = self.low_state.imu_state.accelerometer
 
             # update joint states
             for i in range(G1_NUM_MOTOR):
@@ -347,6 +363,15 @@ class ControlNode(Node):
                 self.dq[i] = self.low_state.motor_state[i].dq
                 self.ddq[i] = self.low_state.motor_state[i].ddq
                 self.tau_est[i] = self.low_state.motor_state[i].tau_est
+
+
+    # callback to receive torso IMU messages
+    def TorsoIMUHandler(self, msg: IMUState_):
+        with self.sensor_lock:
+            self.torso_imu_rpy = msg.rpy
+            self.torso_imu_quaternion = msg.quaternion
+            self.torso_imu_gyroscope = msg.gyroscope
+            self.torso_imu_accelerometer = msg.accelerometer
 
 
     # main control loop to send low-level commands
@@ -418,37 +443,6 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = self.Kd[i]
-
-        # # [Stage 0]: interpolate to default joint positions
-        # if self.time_ < self.interp_default_pos_duration :
-        #     ratio = np.clip(self.time_ / self.interp_default_pos_duration, 0.0, 1.0)
-        #     if self.fsm_state == -1:
-        #         print(f"[Stage 0]: Interpolating to default joint positions ({self.interp_default_pos_duration:.1f}s)...")
-        #         self.fsm_state = 0
-        #     for i in range(G1_NUM_MOTOR):
-        #         self.low_cmd.mode_pr = Mode.PR
-        #         self.low_cmd.mode_machine = self.mode_machine_
-        #         self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
-        #         self.low_cmd.motor_cmd[i].tau = 0.
-        #         self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.low_state.motor_state[i].q + ratio * self.default_joint_pos[i]
-        #         self.low_cmd.motor_cmd[i].dq = 0.
-        #         self.low_cmd.motor_cmd[i].kp = self.Kp[i]
-        #         self.low_cmd.motor_cmd[i].kd = self.Kd[i]
-
-        # # [Stage 1]: hold default joint positions
-        # elif self.time_ < self.interp_default_pos_duration + self.hold_default_pos_duration:
-        #     if self.fsm_state == 0:
-        #         print(f"[Stage 1]: Holding default joint positions ({self.hold_default_pos_duration:.1f}s)...")
-        #         self.fsm_state = 1
-        #     for i in range(G1_NUM_MOTOR):
-        #         self.low_cmd.mode_pr = Mode.PR
-        #         self.low_cmd.mode_machine = self.mode_machine_
-        #         self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
-        #         self.low_cmd.motor_cmd[i].tau = 0.
-        #         self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
-        #         self.low_cmd.motor_cmd[i].dq = 0.
-        #         self.low_cmd.motor_cmd[i].kp = self.Kp[i]
-        #         self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
         # # [Stage 2]: control loop (reads from ROS2 command subscriber)
         # else:
