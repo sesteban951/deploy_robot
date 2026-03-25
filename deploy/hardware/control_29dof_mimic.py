@@ -15,7 +15,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray, String
 
 # directory imports
 import sys
@@ -57,7 +57,8 @@ class ControlNode(Node):
         # ROS subscribers
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
+        self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
+        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
 
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
@@ -67,7 +68,8 @@ class ControlNode(Node):
         self.pelvis_omega = np.zeros(3, dtype=np.float32)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
-        self.sim_time = 0.0
+        self.fsm_state = "init"
+        self.fsm_time = 0.0
 
         # initialize the action
         self.action = np.zeros(self.act_size)
@@ -149,22 +151,32 @@ class ControlNode(Node):
     # CALLBACKS
     #################################################################
 
-    # pelvis IMU data: [quat(4), gyro(3), acc(3)]
+    # FSM state
+    def fsm_callback(self, msg):
+        self.fsm_state = msg.data
+
+
+    # fsm time — only count time when in "control" state
+    def time_callback(self, msg):
+        if self.fsm_state == "control":
+            self.fsm_time = msg.data
+        else:
+            self.fsm_time = 0.0
+
+
+    # pelvis IMU data: [rpy(3), quat(4), gyro(3), accel(3)]
     def pelvis_imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        self.pelvis_quat = data[:4]
-        self.pelvis_omega = data[4:7]
+        self.pelvis_quat = data[3:7]
+        self.pelvis_omega = data[7:10]
 
-    # joint data: [qpos(n), qvel(n)]
+
+    # joint data: [q(29), dq(29), ddq(29), tau_est(29)] — we only need q and dq
     def joint_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
         n = len(self.qpos_joints_default)
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
-
-    # sim time
-    def time_callback(self, msg):
-        self.sim_time = msg.data
 
 
     #################################################################
@@ -176,7 +188,8 @@ class ControlNode(Node):
     def build_observation(self):
 
         # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
-        frame = int(self.sim_time / self.ctrl_dt) % self.motion_num_frames
+        # frame = int(self.fsm_time / self.ctrl_dt) % self.motion_num_frames
+        frame = 0
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
@@ -216,20 +229,25 @@ class ControlNode(Node):
     # control published at the control frequency
     def control_callback(self):
 
+        # only run policy when in "control" state
+        if self.fsm_state != "control":
+            self.action = np.zeros(self.act_size)
+            return
+
         # get the current observation and motion frame index
         obs, frame = self.build_observation()
 
         # target joint positions (PD control)
         self.action = self.policy.inference(obs, time_step=frame)
 
-        # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
+        # build the command: [qpos_des, qvel_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
         qvel_des = np.zeros(self.act_size, dtype=np.float32)
         tau_ff = np.zeros(self.act_size, dtype=np.float32)
 
         # publish the command
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = np.concatenate([qpos_des, qvel_des, tau_ff, self.Kp, self.Kd]).tolist()
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
 
