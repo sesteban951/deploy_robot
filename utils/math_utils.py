@@ -11,6 +11,23 @@ import numpy as np
 # ROTATION HELPERS
 ############################################################################
 
+def quat_to_rpy(q):
+    """Convert quaternion to roll, pitch, yaw. Format: [w, x, y, z]."""
+    w, x, y, z = q
+    # roll (x-axis)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+    # pitch (y-axis)
+    sinp = 2.0 * (w * y - z * x)
+    pitch = np.arcsin(np.clip(sinp, -1.0, 1.0))
+    # yaw (z-axis)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+    return np.array([roll, pitch, yaw])
+
+
 def quat_conjugate(q):
     """Quaternion conjugate. Format: [w, x, y, z]."""
     return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float32)

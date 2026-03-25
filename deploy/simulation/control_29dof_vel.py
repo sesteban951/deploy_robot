@@ -147,20 +147,20 @@ class ControlNode(Node):
         # update the command with the scaling
         self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
 
-    # pelvis IMU data: [quat(4), gyro(3), acc(3)]
+    # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def pelvis_imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        self.quat = data[:4]
-        self.omega = data[4:7]
+        self.quat = data[3:7]
+        self.omega = data[7:10]
 
-    # joint data: [qpos(n), qvel(n)]
+    # joint data: [q(n), dq(n), ddq(n), tau_est(n)]
     def joint_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
         n = len(self.qpos_joints_default)
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # sim time
+    # hardware time
     def time_callback(self, msg):
         self.sim_time = msg.data
 
@@ -208,14 +208,14 @@ class ControlNode(Node):
         # target joint positions (PD control)
         self.action = self.policy.inference(obs)
 
-        # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
+        # build the command: [q_des, dq_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
         qvel_des = np.zeros(self.act_size, dtype=np.float32)
         tau_ff = np.zeros(self.act_size, dtype=np.float32)
 
         # publish the command
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = np.concatenate([qpos_des, qvel_des, tau_ff, self.Kp, self.Kd]).tolist()
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
 

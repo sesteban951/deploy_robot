@@ -22,8 +22,13 @@ from rclpy.node import Node
 from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
+import sys
 import os
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
+sys.path.append(ROOT_DIR)
+
+# custom imports
+from utils.math_utils import quat_to_rpy
 
 
 ############################################################################
@@ -52,7 +57,6 @@ class SimulationNode(Node):
         self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/pelvis_imu_state', 10)
         self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/torso_imu_state', 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
-        self.base_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/base_state', 10) # (fake, not for hardware)
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
 
         # ROS subscribers
@@ -66,22 +70,21 @@ class SimulationNode(Node):
         self.Kp = np.zeros(self.nu)
         self.Kd = np.zeros(self.nu)
 
-        # create a timer to run the simulation loop 
+        # create a timer to run the simulation loop
         sim_period = 0.0 # run as fast as possible, real-time sync is handled in the loop
         self.timer = self.create_timer(sim_period, self.step_simulation)
 
         # create timers for publishing
-        imu_state_period = self.sim_dt  
+        imu_state_period = self.sim_dt
         joint_state_period = self.sim_dt
-        base_state_period = self.sim_dt
         self.pelvis_imu_timer = self.create_timer(imu_state_period, self.publish_pelvis_imu)
         self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
-        self.base_state_timer = self.create_timer(base_state_period, self.publish_base_state)
 
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
-        print("    Press [Shift + Tab] to toggle the right UI.") 
+        print("    Press [Shift + Tab] to toggle the right UI.")
+
 
     #################################################################
     # INITIALIZATION
@@ -95,7 +98,7 @@ class SimulationNode(Node):
             config = yaml.safe_load(f)
 
         return config
-    
+
 
     # load policy params
     def init_params(self):
@@ -106,7 +109,7 @@ class SimulationNode(Node):
 
 
     # initialize the mujoco simulation
-    def init_simulation(self):        
+    def init_simulation(self):
         # load the XML path
         models_path = ROOT_DIR + "/models/"
         xml_path = models_path + self.config['xml_path']
@@ -157,7 +160,7 @@ class SimulationNode(Node):
             'mjFONTSCALE_250',
             getattr(mujoco.mjtFontScale, 'mjFONTSCALE_200', mujoco.mjtFontScale.mjFONTSCALE_150),
         )
-        
+
         # camera settings
         self.viewer.cam.azimuth   = 135    # degrees, horizontal rotation
         self.viewer.cam.elevation = -20    # degrees, negative looks down
@@ -168,66 +171,59 @@ class SimulationNode(Node):
         self._last_viewer_sync = 0.0
         self._real_start_time = time.perf_counter()
         self._next_step_deadline = self._real_start_time + self.sim_dt
-    
+
 
     #################################################################
     # PUBLISHING AND CALLBACKS
     #################################################################
 
-    # command callback: [qpos_des, qvel_des, tau_ff, kp, kd] (nu * 5)
+    # command callback: [q_des, dq_des, Kp, Kd, tau_ff] (nu * 5)
     def command_callback(self, msg):
         data = np.array(msg.data)
-        
-        # unpack the command
+
+        # unpack the command (same order as hardware)
         self.command_received = True
         self.qpos_des = data[0*self.nu : 1*self.nu]
         self.qvel_des = data[1*self.nu : 2*self.nu]
-        self.tau_ff   = data[2*self.nu : 3*self.nu]
-        self.Kp       = data[3*self.nu : 4*self.nu]
-        self.Kd       = data[4*self.nu : 5*self.nu]
+        self.Kp       = data[2*self.nu : 3*self.nu]
+        self.Kd       = data[3*self.nu : 4*self.nu]
+        self.tau_ff   = data[4*self.nu : 5*self.nu]
 
 
-    # publish pelvis IMU: [quat(4), gyro(3), acc(3)]
+    # publish pelvis IMU: [rpy(3), quat(4), gyro(3), acc(3)]
     def publish_pelvis_imu(self):
         pelvis_quat = self.mj_data.sensor('pelvis_imu_quat_sensor').data.copy()
         pelvis_gyro = self.mj_data.sensor('pelvis_imu_gyro_sensor').data.copy()
         pelvis_acc  = self.mj_data.sensor('pelvis_imu_acc_sensor').data.copy()
+        pelvis_rpy  = quat_to_rpy(pelvis_quat)
 
         pelvis_msg = Float32MultiArray()
-        pelvis_msg.data = np.concatenate([pelvis_quat, pelvis_gyro, pelvis_acc]).tolist()
+        pelvis_msg.data = np.concatenate([pelvis_rpy, pelvis_quat, pelvis_gyro, pelvis_acc]).tolist()
         self.pelvis_imu_state_pub.publish(pelvis_msg)
 
-    # publish torso IMU: [quat(4), gyro(3), acc(3)]
+    # publish torso IMU: [rpy(3), quat(4), gyro(3), acc(3)]
     def publish_torso_imu(self):
         torso_quat = self.mj_data.sensor('torso_imu_quat_sensor').data.copy()
         torso_gyro = self.mj_data.sensor('torso_imu_gyro_sensor').data.copy()
         torso_acc  = self.mj_data.sensor('torso_imu_acc_sensor').data.copy()
+        torso_rpy  = quat_to_rpy(torso_quat)
 
         torso_msg = Float32MultiArray()
-        torso_msg.data = np.concatenate([torso_quat, torso_gyro, torso_acc]).tolist()
+        torso_msg.data = np.concatenate([torso_rpy, torso_quat, torso_gyro, torso_acc]).tolist()
         self.torso_imu_state_pub.publish(torso_msg)
 
 
-    # publish joint state data from sensors
+    # publish joint state: [q(nu), dq(nu), ddq(nu), tau_est(nu)]
     def publish_joint_state(self):
         qpos_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_pos_sensor_names])
         qvel_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_vel_sensor_names])
+        ddq_joints = np.zeros(self.nu)  # NOTE: no such thing as joint acceleration sensors in Mujoco, so we publish zeros here
+        tau_est_joints = self.mj_data.ctrl[:self.nu].copy()
 
         joint_state_msg = Float32MultiArray()
-        joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints]).tolist()
+        joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints, ddq_joints, tau_est_joints]).tolist()
 
         self.joint_state_pub.publish(joint_state_msg)
-
-    # publish base state: [pos(3), quat(4), lin_vel(3), ang_vel(3)] (fake, not for hardware)
-    def publish_base_state(self):
-        pos = self.mj_data.qpos[:3].copy()            # world-frame position
-        quat = self.mj_data.qpos[3:7].copy()          # world-frame orientation (w,x,y,z)
-        lin_vel = self.mj_data.qvel[:3].copy()         # world-frame linear velocity
-        ang_vel = self.mj_data.qvel[3:6].copy()        # world-frame angular velocity
-
-        msg = Float32MultiArray()
-        msg.data = np.concatenate([pos, quat, lin_vel, ang_vel]).tolist()
-        self.base_state_pub.publish(msg)
 
     #################################################################
     # SIMULATION
@@ -261,7 +257,7 @@ class SimulationNode(Node):
         # step the simulation
         mujoco.mj_step(self.mj_model, self.mj_data)
 
-        # publish sim time
+        # publish simulation time
         time_msg = Float64()
         time_msg.data = self.mj_data.time
         self.simulation_time_pub.publish(time_msg)
@@ -280,7 +276,7 @@ class SimulationNode(Node):
                 f"Sim time:   {self.mj_data.time:.2f}s\nReal time: {real_elapsed:.2f}s",
                 "",
             ))
-            
+
             self._last_viewer_sync = now
 
         # Real-time sync against an absolute schedule so drift does not accumulate.
