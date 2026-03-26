@@ -30,6 +30,21 @@ from utils.policy import Policy
 
 
 ############################################################################
+# JOINT MAPPING FOR REDUCED POLICIES
+############################################################################
+
+# Indices of joints removed in the 23-DOF policy (out of the full 29-DOF):
+#   waist_roll(13), waist_pitch(14),
+#   left_wrist_pitch(20), left_wrist_yaw(21),
+#   right_wrist_pitch(27), right_wrist_yaw(28)
+REMOVED_JOINTS_23DOF = [13, 14, 20, 21, 27, 28]
+
+# High PD gains to lock removed joints at their default position
+LOCK_KP = 200.0
+LOCK_KD = 10.0
+
+
+############################################################################
 # CONTROLLER NODE
 ############################################################################
 
@@ -102,7 +117,7 @@ class ControlNode(Node):
         self.qpos_joints_default = np.array(self.config['default_joint_pos'])
 
         # scaling params
-        self.action_scale = self.config["action_scale"]
+        self.action_scale = np.array(self.config["action_scale"], dtype=np.float32)
         self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
 
         # PD gains
@@ -123,10 +138,35 @@ class ControlNode(Node):
         self.obs_size = self.policy.input_size
         self.act_size = self.policy.output_size
 
+        # joint mapping: determine which joints the policy controls
+        self.num_full_joints = len(self.qpos_joints_default)
+        self.num_policy_joints = self.act_size
+
+        if self.num_policy_joints == self.num_full_joints:
+            # full policy — all joints are controlled
+            self._policy_joint_idx = np.arange(self.num_full_joints)
+            self._removed_joint_idx = np.array([], dtype=int)
+        elif self.num_policy_joints == 23:
+            # 23-DOF policy — lock removed joints at default
+            self._removed_joint_idx = np.array(REMOVED_JOINTS_23DOF)
+            self._policy_joint_idx = np.array(
+                [i for i in range(self.num_full_joints) if i not in REMOVED_JOINTS_23DOF]
+            )
+            self.Kp[self._removed_joint_idx] = LOCK_KP
+            self.Kd[self._removed_joint_idx] = LOCK_KD
+        else:
+            raise ValueError(
+                f"Unsupported policy joint count: {self.num_policy_joints} "
+                f"(expected {self.num_full_joints} or 23)"
+            )
+
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Policy type: {self.policy._policy_type}")
         print(f"    Input size: {self.obs_size}")
         print(f"    Output size: {self.act_size}")
+        print(f"    Full joints: {self.num_full_joints}, Policy joints: {self.num_policy_joints}")
+        if len(self._removed_joint_idx) > 0:
+            print(f"    Locked joints: {self._removed_joint_idx.tolist()} (Kp={LOCK_KP}, Kd={LOCK_KD})")
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
 
 
@@ -170,10 +210,11 @@ class ControlNode(Node):
         # base orientation state
         gravity_orientation = get_gravity_orientation(self.quat)
 
-        # joint position and velocity errors
-        qj = (self.qpos_joints - self.qpos_joints_default)
-        dqj = self.qvel_joints
-        
+        # joint position and velocity (select only the policy's joint subset)
+        idx = self._policy_joint_idx
+        qj = (self.qpos_joints - self.qpos_joints_default)[idx]
+        dqj = self.qvel_joints[idx]
+
         # gait phase clock
         phase = (self.sim_time % self.gait_period) / self.gait_period
         phase_right = (phase + self.gait_offset) % 1.0
@@ -187,7 +228,7 @@ class ControlNode(Node):
 
         # build the observation vector
         # ['base_ang_vel', 'projected_gravity', 'joint_pos', 'joint_vel', 'actions', 'command', 'gait_phase']
-        n = len(qj)
+        n = self.num_policy_joints
         obs = np.zeros(self.obs_size, dtype=np.float32)
         obs[0:3]             = self.omega
         obs[3:6]             = gravity_orientation
@@ -208,10 +249,14 @@ class ControlNode(Node):
         # target joint positions (PD control)
         self.action = self.policy.inference(obs)
 
+        # expand policy actions to full joint space (removed joints stay at 0 → default pos)
+        full_action = np.zeros(self.num_full_joints, dtype=np.float32)
+        full_action[self._policy_joint_idx] = self.action
+
         # build the command: [q_des, dq_des, Kp, Kd, tau_ff]
-        qpos_des = self.action * self.action_scale + self.qpos_joints_default
-        qvel_des = np.zeros(self.act_size, dtype=np.float32)
-        tau_ff = np.zeros(self.act_size, dtype=np.float32)
+        qpos_des = full_action * self.action_scale + self.qpos_joints_default
+        qvel_des = np.zeros(self.num_full_joints, dtype=np.float32)
+        tau_ff = np.zeros(self.num_full_joints, dtype=np.float32)
 
         # publish the command
         cmd_msg = Float32MultiArray()
