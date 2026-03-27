@@ -9,6 +9,7 @@
 import argparse
 
 # other imports
+import mujoco
 import numpy as np
 import yaml
 
@@ -28,8 +29,20 @@ from utils.policy import Policy
 from utils.math_utils import (
     quat_conjugate,
     quat_multiply,
+    quat_to_rotation_matrix,
     quat_to_rot6d,
 )
+
+
+############################################################################
+# JOINT MAPPING FOR REDUCED POLICIES
+############################################################################
+
+# Indices of joints removed in the 23-DOF policy (out of the full 29-DOF):
+#   waist_roll(13), waist_pitch(14),
+#   left_wrist_pitch(20), left_wrist_yaw(21),
+#   right_wrist_pitch(27), right_wrist_yaw(28)
+REMOVED_JOINTS_23DOF = [13, 14, 20, 21, 27, 28]
 
 
 ############################################################################
@@ -58,6 +71,7 @@ class ControlNode(Node):
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
         self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
+        self.body_state_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/body_state', self.body_state_callback, 10)
 
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
@@ -68,6 +82,11 @@ class ControlNode(Node):
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.sim_time = 0.0
+
+        # body state (from simulation body_state topic)
+        self.body_xpos_w = np.zeros((self._mj_nbody, 3), dtype=np.float32)
+        self.body_xquat_w = np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (self._mj_nbody, 1))
+        self.base_lin_vel_w = np.zeros(3, dtype=np.float32)
 
         # initialize the action
         self.action = np.zeros(self.act_size)
@@ -117,10 +136,33 @@ class ControlNode(Node):
         self.obs_size = self.policy.input_size
         self.act_size = self.policy.output_size
 
+        # joint mapping: determine which joints the policy controls
+        self.num_full_joints = len(self.qpos_joints_default)
+        self.num_policy_joints = self.act_size
+
+        if self.num_policy_joints == self.num_full_joints:
+            # full policy — all joints are controlled
+            self._policy_joint_idx = np.arange(self.num_full_joints)
+            self._removed_joint_idx = np.array([], dtype=int)
+        elif self.num_policy_joints == 23:
+            # 23-DOF policy — removed joints hold default pos with nominal config gains
+            self._removed_joint_idx = np.array(REMOVED_JOINTS_23DOF)
+            self._policy_joint_idx = np.array(
+                [i for i in range(self.num_full_joints) if i not in REMOVED_JOINTS_23DOF]
+            )
+        else:
+            raise ValueError(
+                f"Unsupported policy joint count: {self.num_policy_joints} "
+                f"(expected {self.num_full_joints} or 23)"
+            )
+
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Policy type: {self.policy._policy_type}")
         print(f"    Input size: {self.obs_size}")
         print(f"    Output size: {self.act_size}")
+        print(f"    Full joints: {self.num_full_joints}, Policy joints: {self.num_policy_joints}")
+        if len(self._removed_joint_idx) > 0:
+            print(f"    Locked joints: {self._removed_joint_idx.tolist()} (using nominal config Kp/Kd)")
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
 
         # load motion reference data
@@ -129,6 +171,7 @@ class ControlNode(Node):
         self.motion_fps = float(motion['fps'])
         self.motion_joint_pos = motion['joint_pos'].astype(np.float32)
         self.motion_joint_vel = motion['joint_vel'].astype(np.float32)
+        self.motion_body_pos_w = motion['body_pos_w'].astype(np.float32)
         self.motion_body_quat_w = motion['body_quat_w'].astype(np.float32)
         self.motion_num_frames = self.motion_joint_pos.shape[0]
 
@@ -137,12 +180,25 @@ class ControlNode(Node):
         print(f"    Frames: {self.motion_num_frames}")
         print(f"    Duration: {self.motion_num_frames / self.motion_fps:.1f}s")
 
+        # load MuJoCo model for body name→index mapping
+        xml_path = ROOT_DIR + "/models/" + self.config['xml_path']
+        mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        self._mj_nbody = mj_model.nbody
+
         # find anchor body index in the motion file using body_names from policy metadata
         anchor_name = self.policy.metadata.get('anchor_body_name', 'pelvis')
         body_names = self.policy.metadata.get('body_names')
         self.anchor_body_idx = body_names.index(anchor_name)
 
+        # map policy body_names to MuJoCo body indices (for body_state topic)
+        self._body_mj_indices = np.array([
+            mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in body_names
+        ], dtype=int)
+        self._pelvis_mj_idx = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'pelvis')
+
         print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
+        print(f"    Tracked bodies: {len(body_names)} -> MuJoCo indices {self._body_mj_indices.tolist()}")
 
 
     #################################################################
@@ -166,45 +222,74 @@ class ControlNode(Node):
     def time_callback(self, msg):
         self.sim_time = msg.data
 
+    # body state: [xpos(nbody*3), xquat(nbody*4), base_lin_vel_w(3)]
+    def body_state_callback(self, msg):
+        data = np.array(msg.data, dtype=np.float32)
+        nb = self._mj_nbody
+        self.body_xpos_w = data[:nb*3].reshape(nb, 3)
+        self.body_xquat_w = data[nb*3:nb*7].reshape(nb, 4)
+        self.base_lin_vel_w = data[nb*7:nb*7+3]
+
 
     #################################################################
     # OBSERVATION
     #################################################################
 
     # build the observation vector for the policy
-    # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
     def build_observation(self):
 
         # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
         frame = int(self.sim_time / self.ctrl_dt) % self.motion_num_frames
 
-        # --- command (58) : motion reference joint_pos + joint_vel ---
-        command = np.concatenate([
-            self.motion_joint_pos[frame],
-            self.motion_joint_vel[frame],
-        ])
+        # joint index for the policy subset
+        idx = self._policy_joint_idx
 
-        # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
+        # shared terms
+        base_quat_conj = quat_conjugate(self.pelvis_quat)
+
+        # --- motion_anchor_ori_b (6) ---
         motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
-        rel_quat = quat_multiply(quat_conjugate(self.pelvis_quat), motion_anchor_quat_w)
-        anchor_ori_b = quat_to_rot6d(rel_quat)
+        anchor_ori_b = quat_to_rot6d(quat_multiply(base_quat_conj, motion_anchor_quat_w))
 
-        # --- base_ang_vel (3) : angular velocity in pelvis frame (from pelvis IMU gyro) ---
+        # --- joint obs (policy joints only) ---
+        qj = (self.qpos_joints - self.qpos_joints_default)[idx]
+        dqj = self.qvel_joints[idx]
         base_ang_vel_b = self.pelvis_omega
 
-        # --- joint_pos (29) : relative to default ---
-        qj = self.qpos_joints - self.qpos_joints_default
+        if self.num_policy_joints == self.num_full_joints:
+            # 29-DOF obs: [command(58), anchor_ori(6), ang_vel(3), qj(29), dqj(29), act(29)] = 154
+            command = np.concatenate([
+                self.motion_joint_pos[frame],
+                self.motion_joint_vel[frame],
+            ])
+            obs = np.concatenate([
+                command, anchor_ori_b, base_ang_vel_b,
+                qj, dqj, self.action,
+            ]).astype(np.float32)
+        else:
+            # 23-DOF obs: [command(46), anchor_pos(3), anchor_ori(6),
+            #              lin_vel(3), ang_vel(3), qj(23), dqj(23), act(23)] = 130
+            R_base = quat_to_rotation_matrix(self.pelvis_quat)
+            base_pos_w = self.body_xpos_w[self._pelvis_mj_idx]
 
-        # --- joint_vel (29) ---
-        dqj = self.qvel_joints
+            # --- command (46) : motion joint_pos + joint_vel (policy joints only) ---
+            command = np.concatenate([
+                self.motion_joint_pos[frame][idx],
+                self.motion_joint_vel[frame][idx],
+            ])
 
-        # --- actions (29) : previous action ---
-        # concatenate: 58 + 6 + 3 + 29 + 29 + 29 = 154
-        obs = np.concatenate([
-            command, anchor_ori_b,
-            base_ang_vel_b,
-            qj, dqj, self.action,
-        ]).astype(np.float32)
+            # --- motion_anchor_pos_b (3) ---
+            motion_anchor_pos_w = self.motion_body_pos_w[frame, self.anchor_body_idx]
+            anchor_pos_b = R_base.T @ (motion_anchor_pos_w - base_pos_w)
+
+            # --- base_lin_vel (3) : in base frame ---
+            base_lin_vel_b = R_base.T @ self.base_lin_vel_w
+
+            obs = np.concatenate([
+                command, anchor_pos_b, anchor_ori_b,
+                base_lin_vel_b, base_ang_vel_b,
+                qj, dqj, self.action,
+            ]).astype(np.float32)
 
         return obs, frame
 
@@ -222,10 +307,19 @@ class ControlNode(Node):
         # target joint positions (PD control)
         self.action = self.policy.inference(obs, time_step=frame)
 
-        # build the command: [q_des, dq_des, Kp, Kd, tau_ff]
-        qpos_des = self.action * self.action_scale + self.qpos_joints_default
-        qvel_des = np.zeros(self.act_size, dtype=np.float32)
-        tau_ff = np.zeros(self.act_size, dtype=np.float32)
+        # expand policy actions to full joint space (removed joints stay at 0 → default pos)
+        full_action = np.zeros(self.num_full_joints, dtype=np.float32)
+        full_action[self._policy_joint_idx] = self.action
+
+        # build the command: [qpos_des, qvel_des, Kp, Kd, tau_ff]
+        qpos_des = full_action * self.action_scale + self.qpos_joints_default
+        qvel_des = np.zeros(self.num_full_joints, dtype=np.float32)
+        tau_ff = np.zeros(self.num_full_joints, dtype=np.float32)
+
+        # print action debug info
+        np.set_printoptions(precision=3, suppress=True, linewidth=200)
+        print(f"[frame {frame}] action (policy): {self.action}")
+        print(f"[frame {frame}] qpos_des (full): {qpos_des}")
 
         # publish the command
         cmd_msg = Float32MultiArray()

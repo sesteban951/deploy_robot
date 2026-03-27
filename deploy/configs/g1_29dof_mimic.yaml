@@ -1,5 +1,6 @@
 policy_path: "g1_29dof_mimic.onnx"
 xml_path: "g1_29dof_mjlab.xml"
+# policy_path: "g1_23dof_mimic.onnx"
 motion_path: "walk1_subject1.npz"
 
 # interpolate to default position duration
@@ -14,8 +15,8 @@ Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
 Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
       2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
       # 2.558, 1.814, 1.814,  # original gains
-      # 4.0, 2.814, 2.814, # overdamped
-      3.0, 1.814, 1.814,
+      4.0, 2.814, 2.814, # overdamped
+      # 3.0, 1.814, 1.814,
       0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
       0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
 

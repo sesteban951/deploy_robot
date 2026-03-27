@@ -248,6 +248,7 @@ class ControlNode(Node):
 
         # target joint positions (PD control)
         self.action = self.policy.inference(obs)
+        # print(f"Policy action (raw): {self.action}")
 
         # expand policy actions to full joint space (removed joints stay at 0 → default pos)
         full_action = np.zeros(self.num_full_joints, dtype=np.float32)

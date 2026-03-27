@@ -57,6 +57,7 @@ class SimulationNode(Node):
         self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/pelvis_imu_state', 10)
         self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/torso_imu_state', 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
+        self.body_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/body_state', 10)
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
 
         # ROS subscribers
@@ -80,6 +81,7 @@ class SimulationNode(Node):
         self.pelvis_imu_timer = self.create_timer(imu_state_period, self.publish_pelvis_imu)
         self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
+        self.body_state_timer = self.create_timer(joint_state_period, self.publish_body_state)
 
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
@@ -224,6 +226,17 @@ class SimulationNode(Node):
         joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints, ddq_joints, tau_est_joints]).tolist()
 
         self.joint_state_pub.publish(joint_state_msg)
+
+    # publish body state: [xpos(nbody*3), xquat(nbody*4), base_lin_vel_w(3)]
+    def publish_body_state(self):
+        nbody = self.mj_model.nbody
+        xpos = self.mj_data.xpos[:nbody].flatten()        # (nbody*3,)
+        xquat = self.mj_data.xquat[:nbody].flatten()      # (nbody*4,)
+        base_lin_vel_w = self.mj_data.qvel[:3].copy()      # (3,) world frame
+
+        body_state_msg = Float32MultiArray()
+        body_state_msg.data = np.concatenate([xpos, xquat, base_lin_vel_w]).tolist()
+        self.body_state_pub.publish(body_state_msg)
 
     #################################################################
     # SIMULATION

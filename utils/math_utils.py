@@ -59,11 +59,17 @@ def quat_to_rot6d(q):
     """Convert quaternion to 6D rotation encoding (first two columns of rotation matrix)."""
     rot = quat_to_rotation_matrix(q)
     return np.array([
-        rot[0,0], 
+        rot[0,0],
         rot[0,1],
-        rot[1,0], 
+        rot[1,0],
         rot[1,1],
-        rot[2,0], 
+        rot[2,0],
         rot[2,1]
     ], dtype=np.float32)
+
+
+def quat_rotate_inverse(q, v):
+    """Rotate vector v by the inverse of quaternion q (world→body). q format: [w, x, y, z]."""
+    R = quat_to_rotation_matrix(q)
+    return (R.T @ v).astype(np.float32)
 

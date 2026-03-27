@@ -41,6 +41,7 @@ if __name__ == "__main__":
 
     # extract some data
     fps = motion_traj["fps"]
+    # fps = 50.0
     qpos = motion_traj["joint_pos"]
     qvel = motion_traj["joint_vel"]
     body_pos_w = motion_traj["body_pos_w"]

@@ -89,7 +89,7 @@ class Mode:
 LOW_LEVEL_CONTROL_DT = 0.002  # [sec]
 
 # ROS2 sensor publishing frequency
-ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
+ROS_SENSOR_PUBLISH_DT = 0.02  # [sec]
 
 # safety: max allowable pelvis roll/pitch before forcing damp (when you fall)
 SAFETY_MAX_TILT = np.radians(30.0)  # [rad]
@@ -428,6 +428,8 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = 0.0
                 self.low_cmd.motor_cmd[i].kd = 0.0
+                # if i in [13,14]:  # waist joints, disable
+                #     self.low_cmd.motor_cmd[i].mode = 0
 
         # [damp]: Kd damping, no position tracking
         elif fsm_state == "damp":
@@ -440,6 +442,8 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = 0.0
                 self.low_cmd.motor_cmd[i].kd = 3.0
+                # if i in [13,14]:  # waist joints, disable
+                #     self.low_cmd.motor_cmd[i].mode = 0
 
         # [home]: interpolate to default joint positions and gains
         elif fsm_state == "home":
@@ -453,6 +457,8 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
+                # if i in [13,14]:  # waist joints, disable
+                #     self.low_cmd.motor_cmd[i].mode = 0
 
         # [control]: read from ROS2 command subscriber
         elif fsm_state == "control":
@@ -471,7 +477,8 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
                 self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
                 self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
-
+                # if i in [13,14]:  # waist joints, disable
+                #     self.low_cmd.motor_cmd[i].mode = 0
         # check sum commands for safety and then publish
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_publisher_.Write(self.low_cmd)
