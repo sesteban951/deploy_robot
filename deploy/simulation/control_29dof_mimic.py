@@ -318,8 +318,8 @@ class ControlNode(Node):
 
         # print action debug info
         np.set_printoptions(precision=3, suppress=True, linewidth=200)
-        print(f"[frame {frame}] action (policy): {self.action}")
-        print(f"[frame {frame}] qpos_des (full): {qpos_des}")
+        # print(f"[frame {frame}] action (policy): {self.action}")
+        # print(f"[frame {frame}] qpos_des (full): {qpos_des}")
 
         # publish the command
         cmd_msg = Float32MultiArray()

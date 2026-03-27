@@ -188,8 +188,8 @@ class ControlNode(Node):
     def build_observation(self):
 
         # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
-        # frame = int(self.fsm_time / self.ctrl_dt) % self.motion_num_frames
-        frame = 0
+        frame = int(self.fsm_time / self.ctrl_dt) % self.motion_num_frames
+        # frame = 0
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
