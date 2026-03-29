@@ -61,6 +61,10 @@ if __name__ == "__main__":
     n_frames = qpos.shape[0]
     times = np.arange(n_frames) / fps
 
+    # total motion time
+    total_time = times[-1]
+    print(f"Total motion time: {total_time:.2f} seconds.")
+
     # load the G1 mujoco model
     xml_path = ROOT_DIR + "/models/g1_29dof_mjlab.xml"
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
@@ -100,10 +104,11 @@ if __name__ == "__main__":
 
             # display playback time and speed
             playback_speed = elapsed / times[i] if times[i] > 0 else 0.0
+            progress = (i / (len(times) - 1)) * 100.0
             viewer.set_texts((
                 viewer_font_scale,
                 mujoco.mjtGridPos.mjGRID_TOPLEFT,
-                f"Motion time: {times[i]:.2f}s\nReal time:   {elapsed:.2f}s\nSpeed:       {playback_speed:.2f}x",
+                f"Motion time: {times[i]:.2f}s\nReal time:   {elapsed:.2f}s\nSpeed:       {playback_speed:.2f}x\nProgress:    {progress:.1f}%",
                 "",
             ))
 
