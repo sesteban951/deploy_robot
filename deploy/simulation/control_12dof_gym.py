@@ -23,7 +23,7 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.unitree_rotation import get_gravity_orientation
+from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
 
 
