@@ -67,3 +67,9 @@ def quat_to_rot6d(q):
         rot[2,1]
     ], dtype=np.float32)
 
+
+def yaw_quat(q):
+    """Extract the yaw-only quaternion from q=[w,x,y,z]. Matches mjlab/isaaclab yaw_quat."""
+    w, x, y, z = q
+    yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    return np.array([np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)], dtype=np.float32)

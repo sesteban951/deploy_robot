@@ -29,6 +29,7 @@ from utils.math_utils import (
     quat_conjugate,
     quat_multiply,
     quat_to_rot6d,
+    yaw_quat,
 )
 
 
@@ -73,6 +74,10 @@ class ControlNode(Node):
 
         # initialize the action
         self.action = np.zeros(self.act_size)
+
+        # yaw alignment between robot-at-policy-start and motion frame 0 (re-captured each time FSM enters "control")
+        self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.init_quat_captured = False
 
         print("Control node initialized.")
 
@@ -188,8 +193,8 @@ class ControlNode(Node):
     def build_observation(self):
 
         # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
-        # frame = int(self.fsm_time / self.ctrl_dt) % self.motion_num_frames
-        frame = 0
+        # fsm_time is reset to 0 when the FSM is not in "control", so it's already relative to policy start
+        frame = int(self.fsm_time / self.ctrl_dt) % self.motion_num_frames
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
@@ -198,8 +203,10 @@ class ControlNode(Node):
         ])
 
         # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
+        # apply the captured yaw offset so the motion is replayed in the robot's initial heading
         motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
-        rel_quat = quat_multiply(quat_conjugate(self.pelvis_quat), motion_anchor_quat_w)
+        ref_quat_corrected = quat_multiply(self.init_quat, motion_anchor_quat_w)
+        rel_quat = quat_multiply(quat_conjugate(self.pelvis_quat), ref_quat_corrected)
         anchor_ori_b = quat_to_rot6d(rel_quat)
 
         # --- base_ang_vel (3) : angular velocity in pelvis frame (from pelvis IMU gyro) ---
@@ -232,7 +239,17 @@ class ControlNode(Node):
         # only run policy when in "control" state
         if self.fsm_state != "control":
             self.action = np.zeros(self.act_size)
+            self.init_quat_captured = False
             return
+
+        # on the first control tick, align motion frame 0 with the robot's current yaw
+        if not self.init_quat_captured:
+            motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
+            self.init_quat = quat_multiply(
+                yaw_quat(self.pelvis_quat),
+                quat_conjugate(yaw_quat(motion_anchor_quat_0)),
+            )
+            self.init_quat_captured = True
 
         # get the current observation and motion frame index
         obs, frame = self.build_observation()
