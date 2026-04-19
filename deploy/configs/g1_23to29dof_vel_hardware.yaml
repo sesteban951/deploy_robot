@@ -37,4 +37,4 @@ control_dt: 0.02
 gait_period: 0.6
 stand_cmd_threshold: 0.0
 
-cmd_scale: [0.5, 0.5, 0.5] # mjlab doesnt use this, but can scale
+cmd_scale: [0.5, 0.0, 0.5] # mjlab doesnt use this, but can scale

@@ -2,3 +2,4 @@
 **/.vscode/
 **/.claude/
 **/MUJOCO_LOG.TXT
+**/*.h5
