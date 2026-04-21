@@ -1,5 +1,5 @@
 <mujoco model="g1_23dof_rev_1_0">
-  <compiler angle="radian" meshdir="assets/"/>
+  <compiler angle="radian" meshdir="meshes/"/>
 
   <size nkey="1"/>
 
@@ -223,39 +223,119 @@
   </contact>
 
   <actuator>
-    <general name="left_shoulder_pitch_joint" joint="left_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-4.84351 4.42471" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="left_shoulder_roll_joint" joint="left_shoulder_roll_joint" ctrllimited="false" ctrlrange="-3.34251 4.00581" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="left_shoulder_yaw_joint" joint="left_shoulder_yaw_joint" ctrllimited="false" ctrlrange="-4.37231 4.37231" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="left_elbow_joint" joint="left_elbow_joint" ctrllimited="false" ctrlrange="-2.80151 3.84871" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="left_wrist_roll_joint" joint="left_wrist_roll_joint" ctrllimited="false" ctrlrange="-3.72653 3.72653" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint" ctrllimited="false" ctrlrange="-4.84351 4.42471" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint" ctrllimited="false" ctrlrange="-4.00581 3.34251" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="right_shoulder_yaw_joint" joint="right_shoulder_yaw_joint" ctrllimited="false" ctrlrange="-4.37231 4.37231" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="right_elbow_joint" joint="right_elbow_joint" ctrllimited="false" ctrlrange="-2.80151 3.84871" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="right_wrist_roll_joint" joint="right_wrist_roll_joint" ctrllimited="false" ctrlrange="-3.72653 3.72653" forcelimited="true" forcerange="-25 25" biastype="affine" gainprm="14.2506" biasprm="0 -14.2506 -0.907223"/>
-    <general name="left_hip_pitch_joint" joint="left_hip_pitch_joint" ctrllimited="false" ctrlrange="-4.72089 5.06999" forcelimited="true" forcerange="-88 88" biastype="affine" gainprm="40.1792" biasprm="0 -40.1792 -2.55789"/>
-    <general name="left_hip_yaw_joint" joint="left_hip_yaw_joint" ctrllimited="false" ctrlrange="-4.94779 4.94779" forcelimited="true" forcerange="-88 88" biastype="affine" gainprm="40.1792" biasprm="0 -40.1792 -2.55789"/>
-    <general name="right_hip_pitch_joint" joint="right_hip_pitch_joint" ctrllimited="false" ctrlrange="-4.72089 5.06999" forcelimited="true" forcerange="-88 88" biastype="affine" gainprm="40.1792" biasprm="0 -40.1792 -2.55789"/>
-    <general name="right_hip_yaw_joint" joint="right_hip_yaw_joint" ctrllimited="false" ctrlrange="-4.94779 4.94779" forcelimited="true" forcerange="-88 88" biastype="affine" gainprm="40.1792" biasprm="0 -40.1792 -2.55789"/>
-    <general name="waist_yaw_joint" joint="waist_yaw_joint" ctrllimited="false" ctrlrange="-4.80819 4.80819" forcelimited="true" forcerange="-88 88" biastype="affine" gainprm="40.1792" biasprm="0 -40.1792 -2.55789"/>
-    <general name="left_hip_roll_joint" joint="left_hip_roll_joint" ctrllimited="false" ctrlrange="-1.92625 4.36975" forcelimited="true" forcerange="-139 139" biastype="affine" gainprm="99.0984" biasprm="0 -99.0984 -6.3088"/>
-    <general name="left_knee_joint" joint="left_knee_joint" ctrllimited="false" ctrlrange="-1.48991 4.28245" forcelimited="true" forcerange="-139 139" biastype="affine" gainprm="99.0984" biasprm="0 -99.0984 -6.3088"/>
-    <general name="right_hip_roll_joint" joint="right_hip_roll_joint" ctrllimited="false" ctrlrange="-4.36975 1.92625" forcelimited="true" forcerange="-139 139" biastype="affine" gainprm="99.0984" biasprm="0 -99.0984 -6.3088"/>
-    <general name="right_knee_joint" joint="right_knee_joint" ctrllimited="false" ctrlrange="-1.48991 4.28245" forcelimited="true" forcerange="-139 139" biastype="affine" gainprm="99.0984" biasprm="0 -99.0984 -6.3088"/>
-    <general name="left_ankle_pitch_joint" joint="left_ankle_pitch_joint" ctrllimited="false" ctrlrange="-2.62698 2.27791" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
-    <general name="left_ankle_roll_joint" joint="left_ankle_roll_joint" ctrllimited="false" ctrlrange="-2.01611 2.01611" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
-    <general name="right_ankle_pitch_joint" joint="right_ankle_pitch_joint" ctrllimited="false" ctrlrange="-2.62698 2.27791" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
-    <general name="right_ankle_roll_joint" joint="right_ankle_roll_joint" ctrllimited="false" ctrlrange="-2.01611 2.01611" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="28.5012" biasprm="0 -28.5012 -1.81445"/>
+    <motor name="left_hip_pitch_joint" joint="left_hip_pitch_joint" forcelimited="true" forcerange="-88 88"/>
+    <motor name="left_hip_roll_joint" joint="left_hip_roll_joint" forcelimited="true" forcerange="-139 139"/>
+    <motor name="left_hip_yaw_joint" joint="left_hip_yaw_joint" forcelimited="true" forcerange="-88 88"/>
+    <motor name="left_knee_joint" joint="left_knee_joint" forcelimited="true" forcerange="-139 139"/>
+    <motor name="left_ankle_pitch_joint" joint="left_ankle_pitch_joint" forcelimited="true" forcerange="-50 50"/>
+    <motor name="left_ankle_roll_joint" joint="left_ankle_roll_joint" forcelimited="true" forcerange="-50 50"/>
+    <motor name="right_hip_pitch_joint" joint="right_hip_pitch_joint" forcelimited="true" forcerange="-88 88"/>
+    <motor name="right_hip_roll_joint" joint="right_hip_roll_joint" forcelimited="true" forcerange="-139 139"/>
+    <motor name="right_hip_yaw_joint" joint="right_hip_yaw_joint" forcelimited="true" forcerange="-88 88"/>
+    <motor name="right_knee_joint" joint="right_knee_joint" forcelimited="true" forcerange="-139 139"/>
+    <motor name="right_ankle_pitch_joint" joint="right_ankle_pitch_joint" forcelimited="true" forcerange="-50 50"/>
+    <motor name="right_ankle_roll_joint" joint="right_ankle_roll_joint" forcelimited="true" forcerange="-50 50"/>
+    <motor name="waist_yaw_joint" joint="waist_yaw_joint" forcelimited="true" forcerange="-88 88"/>
+    <motor name="left_shoulder_pitch_joint" joint="left_shoulder_pitch_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="left_shoulder_roll_joint" joint="left_shoulder_roll_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="left_shoulder_yaw_joint" joint="left_shoulder_yaw_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="left_elbow_joint" joint="left_elbow_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="left_wrist_roll_joint" joint="left_wrist_roll_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="right_shoulder_yaw_joint" joint="right_shoulder_yaw_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="right_elbow_joint" joint="right_elbow_joint" forcelimited="true" forcerange="-25 25"/>
+    <motor name="right_wrist_roll_joint" joint="right_wrist_roll_joint" forcelimited="true" forcerange="-25 25"/>
   </actuator>
 
   <sensor>
-    <gyro site="imu_in_pelvis" name="imu_ang_vel"/>
-    <velocimeter site="imu_in_pelvis" name="imu_lin_vel"/>
-    <accelerometer site="imu_in_pelvis" name="imu_lin_acc"/>
-    <subtreeangmom body="pelvis" name="root_angmom"/>
+    <!-- torso IMU -->
+    <framequat name="torso_imu_quat_sensor" objtype="site" objname="imu_in_torso" noise="0.01"/>
+    <gyro name="torso_imu_gyro_sensor" site="imu_in_torso" noise="0.05"/>
+    <accelerometer name="torso_imu_acc_sensor" site="imu_in_torso" noise="0.1"/>
+
+    <!-- pelvis IMU -->
+    <framequat name="pelvis_imu_quat_sensor" objtype="site" objname="imu_in_pelvis" noise="0.01"/>
+    <gyro name="pelvis_imu_gyro_sensor" site="imu_in_pelvis" noise="0.05"/>
+    <accelerometer name="pelvis_imu_acc_sensor" site="imu_in_pelvis" noise="0.1"/>
+
+    <!-- Left Leg -->
+    <jointpos name="left_hip_pitch_joint_pos_sensor" joint="left_hip_pitch_joint" noise="0.01"/>
+    <jointpos name="left_hip_roll_joint_pos_sensor" joint="left_hip_roll_joint" noise="0.01"/>
+    <jointpos name="left_hip_yaw_joint_pos_sensor" joint="left_hip_yaw_joint" noise="0.01"/>
+    <jointpos name="left_knee_joint_pos_sensor" joint="left_knee_joint" noise="0.01"/>
+    <jointpos name="left_ankle_pitch_joint_pos_sensor" joint="left_ankle_pitch_joint" noise="0.01"/>
+    <jointpos name="left_ankle_roll_joint_pos_sensor" joint="left_ankle_roll_joint" noise="0.01"/>
+    <jointvel name="left_hip_pitch_joint_vel_sensor" joint="left_hip_pitch_joint" noise="0.01"/>
+    <jointvel name="left_hip_roll_joint_vel_sensor" joint="left_hip_roll_joint" noise="0.01"/>
+    <jointvel name="left_hip_yaw_joint_vel_sensor" joint="left_hip_yaw_joint" noise="0.01"/>
+    <jointvel name="left_knee_joint_vel_sensor" joint="left_knee_joint" noise="0.01"/>
+    <jointvel name="left_ankle_pitch_joint_vel_sensor" joint="left_ankle_pitch_joint" noise="0.01"/>
+    <jointvel name="left_ankle_roll_joint_vel_sensor" joint="left_ankle_roll_joint" noise="0.01"/>
+
+    <!-- Right Leg -->
+    <jointpos name="right_hip_pitch_joint_pos_sensor" joint="right_hip_pitch_joint" noise="0.01"/>
+    <jointpos name="right_hip_roll_joint_pos_sensor" joint="right_hip_roll_joint" noise="0.01"/>
+    <jointpos name="right_hip_yaw_joint_pos_sensor" joint="right_hip_yaw_joint" noise="0.01"/>
+    <jointpos name="right_knee_joint_pos_sensor" joint="right_knee_joint" noise="0.01"/>
+    <jointpos name="right_ankle_pitch_joint_pos_sensor" joint="right_ankle_pitch_joint" noise="0.01"/>
+    <jointpos name="right_ankle_roll_joint_pos_sensor" joint="right_ankle_roll_joint" noise="0.01"/>
+    <jointvel name="right_hip_pitch_joint_vel_sensor" joint="right_hip_pitch_joint" noise="0.01"/>
+    <jointvel name="right_hip_roll_joint_vel_sensor" joint="right_hip_roll_joint" noise="0.01"/>
+    <jointvel name="right_hip_yaw_joint_vel_sensor" joint="right_hip_yaw_joint" noise="0.01"/>
+    <jointvel name="right_knee_joint_vel_sensor" joint="right_knee_joint" noise="0.01"/>
+    <jointvel name="right_ankle_pitch_joint_vel_sensor" joint="right_ankle_pitch_joint" noise="0.01"/>
+    <jointvel name="right_ankle_roll_joint_vel_sensor" joint="right_ankle_roll_joint" noise="0.01"/>
+
+    <!-- Waist -->
+    <jointpos name="waist_yaw_joint_pos_sensor" joint="waist_yaw_joint" noise="0.01"/>
+    <jointvel name="waist_yaw_joint_vel_sensor" joint="waist_yaw_joint" noise="0.01"/>
+
+    <!-- Left Arm -->
+    <jointpos name="left_shoulder_pitch_joint_pos_sensor" joint="left_shoulder_pitch_joint" noise="0.01"/>
+    <jointpos name="left_shoulder_roll_joint_pos_sensor" joint="left_shoulder_roll_joint" noise="0.01"/>
+    <jointpos name="left_shoulder_yaw_joint_pos_sensor" joint="left_shoulder_yaw_joint" noise="0.01"/>
+    <jointpos name="left_elbow_joint_pos_sensor" joint="left_elbow_joint" noise="0.01"/>
+    <jointpos name="left_wrist_roll_joint_pos_sensor" joint="left_wrist_roll_joint" noise="0.01"/>
+    <jointvel name="left_shoulder_pitch_joint_vel_sensor" joint="left_shoulder_pitch_joint" noise="0.01"/>
+    <jointvel name="left_shoulder_roll_joint_vel_sensor" joint="left_shoulder_roll_joint" noise="0.01"/>
+    <jointvel name="left_shoulder_yaw_joint_vel_sensor" joint="left_shoulder_yaw_joint" noise="0.01"/>
+    <jointvel name="left_elbow_joint_vel_sensor" joint="left_elbow_joint" noise="0.01"/>
+    <jointvel name="left_wrist_roll_joint_vel_sensor" joint="left_wrist_roll_joint" noise="0.01"/>
+
+    <!-- Right Arm -->
+    <jointpos name="right_shoulder_pitch_joint_pos_sensor" joint="right_shoulder_pitch_joint" noise="0.01"/>
+    <jointpos name="right_shoulder_roll_joint_pos_sensor" joint="right_shoulder_roll_joint" noise="0.01"/>
+    <jointpos name="right_shoulder_yaw_joint_pos_sensor" joint="right_shoulder_yaw_joint" noise="0.01"/>
+    <jointpos name="right_elbow_joint_pos_sensor" joint="right_elbow_joint" noise="0.01"/>
+    <jointpos name="right_wrist_roll_joint_pos_sensor" joint="right_wrist_roll_joint" noise="0.01"/>
+    <jointvel name="right_shoulder_pitch_joint_vel_sensor" joint="right_shoulder_pitch_joint" noise="0.01"/>
+    <jointvel name="right_shoulder_roll_joint_vel_sensor" joint="right_shoulder_roll_joint" noise="0.01"/>
+    <jointvel name="right_shoulder_yaw_joint_vel_sensor" joint="right_shoulder_yaw_joint" noise="0.01"/>
+    <jointvel name="right_elbow_joint_vel_sensor" joint="right_elbow_joint" noise="0.01"/>
+    <jointvel name="right_wrist_roll_joint_vel_sensor" joint="right_wrist_roll_joint" noise="0.01"/>
   </sensor>
 
   <keyframe>
     <key name="init_state" qpos="0 0 0.8 1 0 0 0 -0.1 0 0 0.3 -0.2 0 -0.1 0 0 0.3 -0.2 0 0 0.35 0.18 0 0.87 0 0.35 -0.18 0 0.87 0" ctrl="0.35 0.18 0 0.87 0 0.35 -0.18 0 0.87 0 -0.1 0 -0.1 0 0 0 0.3 0 0.3 -0.2 0 -0.2 0"/>
   </keyframe>
+
+  <statistic center="0.0 0.0 0.5" extent="1.5"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="140" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+  </worldbody>
 </mujoco>

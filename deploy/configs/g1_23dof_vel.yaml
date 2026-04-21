@@ -1,5 +1,5 @@
 policy_path: "g1_23dof_vel.onnx"
-xml_path: "g1_23dof_mjlab.xml"
+xml_path: "g1_23dof_compiled.xml"
 
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
