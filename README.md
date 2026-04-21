@@ -10,10 +10,6 @@ A brief overview of the repo structure is as follows:
 - `policy`: contains the policies to use for controlling the robot.
 - `utils`: contains utility code.
 
-Download a motion from WandB:
-```bash
-python motions/get_wandb_motion.py wandb-registry-Motions/walk1_subject1:latest
-```
 Download a policy from WandB:
 ```bash
 python policy/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
@@ -25,13 +21,13 @@ python policy/get_wandb_policy.py sesteban-california-institute-of-technology-ca
 ## Setting the environment variable
 Set the directory of this repo as a environment variable in your `~/.bashrc` file, for example:
 ```bash
-export DEPLOY_ROOT_DIR="/home/sergio/projects/deploy_robot"
+export DEPLOY_ROOT_DIR="/<path-to>/deploy_robot"
 ```
 
 ## ROS2
 Use `ROS2 Humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
 
-If your scripts use the joystick, you can install `joy` package via:
+If your scripts use the ROS joystick, you can install `joy` package via:
 ```bash
 sudo apt update
 sudo apt install ros-humble-joy
@@ -55,7 +51,7 @@ Make sure you are in the `env_deploy` conda environment by using `conda activate
 ### Launching
 You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
 
-Terminal 1:
+Terminal 1 (if you use joystick):
 ```bash
 python deploy/joystick/joystick_ros.py 
 ```
@@ -89,7 +85,7 @@ where `<network_interface_name>` is the name of your network interface (e.g. `en
 ### Launching
 You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
 
-Terminal 1:
+Terminal 1 (if you use joystick):
 ```bash
 python deploy/joystick/joystick_ros.py 
 ```
