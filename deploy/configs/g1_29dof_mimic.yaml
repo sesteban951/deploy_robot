@@ -1,6 +1,6 @@
-# policy_path: "g1_29dof_mimic_pelvis.onnx"
-policy_path: "g1_29dof_mimic_torso.onnx"
-xml_path: "g1_29dof_compiled.xml"
+policy_path: "g1_29dof_mimic_pelvis.onnx"
+# policy_path: "g1_29dof_mimic_torso.onnx"
+xml_path: "g1_29dof_mjlab.xml"
 motion_path: "walk1_subject1.npz"
 
 # interpolate to default position duration
