@@ -33,6 +33,6 @@ action_scale: [0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
 control_dt: 0.02
 
 gait_period: 0.6
-stand_cmd_threshold: 0.0
 
+stand_cmd_threshold: 0.1   # set to 0.0 for constant moving feet
 cmd_scale: [1.0, 1.0, 1.0] # mjlab doesnt use this, but can scale
