@@ -194,9 +194,8 @@ def main(args=None):
     # policy_name = "g1_12dof_gym.pt"
     # policy_name = "g1_23dof_vel.onnx"
     # policy_name = "g1_29dof_vel.onnx"
-    # policy_name = "g1_29dof_mimic.onnx"
-    # policy_name = "2026-04-09_14-32-18_mimic_working.onnx"
-    policy_name = "2026-04-10_12-45-08_mimic_broken.onnx"
+    policy_name = "g1_29dof_mimic_pelvis.onnx"
+    # policy_name = "g1_29dof_mimic_torso.onnx"
 
     # load the policy
     policy_path = ROOT_DIR + "/policy/" + policy_name

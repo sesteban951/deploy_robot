@@ -1,5 +1,5 @@
-# policy_path: "2026-04-10_12-45-08_mimic_broken.onnx"
-policy_path: "2026-04-09_14-32-18_mimic_working.onnx"
+policy_path: "g1_29dof_mimic_pelvis.onnx"
+# policy_path: "g1_29dof_mimic_torso.onnx"
 xml_path: "g1_29dof_mjlab.xml"
 motion_path: "walk1_subject1.npz"
 
