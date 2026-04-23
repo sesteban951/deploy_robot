@@ -9,6 +9,7 @@
 import argparse
 
 # other imports
+import mujoco
 import numpy as np
 import yaml
 
@@ -56,7 +57,9 @@ class ControlNode(Node):
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
         # ROS subscribers
-        self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
+        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 10)
+        if self.anchor != "pelvis":
+            self.anchor_imu_sub = self.create_subscription(Float32MultiArray, f'deploy_robot/{self.anchor}_imu_state', self.anchor_imu_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
         self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
         self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
@@ -65,8 +68,8 @@ class ControlNode(Node):
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
         # sensor state
-        self.pelvis_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # (w, x, y, z)
-        self.pelvis_omega = np.zeros(3, dtype=np.float32)
+        self.anchor_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # (w, x, y, z) from anchor IMU
+        self.pelvis_omega = np.zeros(3, dtype=np.float32)  # base_ang_vel, always from pelvis IMU
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.fsm_state = "init"
@@ -144,10 +147,23 @@ class ControlNode(Node):
         print(f"    Frames: {self.motion_num_frames}")
         print(f"    Duration: {self.motion_num_frames / self.motion_fps:.1f}s")
 
-        # find anchor body index in the motion file using body_names from policy metadata
-        anchor_name = self.policy.metadata.get('anchor_body_name', 'pelvis')
-        body_names = self.policy.metadata.get('body_names')
-        self.anchor_body_idx = body_names.index(anchor_name)
+        # find anchor body index against robot's full body list
+        anchor_name = self.policy.metadata['anchor_body_name']
+        xml_path = ROOT_DIR + "/models/" + self.config['xml_path']
+        mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        motion_body_names = [
+            mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, i)
+            for i in range(1, mj_model.nbody)  # skip world (id 0)
+        ]
+        self.anchor_body_idx = motion_body_names.index(anchor_name)
+
+        # select IMU based on anchor body
+        if "pelvis" in anchor_name.lower():
+            self.anchor = "pelvis"
+        elif "torso" in anchor_name.lower():
+            self.anchor = "torso"
+        else:
+            raise ValueError(f"Unsupported anchor body name: {anchor_name}")
 
         print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
 
@@ -169,11 +185,18 @@ class ControlNode(Node):
             self.fsm_time = 0.0
 
 
-    # pelvis IMU data: [rpy(3), quat(4), gyro(3), accel(3)]
-    def pelvis_imu_sensor_callback(self, msg):
+    # anchor IMU: [rpy(3), quat(4), gyro(3), acc(3)] — orientation when anchor != pelvis
+    def anchor_imu_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        self.pelvis_quat = data[3:7]
+        self.anchor_quat = data[3:7]
+
+
+    # pelvis IMU: [rpy(3), quat(4), gyro(3), acc(3)] — base_ang_vel plus anchor_quat when anchor = pelvis
+    def pelvis_imu_callback(self, msg):
+        data = np.array(msg.data, dtype=np.float32)
         self.pelvis_omega = data[7:10]
+        if self.anchor == "pelvis":
+            self.anchor_quat = data[3:7]
 
 
     # joint data: [q(29), dq(29), ddq(29), tau_est(29)] — we only need q and dq
@@ -206,10 +229,10 @@ class ControlNode(Node):
         # apply the captured yaw offset so the motion is replayed in the robot's initial heading
         motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
         ref_quat_corrected = quat_multiply(self.init_quat, motion_anchor_quat_w)
-        rel_quat = quat_multiply(quat_conjugate(self.pelvis_quat), ref_quat_corrected)
+        rel_quat = quat_multiply(quat_conjugate(self.anchor_quat), ref_quat_corrected)
         anchor_ori_b = quat_to_rot6d(rel_quat)
 
-        # --- base_ang_vel (3) : angular velocity in pelvis frame (from pelvis IMU gyro) ---
+        # --- base_ang_vel (3) : pelvis angular velocity (training uses imu_in_pelvis site) ---
         base_ang_vel_b = self.pelvis_omega
 
         # --- joint_pos (29) : relative to default ---
@@ -246,7 +269,7 @@ class ControlNode(Node):
         if not self.init_quat_captured:
             motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
             self.init_quat = quat_multiply(
-                yaw_quat(self.pelvis_quat),
+                yaw_quat(self.anchor_quat),
                 quat_conjugate(yaw_quat(motion_anchor_quat_0)),
             )
             self.init_quat_captured = True

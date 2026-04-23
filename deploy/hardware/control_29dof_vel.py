@@ -70,10 +70,6 @@ class ControlNode(Node):
         # initialize command
         self.cmd = np.zeros(3)
 
-        # gait phase params
-        self.gait_period = 1.0
-        self.gait_offset = 0.5
-
         # initialize the action
         self.action = np.zeros(self.act_size)
 
@@ -111,6 +107,10 @@ class ControlNode(Node):
 
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
+
+        # gait phase params
+        self.gait_period = self.config["gait_period"]
+        self.stand_cmd_threshold = self.config["stand_cmd_threshold"]
 
         # import the policy
         policy_path = self.config['policy_path']
@@ -173,29 +173,28 @@ class ControlNode(Node):
         # joint position and velocity errors
         qj = (self.qpos_joints - self.qpos_joints_default)
         dqj = self.qvel_joints
-        
-        # gait phase clock
+
+        # gait phase clock (zeroed when standing)
         phase = (self.fsm_time % self.gait_period) / self.gait_period
-        phase_right = (phase + self.gait_offset) % 1.0
         two_pi = 2.0 * math.pi
         gait_phase = np.array([
             math.sin(two_pi * phase),
             math.cos(two_pi * phase),
-            math.sin(two_pi * phase_right),
-            math.cos(two_pi * phase_right),
         ], dtype=np.float32)
+        if np.linalg.norm(self.cmd) < self.stand_cmd_threshold:
+            gait_phase[:] = 0.0
 
         # build the observation vector
-        # ['base_ang_vel', 'projected_gravity', 'joint_pos', 'joint_vel', 'actions', 'command', 'gait_phase']
+        # ['base_ang_vel', 'projected_gravity', 'command', 'phase', 'joint_pos', 'joint_vel', 'actions']
         n = len(qj)
         obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[0:3]             = self.omega
-        obs[3:6]             = gravity_orientation
-        obs[6:6+n]           = qj
-        obs[6+n:6+2*n]       = dqj
-        obs[6+2*n:6+3*n]     = self.action
-        obs[6+3*n:6+3*n+3]   = self.cmd * self.cmd_scale
-        obs[6+3*n+3:6+3*n+7] = gait_phase
+        obs[0:3]              = self.omega
+        obs[3:6]              = gravity_orientation
+        obs[6:9]              = self.cmd * self.cmd_scale
+        obs[9:11]             = gait_phase
+        obs[11:11+n]          = qj
+        obs[11+n:11+2*n]      = dqj
+        obs[11+2*n:11+3*n]    = self.action
 
         return obs
 
