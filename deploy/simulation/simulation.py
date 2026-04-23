@@ -40,12 +40,15 @@ class SimulationNode(Node):
     Asynchronous simulation node that runs the Mujoco simulation.
     """
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, apply_noise: bool = False):
 
         super().__init__('simulation_node')
 
         # load config file
         self.config = self.load_config(config_path)
+
+        # whether to apply per-sensor Gaussian noise
+        self.apply_noise = apply_noise
 
         # load params
         self.init_params()
@@ -229,6 +232,17 @@ class SimulationNode(Node):
     # SIMULATION
     #################################################################
 
+    # add per-sensor Gaussian noise in place on mj_data.sensordata using the
+    # std devs declared in the XML (sensor_noise[i] is the std dev for sensor i)
+    def _apply_sensor_noise(self):
+        for i in range(self.mj_model.nsensor):
+            std = self.mj_model.sensor_noise[i]
+            if std <= 0.0:
+                continue
+            adr = self.mj_model.sensor_adr[i]
+            dim = self.mj_model.sensor_dim[i]
+            self.mj_data.sensordata[adr:adr+dim] += np.random.normal(0.0, std, size=dim)
+
     # compute torque using PD control + feedforward
     def compute_torque(self):
 
@@ -256,6 +270,11 @@ class SimulationNode(Node):
 
         # step the simulation
         mujoco.mj_step(self.mj_model, self.mj_data)
+
+        # inject sensor noise (newer mujoco dropped the sensornoise, so we
+        # apply the per-sensor std devs from XML noise="..." attrs by hand)
+        if self.apply_noise:
+            self._apply_sensor_noise()
 
         # publish simulation time
         time_msg = Float64()
@@ -315,10 +334,16 @@ def main(args=None):
         required=True,
         help='Path to the config yaml file. Example: "g1_29dof.yaml".'
     )
+    # enable sensor noise (off by default)
+    parser.add_argument(
+        '--noise',
+        action='store_true',
+        help='Enable per-sensor Gaussian noise injection. Noise is off by default.'
+    )
     args = parser.parse_args()
 
     # create the simulation node
-    sim_node = SimulationNode(args.config)
+    sim_node = SimulationNode(args.config, apply_noise=args.noise)
 
     # run normally
     try:
