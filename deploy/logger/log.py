@@ -28,16 +28,11 @@ from utils.logger import Logger
 # CONSTANTS
 ############################################################################
 
-# 29dof G1 vector sizes
-G1_NUM_MOTOR  = 29
-COMMAND_SIZE     = 5 * G1_NUM_MOTOR  # 145 = [q_des, dq_des, Kp, Kd, tau_ff]
-JOINT_STATE_SIZE = 4 * G1_NUM_MOTOR  # 116 = [q, dq, ddq, tau_est]
-IMU_STATE_SIZE   = 13                # 13  = [rpy, quat, gyro, acc]
-JOY_STATE_SIZE   = 4                 # 4   = [connected, vx, vy, omega]
-TIME_SIZE        = 1                 # 1   = [time]
-
 # start logging only while in this FSM state (hardware mode only)
 TARGET_FSM_STATE = "control"
+
+# used for the logger
+DATASET_NAMES = ["joint_state", "pelvis_imu", "torso_imu", "command", "joystick", "time"]
 
 # per-mode config: everything that differs between sim and hardware
 MODE_CONFIG = {
@@ -78,30 +73,11 @@ class LogNode(Node):
         # current FSM state (only used in hardware mode)
         self.fsm_state = "init"
 
-        # one Logger per topic, all writing into the same HDF5 file
-        self.joint_logger      = Logger(output_path, JOINT_STATE_SIZE, dataset_name="joint_state")
-        self.pelvis_imu_logger = Logger(output_path, IMU_STATE_SIZE,   dataset_name="pelvis_imu")
-        self.torso_imu_logger  = Logger(output_path, IMU_STATE_SIZE,   dataset_name="torso_imu")
-        self.command_logger    = Logger(output_path, COMMAND_SIZE,     dataset_name="command")
-        self.joystick_logger   = Logger(output_path, JOY_STATE_SIZE,   dataset_name="joystick")
-        self.time_logger       = Logger(output_path, TIME_SIZE,        dataset_name="time")
-
-        self._loggers = [
-            self.joint_logger,
-            self.pelvis_imu_logger,
-            self.torso_imu_logger,
-            self.command_logger,
-            self.joystick_logger,
-            self.time_logger,
-        ]
-
-        # latest message cache (None until first message arrives on the topic)
-        self.latest_joint      = None
-        self.latest_pelvis_imu = None
-        self.latest_torso_imu  = None
-        self.latest_command    = None
-        self.latest_joystick   = None
-        self.latest_time       = None
+        # lazy Loggers + latest-message caches, both keyed by dataset name.
+        # Loggers are created on the first message of each topic
+        self.output_path = output_path
+        self._loggers: dict = {}
+        self._latest: dict = {}
 
         # ROS subscribers
         self.joint_sub      = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state',      self.joint_callback,      10)
@@ -143,54 +119,50 @@ class LogNode(Node):
             return True
         return self.fsm_state == TARGET_FSM_STATE
 
-    # each callback just caches the latest message; the log_timer does the writing
+    # cache the latest message and (on first arrival) create the Logger sized
+    # to this particular topic's dimension
+    def _handle_msg(self, dataset_name: str, data: np.ndarray):
+        self._latest[dataset_name] = data
+        if dataset_name not in self._loggers:
+            self._loggers[dataset_name] = Logger(self.output_path, data.shape[0], dataset_name=dataset_name)
+
     def joint_callback(self, msg: Float32MultiArray):
-        self.latest_joint = np.array(msg.data, dtype=np.float32)
+        self._handle_msg("joint_state", np.array(msg.data, dtype=np.float32))
 
     def pelvis_imu_callback(self, msg: Float32MultiArray):
-        self.latest_pelvis_imu = np.array(msg.data, dtype=np.float32)
+        self._handle_msg("pelvis_imu", np.array(msg.data, dtype=np.float32))
 
     def torso_imu_callback(self, msg: Float32MultiArray):
-        self.latest_torso_imu = np.array(msg.data, dtype=np.float32)
+        self._handle_msg("torso_imu", np.array(msg.data, dtype=np.float32))
 
     def command_callback(self, msg: Float32MultiArray):
-        self.latest_command = np.array(msg.data, dtype=np.float32)
+        self._handle_msg("command", np.array(msg.data, dtype=np.float32))
 
     def joystick_callback(self, msg: Float32MultiArray):
-        self.latest_joystick = np.array(msg.data, dtype=np.float32)
+        self._handle_msg("joystick", np.array(msg.data, dtype=np.float32))
 
     def time_callback(self, msg: Float64):
-        self.latest_time = np.array([msg.data], dtype=np.float32)
+        self._handle_msg("time", np.array([msg.data], dtype=np.float32))
 
 
     #################################################################
     # LOGGING
     #################################################################
 
-    # snapshot the latest cached messages into the loggers at log_freq
+    # snapshot the latest cached messages into the loggers at log_freq.
+    # only starts once EVERY dataset has published at least once, so all
+    # datasets share the same start/end and the same row index.
     def log_callback(self):
         if not self._logging_enabled():
             return
-        caches = [
-            self.latest_joint,
-            self.latest_pelvis_imu,
-            self.latest_torso_imu,
-            self.latest_command,
-            self.latest_joystick,
-            self.latest_time,
-        ]
-        if any(c is None for c in caches):
+        if any(name not in self._loggers for name in DATASET_NAMES):
             return
-        self.joint_logger.log(self.latest_joint)
-        self.pelvis_imu_logger.log(self.latest_pelvis_imu)
-        self.torso_imu_logger.log(self.latest_torso_imu)
-        self.command_logger.log(self.latest_command)
-        self.joystick_logger.log(self.latest_joystick)
-        self.time_logger.log(self.latest_time)
+        for name in DATASET_NAMES:
+            self._loggers[name].log(self._latest[name])
 
     # periodically flush all buffers to disk
     def dump_callback(self):
-        for logger in self._loggers:
+        for logger in self._loggers.values():
             logger.dump()
 
 
@@ -198,10 +170,11 @@ class LogNode(Node):
     # SHUTDOWN
     #################################################################
 
-    # flush remaining buffers and close all loggers
-    def close_loggers(self):
-        for logger in self._loggers:
+    # flush remaining buffers, close all loggers, then tear down the node
+    def destroy_node(self):
+        for logger in self._loggers.values():
             logger.close()
+        super().destroy_node()
 
 
 ############################################################################
@@ -273,10 +246,11 @@ def main(args=None):
         pass
 
     finally:
-        # flush remaining buffers and close files, then shut down ROS2
-        log_node.close_loggers()
+        # flush remaining buffers, close files, and shut down ROS2
         log_node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
+
+    print("Logger shutdown complete.")
 
 
 if __name__ == "__main__":
