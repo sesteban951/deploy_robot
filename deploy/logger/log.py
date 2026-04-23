@@ -210,7 +210,7 @@ def main(args=None):
         '--filename',
         type=str,
         default=None,
-        help='Output filename (without .h5 extension). Defaults to <YYYYMMDD_HHMMSS>. Saved under logs/<mode>/.'
+        help='Output filename (without .h5 extension). Defaults to <YYYY_MM_DD__HH_MM_SS>. Saved under logs/<mode>/.'
     )
     parser.add_argument(
         '--hz',
@@ -230,7 +230,7 @@ def main(args=None):
     if args.filename is not None:
         filename = args.filename
     else:
-        filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
 
     output_path = build_output_path(args.mode, filename)
 
