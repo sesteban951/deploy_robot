@@ -1,7 +1,10 @@
-policy_path: "g1_29dof_mimic_pelvis.onnx"
-# policy_path: "g1_29dof_mimic_torso.onnx"
 xml_path: "g1_29dof_mjlab.xml"
-motion_path: "walk1_subject1.npz"
+
+# policy_path: "g1_29dof_mimic_pelvis.onnx"
+# policy_path: "g1_29dof_mimic_torso.onnx"
+# motion_path: "walk1_subject1.npz"
+policy_path: "g1_29dof_mimic_squat.onnx"
+motion_path: "srb_squat.npz"
 
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
