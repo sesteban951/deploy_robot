@@ -65,8 +65,15 @@ if __name__ == "__main__":
     total_time = times[-1]
     print(f"Total motion time: {total_time:.2f} seconds.")
 
-    # load the G1 mujoco model
-    xml_path = ROOT_DIR + "/models/g1_29dof_mjlab.xml"
+    # auto-select the G1 mujoco model based on the motion's joint count
+    n_joints = qpos.shape[1]
+    if n_joints == 23:
+        xml_path = ROOT_DIR + "/models/g1_23dof_mjlab.xml"
+    elif n_joints == 29:
+        xml_path = ROOT_DIR + "/models/g1_29dof_mjlab.xml"
+    else:
+        raise ValueError(f"Unsupported joint count {n_joints}; expected 23 or 29.")
+    print(f"Using model: [{xml_path}].")
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_data = mujoco.MjData(mj_model)
 
