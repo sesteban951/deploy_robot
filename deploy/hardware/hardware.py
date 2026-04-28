@@ -92,7 +92,7 @@ LOW_LEVEL_CONTROL_DT = 0.002  # [sec]
 ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
 
 # safety: max allowable pelvis roll/pitch before forcing damp (when you fall)
-SAFETY_MAX_TILT = np.radians(30.0)  # [rad]
+SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 
 
 ########################################################################

@@ -3,8 +3,10 @@ xml_path: "g1_29dof_mjlab.xml"
 # policy_path: "g1_29dof_mimic_pelvis.onnx"
 # policy_path: "g1_29dof_mimic_torso.onnx"
 # motion_path: "walk1_subject1.npz"
-policy_path: "g1_29dof_mimic_squat.onnx"
-motion_path: "srb_squat.npz"
+# policy_path: "g1_29dof_mimic_squat.onnx"
+# motion_path: "srb_squat.npz"
+policy_path: "g1_29dof_mimic_jump.onnx"
+motion_path: "srb_jump_up_spc.npz"
 
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
@@ -12,14 +14,14 @@ home_pos_duration: 3.0  # [sec]
 # PD gains per joint
 Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
      40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
-     # 40.179, 28.501, 28.501,  # Warning: NO WAIST LOCK
-     40.179, 0.0,    0.0,  # Warning: Assumes waist lock
+     40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST
+     # 40.179, 0.0,    0.0,  # Warning: LOCKED WAIST
      14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
      14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
 Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
      2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-     # 2.558, 1.814, 1.814,  # Warning: NO WAIST LOCK
-     2.558, 0.0,   0.0,    # Warning: Assumes waist lock
+     2.558, 1.814, 1.814,  # Warning: ACTIVE WAIST
+     # 2.558, 0.0,   0.0,    # Warning: LOCKED WAIST
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
 
