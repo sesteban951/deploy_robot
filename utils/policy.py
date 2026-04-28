@@ -17,7 +17,7 @@ import onnxruntime as ort
 
 # get the input and output dimensions of a torch policy
 def get_policy_io_size_torch(policy, max_input_size=1024):
-    
+
     # set the policy to eval mode
     policy.eval()
 
@@ -87,7 +87,7 @@ def load_policy_metadata(onnx_model):
 
 # inference with a torch policy
 def policy_inference_torch(policy, input):
-    
+
     # convert to torch tensor and add batch dimension
     input_tensor = torch.from_numpy(input).unsqueeze(0)
 
@@ -137,19 +137,23 @@ class Policy:
         self._get_policy_properties()
 
         
-    # load a policy given the path 
+    # load a policy given the path
     def _load_policy(self, policy_path):
+
         # torch file
         if "pt" in policy_path.lower():
             self.policy = torch.jit.load(policy_path)
             self.policy.eval()
             self._policy_type = "torch"
+
         # onnx file
         elif "onnx" in policy_path.lower():
             self.policy = onnx.load(policy_path)
-            self._onnx_session = ort.InferenceSession(self.policy.SerializeToString())
+            self._onnx_session = ort.InferenceSession(
+                self.policy.SerializeToString(), providers=["CPUExecutionProvider"]
+            )
             self._policy_type = "onnx"
-            
+
             # load embedded metadata if available
             if self.policy.metadata_props:
                 self.metadata = load_policy_metadata(self.policy)
