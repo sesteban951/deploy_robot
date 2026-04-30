@@ -1,6 +1,6 @@
 ##
 #
-# Data logging node for the Unitree G1 deployment.
+# Data logging node for deployment in both simulation and hardware.
 #
 ##
 
@@ -9,6 +9,7 @@ import argparse
 import datetime
 import os
 import sys
+import time
 import numpy as np
 
 # ROS2 imports
@@ -31,8 +32,23 @@ from utils.logger import Logger
 # start logging only while in this FSM state (hardware mode only)
 TARGET_FSM_STATE = "control"
 
-# used for the logger
-DATASET_NAMES = ["joint_state", "pelvis_imu", "torso_imu", "command", "joystick", "time"]
+# datasets that MUST have a publisher; logger hard-fails if any are missing at discovery
+REQUIRED_DATASETS = ["joint_state", "pelvis_imu", "torso_imu", "time"]
+
+# datasets logged only if a publisher exists at discovery time (e.g. no joystick connected)
+OPTIONAL_DATASETS = ["command", "joystick"]
+
+# all candidate datasets (topic discovery picks the active subset)
+DATASET_NAMES = REQUIRED_DATASETS + OPTIONAL_DATASETS
+
+# dataset name -> topic name (time is mode-dependent, resolved via MODE_CONFIG)
+DATASET_TOPICS = {
+    "joint_state": "deploy_robot/joint_state",
+    "pelvis_imu":  "deploy_robot/pelvis_imu_state",
+    "torso_imu":   "deploy_robot/torso_imu_state",
+    "command":     "deploy_robot/command",
+    "joystick":    "deploy_robot/joystick",
+}
 
 # per-mode config: everything that differs between sim and hardware
 MODE_CONFIG = {
@@ -41,7 +57,7 @@ MODE_CONFIG = {
         "use_fsm":      False,
         "logs_subdir":  "simulation",
     },
-    "hardware": {
+    "hw": {
         "time_topic":   "deploy_robot/fsm_time",
         "use_fsm":      True,
         "logs_subdir":  "hardware",
@@ -57,9 +73,6 @@ class LogNode(Node):
     """
     Asynchronous logging node that subscribes to deploy topics and writes
     them to an HDF5 file via utils.logger.Logger.
-
-    mode="sim":       logs always; uses deploy_robot/simulation_time.
-    mode="hardware":  gated on fsm_state == 'control'; uses deploy_robot/fsm_time.
     """
 
     def __init__(self, mode: str, output_path: str, log_freq: float, dump_period: float):
@@ -78,6 +91,13 @@ class LogNode(Node):
         self.output_path = output_path
         self._loggers: dict = {}
         self._latest: dict = {}
+
+        # topic discovery state: retried until all required topics are up, then the active dataset set is locked in.
+        self._discovery_done = False
+        self._active_datasets: list = []
+        self._discovery_retry_period = 0.5
+        self._last_discovery_attempt = 0.0
+        self._last_missing_key: tuple = ()
 
         # ROS subscribers
         self.joint_sub      = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state',      self.joint_callback,      10)
@@ -149,15 +169,54 @@ class LogNode(Node):
     # LOGGING
     #################################################################
 
-    # snapshot the latest cached messages into the loggers at log_freq.
-    # only starts once EVERY dataset has published at least once, so all
-    # datasets share the same start/end and the same row index.
+    # poll publishers for every candidate topic. retry until all required topics are up, then lock in the active set.
+    def _run_topic_discovery(self):
+        now = time.monotonic()
+        if (now - self._last_discovery_attempt) < self._discovery_retry_period:
+            return
+        self._last_discovery_attempt = now
+
+        topic_for = dict(DATASET_TOPICS, time=self.cfg["time_topic"])
+
+        missing_required = [
+            (name, topic_for[name])
+            for name in REQUIRED_DATASETS
+            if self.count_publishers(topic_for[name]) == 0
+        ]
+
+        # still waiting: print only when the missing set changes
+        if missing_required:
+            missing_key = tuple(n for n, _ in missing_required)
+            if missing_key != self._last_missing_key:
+                details = ", ".join(f"{n} ({t})" for n, t in missing_required)
+                print(f"Waiting for required topics: {details}")
+                self._last_missing_key = missing_key
+            return
+
+        print("Topic discovery: all required topics ready.")
+        active = list(REQUIRED_DATASETS)
+        for name in OPTIONAL_DATASETS:
+            topic = topic_for[name]
+            n_pubs = self.count_publishers(topic)
+            if n_pubs > 0:
+                active.append(name)
+                print(f"    [OK]   {name:12s} <- {topic}  ({n_pubs} pub)")
+            else:
+                print(f"    [SKIP] {name:12s} <- {topic}  (optional, no publisher)")
+
+        self._active_datasets = active
+        self._discovery_done = True
+
+    # log latest cached messages at log_freq. waits until every active
+    # dataset has published at least once so rows stay aligned.
     def log_callback(self):
         if not self._logging_enabled():
             return
-        if any(name not in self._loggers for name in DATASET_NAMES):
+        if not self._discovery_done:
+            self._run_topic_discovery()
+        if any(name not in self._loggers for name in self._active_datasets):
             return
-        for name in DATASET_NAMES:
+        for name in self._active_datasets:
             self._loggers[name].log(self._latest[name])
 
     # periodically flush all buffers to disk
@@ -186,6 +245,7 @@ def build_output_path(mode: str, filename: str) -> str:
     subdir = MODE_CONFIG[mode]["logs_subdir"]
     root = ROOT_DIR if ROOT_DIR else ""
     logs_dir = os.path.join(root, "logs", subdir)
+    os.makedirs(logs_dir, exist_ok=True)
 
     return os.path.join(logs_dir, f"{filename}.h5")
 
@@ -203,14 +263,14 @@ def main(args=None):
         '--mode',
         type=str,
         required=True,
-        choices=["sim", "hardware"],
-        help='Deployment mode: "sim" or "hardware".'
+        choices=["sim", "hw"],
+        help='Deployment mode: "sim" (simulation) or "hw" (hardware).'
     )
     parser.add_argument(
         '--filename',
         type=str,
         default=None,
-        help='Output filename (without .h5 extension). Defaults to <YYYY_MM_DD__HH_MM_SS>. Saved under logs/<mode>/.'
+        help='Output filename (without .h5 extension). Default: <YYYY_MM_DD__HH_MM_SS>. Saved under logs/<mode>/.'
     )
     parser.add_argument(
         '--hz',
@@ -222,7 +282,7 @@ def main(args=None):
         '--dump_period',
         type=float,
         default=1.0,
-        help='How often (in seconds) to flush the in-memory buffer to disk. Default: 1.0 seconds.'
+        help='How often (in seconds) to write the in-memory buffer to disk. Default: 1.0 seconds.'
     )
     args = parser.parse_args()
 
