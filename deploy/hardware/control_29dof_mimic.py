@@ -78,7 +78,7 @@ class ControlNode(Node):
         # initialize the action
         self.action = np.zeros(self.act_size)
 
-        # yaw alignment between robot-at-policy-start and motion frame 0 (re-captured each time FSM enters "control")
+        # yaw alignment between robot-at-policy-start and motion frame 0 (re-captured each time FSM enters "control"/"track")
         self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self.init_quat_captured = False
 
@@ -177,12 +177,9 @@ class ControlNode(Node):
         self.fsm_state = msg.data
 
 
-    # fsm time — only count time when in "control" state
+    # fsm time — time since entering the current FSM state (hardware.py resets it on each transition)
     def time_callback(self, msg):
-        if self.fsm_state == "control":
-            self.fsm_time = msg.data
-        else:
-            self.fsm_time = 0.0
+        self.fsm_time = msg.data
 
 
     # anchor IMU: [rpy(3), quat(4), gyro(3), acc(3)] — orientation when anchor != pelvis
@@ -215,9 +212,14 @@ class ControlNode(Node):
     # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
     def build_observation(self):
 
-        # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
-        # fsm_time is reset to 0 when the FSM is not in "control", so it's already relative to policy start
-        frame = int(self.fsm_time / self.ctrl_dt) % self.motion_num_frames
+        # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt).
+        # fsm_time is time-since-entering-current-state (reset on each FSM transition by hardware.py).
+        if self.fsm_state == "track":
+            # tracking: advance from the first frame, then freeze at the last frame (no loop)
+            frame = min(int(self.fsm_time / self.ctrl_dt), self.motion_num_frames - 1)
+        else:
+            # "control": hold the first frame
+            frame = 0
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
@@ -259,13 +261,13 @@ class ControlNode(Node):
     # control published at the control frequency
     def control_callback(self):
 
-        # only run policy when in "control" state
-        if self.fsm_state != "control":
+        # only run policy when actively controlling/tracking ("control" holds frame 0, "track" plays the motion)
+        if self.fsm_state not in ("control", "track"):
             self.action = np.zeros(self.act_size)
             self.init_quat_captured = False
             return
 
-        # on the first control tick, align motion frame 0 with the robot's current yaw
+        # on the first control/track tick, align motion frame 0 with the robot's current yaw
         if not self.init_quat_captured:
             motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
             self.init_quat = quat_multiply(

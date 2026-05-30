@@ -454,8 +454,8 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
 
-        # [control]: read from ROS2 command subscriber
-        elif fsm_state == "control":
+        # [control / track]: read from ROS2 command subscriber (mimic policy)
+        elif fsm_state == "control" or fsm_state == "track":
             with self.cmd_lock:
                 q_cmd = self.q_cmd.copy()
                 dq_cmd = self.dq_cmd.copy()
