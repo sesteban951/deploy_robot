@@ -7,6 +7,7 @@
 
 # standard imports
 import argparse
+import time
 
 # other imports
 import mujoco
@@ -16,7 +17,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray, String
 
 # directory imports
 import sys
@@ -62,9 +63,8 @@ class ControlNode(Node):
             self.anchor_imu_sub = self.create_subscription(Float32MultiArray, f'deploy_robot/{self.anchor}_imu_state', self.anchor_imu_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
         self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
-
-        # control timer to run the policy at a fixed frequency
-        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
+        self.joystick_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.joystick_callback, 10)
+        self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
 
         # sensor state
         self.anchor_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # (w, x, y, z) from anchor IMU
@@ -79,6 +79,21 @@ class ControlNode(Node):
         # yaw alignment between robot-at-policy-start and motion frame 0 (identity until captured on first tick)
         self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self.policy_start_time = None
+
+        # joystick / FSM gating of the motion playback
+        self.joystick_connected = False  # latest connection flag from the joystick node
+        self.fsm_state = "control"        # connected default: "control" = frozen on the first frame
+        self.track_start_time = None      # sim time the current "track" episode began (None = not tracking)
+
+        # upfront check: is a joystick connected? this locks the playback mode for the run
+        self.use_fsm = self.check_joystick_connected()
+        if self.use_fsm:
+            print("Joystick connected: holding the first motion frame until FSM enters 'track'.")
+        else:
+            print("No joystick connected: looping the motion trajectory continuously.")
+
+        # control timer to run the policy at a fixed frequency (created last, after the joystick check)
+        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
         print("Control node initialized.")
 
@@ -165,6 +180,16 @@ class ControlNode(Node):
 
         print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
 
+    # spin briefly to detect whether a joystick is connected.
+    def check_joystick_connected(self, timeout: float = 2.0):
+        print(f"Checking for a joystick connection ({timeout:.0f}s)...")
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self.joystick_connected:
+                return True
+        return False
+
 
     #################################################################
     # CALLBACKS
@@ -193,6 +218,25 @@ class ControlNode(Node):
     def time_callback(self, msg):
         self.sim_time = msg.data
 
+    # joystick command: [is_connected, vx, vy, omega]
+    def joystick_callback(self, msg):
+        self.joystick_connected = (msg.data[0] > 0.5)
+
+    # FSM state from the joystick node. The trajectory only advances while in "track":
+    # entering "track" (re)starts playback from the first frame; leaving "track" holds
+    # the first frame again, so control <-> track can be repeated.
+    def fsm_callback(self, msg):
+        state = msg.data
+        if state == "track" and self.fsm_state != "track":
+            # entering track: (re)start the trajectory from the first frame
+            self.track_start_time = self.sim_time
+            print("FSM entered 'track': starting motion trajectory.")
+        elif state != "track" and self.fsm_state == "track":
+            # leaving track: reset so the next 'track' replays from the start
+            self.track_start_time = None
+            print(f"FSM left 'track' (now '{state}'): holding the first frame.")
+        self.fsm_state = state
+
 
     #################################################################
     # OBSERVATION
@@ -203,8 +247,17 @@ class ControlNode(Node):
     def build_observation(self):
 
         # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
-        elapsed = self.sim_time - self.policy_start_time
-        frame = int(elapsed / self.ctrl_dt) % self.motion_num_frames
+        if not self.use_fsm:
+            # no joystick: loop the trajectory continuously
+            elapsed = self.sim_time - self.policy_start_time
+            frame = int(elapsed / self.ctrl_dt) % self.motion_num_frames
+        elif self.track_start_time is None:
+            # in "control" (not tracking): hold the first frame
+            frame = 0
+        else:
+            # tracking: advance from frame 0, then freeze at the last frame (no loop)
+            elapsed = self.sim_time - self.track_start_time
+            frame = min(int(elapsed / self.ctrl_dt), self.motion_num_frames - 1)
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([

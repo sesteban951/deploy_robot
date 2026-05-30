@@ -11,25 +11,28 @@ from utils.joystick_utils import JoystickState
 # FSM Configuration
 #######################################################################
 
-# states: init -> damp -> home -> control
+# states: init -> damp -> home -> control <-> track
 #
-#                ┌──┐         ┌──┐         ┌──┐
-#                │  v         │  v         │  v
-#   INIT ──────> DAMP ──────> HOME ──────> CONTROL
-#                 ^            │              │
-#                 │            │              │
-#                 └────────────┘              │
-#                 └───────────────────────────┘
+#                ┌──┐         ┌──┐         ┌──┐         ┌──┐
+#                │  v         │  v         │  v         │  v
+#   INIT ──────> DAMP ──────> HOME ──────> CONTROL <──> TRACK
+#                 ^            │              │           │
+#                 │            │              │           │
+#                 ├────────────┘              │           │
+#                 ├───────────────────────────┘           │
+#                 └───────────────────────────────────────┘
+#   (CONTROL <──> TRACK: LMB returns track to control)
 
 # all possible states
-STATES = ["init", "damp", "home", "control"]
+STATES = ["init", "damp", "home", "control", "track"]
 
 # allowable transitions
 TRANSITIONS = {
     "init":    {"init", "damp"},
     "damp":    {"damp", "home"},
     "home":    {"home", "damp", "control"},
-    "control": {"control", "damp"},
+    "control": {"control", "damp", "track"},
+    "track":   {"track", "damp", "control"},
 }
 
 # button to target state mapping
@@ -37,6 +40,7 @@ BUTTON_STATE_MAP = {
     "LB":  "damp",    # go to "damp"
     "A":   "home",    # go to "home"
     "LMB": "control", # go to "control"
+    "RMB": "track",   # go to "track"
 }
 
 
