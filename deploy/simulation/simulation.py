@@ -108,7 +108,8 @@ class SimulationNode(Node):
 
         # set the default state
         self.default_base = np.array(self.config['default_base_pos'])
-        self.default_joints = np.array(self.config['default_joint_pos'])
+        spawn_key = 'spawn_joint_pos' if 'spawn_joint_pos' in self.config else 'default_joint_pos'
+        self.default_joints = np.array(self.config[spawn_key])
 
 
     # initialize the mujoco simulation
