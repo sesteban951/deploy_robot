@@ -93,6 +93,7 @@ LOW_LEVEL_CONTROL_DT = 0.01  # [sec]
 ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
 
 # safety: max allowable pelvis roll/pitch before forcing damp (when you fall)
+ENABLE_MAX_TILT = False             # False means no safety check
 SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 
 
@@ -404,7 +405,7 @@ class ControlNode(Node):
         self.fsm_time = self.time_ - self.fsm_start_time
 
         # safety: force damp if pelvis tilts beyond specified threshold
-        if not self.safety_triggered:
+        if ENABLE_MAX_TILT and not self.safety_triggered:
             with self.sensor_lock:
                 rpy = self.pelvis_imu_rpy
             if rpy is not None:
