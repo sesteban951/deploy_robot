@@ -86,7 +86,8 @@ class Mode:
 
 
 # low-level control frequency 
-LOW_LEVEL_CONTROL_DT = 0.002  # [sec]
+# NOTE: leave as low as possible since it causes chatter
+LOW_LEVEL_CONTROL_DT = 0.01  # [sec]
 
 # ROS2 sensor publishing frequency
 ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
