@@ -78,9 +78,14 @@ class ControlNode(Node):
         # initialize the action
         self.action = np.zeros(self.act_size)
 
-        # yaw alignment between robot-at-policy-start and motion frame 0 (re-captured each time FSM enters "control"/"track")
+        # yaw alignment between robot-at-track-start and motion frame 0 (re-captured each time FSM enters "track")
         self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self.init_quat_captured = False
+
+        # "control" interpolates joints from the entry pose to frame 0 (plain PD, no policy).
+        # start pose captured on entry: covers both home->control and last-frame->control.
+        self.interp_captured = False
+        self.interp_start_qpos = self.qpos_joints_default.copy()
 
         print("Control node initialized.")
 
@@ -115,6 +120,9 @@ class ControlNode(Node):
 
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
+
+        # duration to interpolate the motion reference into frame 0 when entering "control"
+        self.frame_pos_duration = float(self.config["frame_pos_duration"])
 
         # import the policy
         policy_path = self.config['policy_path']
@@ -208,18 +216,10 @@ class ControlNode(Node):
     # OBSERVATION
     #################################################################
 
-    # build the observation vector for the policy
+    # build the observation vector for the policy at the given motion frame
     # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
-    def build_observation(self):
-
-        # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt).
-        # fsm_time is time-since-entering-current-state (reset on each FSM transition by hardware.py).
-        if self.fsm_state == "track":
-            # tracking: advance from the first frame, then freeze at the last frame (no loop)
-            frame = min(int(self.fsm_time / self.ctrl_dt), self.motion_num_frames - 1)
-        else:
-            # "control": hold the first frame
-            frame = 0
+    # frame is chosen by the caller: 0 while holding frame 0 in "control", advancing in "track".
+    def build_observation(self, frame):
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
@@ -251,23 +251,55 @@ class ControlNode(Node):
             qj, dqj, self.action,
         ]).astype(np.float32)
 
-        return obs, frame
+        return obs
 
 
     #################################################################
     # CONTROL
     #################################################################
 
+    # publish a low-level command: [qpos_des, qvel_des, Kp, Kd, tau_ff]
+    def publish_command(self, qpos_des, qvel_des, tau_ff):
+        cmd_msg = Float32MultiArray()
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
+        self.command_pub.publish(cmd_msg)
+
+
     # control published at the control frequency
     def control_callback(self):
 
-        # only run policy when actively controlling/tracking ("control" holds frame 0, "track" plays the motion)
+        # idle states (init/damp/home): this node sends nothing
         if self.fsm_state not in ("control", "track"):
             self.action = np.zeros(self.act_size)
             self.init_quat_captured = False
+            self.interp_captured = False
             return
 
-        # on the first control/track tick, align motion frame 0 with the robot's current yaw
+        # [control] ramp phase: plain PD interpolation from the entry pose to frame 0 (no policy).
+        # re-captured on each (re)entry, so it eases in from home and back from the last tracked frame.
+        if self.fsm_state == "control":
+            if not self.interp_captured:
+                self.interp_start_qpos = self.qpos_joints.copy()
+                self.interp_captured = True
+            alpha = float(np.clip(self.fsm_time / self.frame_pos_duration, 0.0, 1.0))
+            if alpha < 1.0:
+                # still ramping: command the lerped joint target, policy stays off
+                self.init_quat_captured = False
+                self.action = np.zeros(self.act_size)
+                qpos_des = (1.0 - alpha) * self.interp_start_qpos + alpha * self.motion_joint_pos[0]
+                qvel_des = np.zeros(self.act_size, dtype=np.float32)
+                tau_ff = np.zeros(self.act_size, dtype=np.float32)
+                self.publish_command(qpos_des, qvel_des, tau_ff)
+                return
+            # ramp done: hand off to the policy, holding frame 0
+            frame = 0
+        else:
+            # [track]: advance the motion from frame 0, then freeze at the last frame (no loop)
+            self.interp_captured = False
+            frame = min(int(self.fsm_time / self.ctrl_dt), self.motion_num_frames - 1)
+
+        # policy query (control: holding frame 0 after the ramp; track: advancing the motion).
+        # align motion frame 0 with the robot's current yaw on the first policy tick.
         if not self.init_quat_captured:
             motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
             self.init_quat = quat_multiply(
@@ -276,21 +308,13 @@ class ControlNode(Node):
             )
             self.init_quat_captured = True
 
-        # get the current observation and motion frame index
-        obs, frame = self.build_observation()
-
-        # target joint positions (PD control)
+        # run the policy and publish the command
+        obs = self.build_observation(frame)
         self.action = self.policy.inference(obs, time_step=frame)
-
-        # build the command: [qpos_des, qvel_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
         qvel_des = np.zeros(self.act_size, dtype=np.float32)
         tau_ff = np.zeros(self.act_size, dtype=np.float32)
-
-        # publish the command
-        cmd_msg = Float32MultiArray()
-        cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
-        self.command_pub.publish(cmd_msg)
+        self.publish_command(qpos_des, qvel_des, tau_ff)
 
 
 ############################################################################
