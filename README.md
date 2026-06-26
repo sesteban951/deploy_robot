@@ -52,7 +52,7 @@ python policy/get_wandb_policy.py sesteban-california-institute-of-technology-ca
 # Deployment
 ## Simulation
 ### Launching
-You will open three terminals (plus an optional fourth to log data), each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
+You will open terminals, each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
 
 Terminal 1 (if you use joystick):
 ```bash
@@ -78,7 +78,7 @@ Press the power button twice and hold on the second press. You should see the ro
 This means the robot is on and ready to receive commands.
 
 ### Network Configuration
-First ensure that you are somehow connected to the robot via an ethernet cable. Then go to Ubuntu settings and configure the IPv4 Method to `Manual`, set the Address to `192.168.123.99`, and the Netmask to `255.255.255.0`. 
+First ensure that you are connected to the robot via an ethernet cable. Then go to Ubuntu settings and configure the IPv4 Method to `Manual`, set the Address to `192.168.123.99`, and the Netmask to `255.255.255.0`. 
 
 You can find the network interface name (e.g. `enp8s0`) via `ifconfig` command in a terminal. You will need it to run hardware deployment code.
 
@@ -90,7 +90,7 @@ python deploy/hardware/g1_low_level_example.py <network_interface_name>
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
 ### Launching
-You will open three terminals (plus an optional fourth to log data), each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
+You will open terminals, each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
 
 Terminal 1 (if you use joystick):
 ```bash
