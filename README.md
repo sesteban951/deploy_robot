@@ -111,6 +111,19 @@ python deploy/logger/log.py --mode hw
 
 ---
 
+# Plotting
+To visualize a logged run, use `logs/plot.py`. With no arguments it plots the most recent log found under `logs/simulation/` or `logs/hardware/`:
+```bash
+python logs/plot.py
+```
+To plot a specific log, pass its path:
+```bash
+python logs/plot.py --filename logs/hardware/<your-log>.h5
+```
+This brings up joint positions and velocities (measured vs commanded), estimated joint torques, the pelvis and torso IMUs, joystick commands, and motor temperatures — whichever of these datasets the log contains.
+
+---
+
 # Small details
 If you want VS Code to recognize the Unitree SDK source code, just add the following to your `.vscode/settings.json` that is located in your root directory:
 ```json

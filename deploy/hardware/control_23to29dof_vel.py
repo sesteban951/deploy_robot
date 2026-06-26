@@ -102,7 +102,9 @@ class ControlNode(Node):
 
     # load the config file
     def load_config(self, config_path: str):
-        # open the config file and load it
+        # open the config file and load it (accept the name with or without the .yaml extension)
+        if not config_path.endswith(".yaml"):
+            config_path += ".yaml"
         config_path_full = ROOT_DIR + "/deploy/configs/" + config_path
         with open(config_path_full, 'r') as f:
             config = yaml.safe_load(f)
