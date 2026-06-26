@@ -9,6 +9,7 @@ import glob
 import math
 import os
 import h5py
+import numpy as np
 import matplotlib.pyplot as plt
 
 
@@ -41,6 +42,14 @@ def plot_log(file_path: str):
     print(f"Loading {file_path}")
     with h5py.File(file_path, "r") as f:
         data = {name: f[name][:] for name in f.keys()}
+
+    # drop stale leading rows of time when fsm is in not in right state
+    t_raw = data["time"][:, 0]
+    resets = np.where(np.diff(t_raw) < 0)[0]
+    start = int(resets[0]) + 1 if len(resets) else 0
+    if start > 0:
+        print(f"Dropping {start} stale leading row(s) (fsm_time resets to ~0 at row {start}).")
+        data = {name: arr[start:] for name, arr in data.items()}
 
     # time axis (zeroed so runs always start at 0)
     t = data["time"][:, 0]
@@ -133,6 +142,23 @@ def plot_log(file_path: str):
             ax.grid(True)
     else:
         print("[SKIP] 'joystick' not in log, skipping joystick figure")
+
+    # motor temperatures, one subplot per motor (both sensors overlaid) -- only if logged
+    if "motor_temp" in data:
+        mt = data["motor_temp"]
+        Nt = mt.shape[1] // 2          # layout: [sensor0(Nt), sensor1(Nt)]
+        s0 = mt[:, 0:Nt]
+        s1 = mt[:, Nt:2*Nt]
+        _, axes = _joint_grid(Nt, f"motor temperatures ({Nt} motors)")
+        for i, ax in enumerate(axes):
+            ax.plot(t, s0[:, i], color="tab:orange", linewidth=1.0, label="sensor0")
+            ax.plot(t, s1[:, i], color="tab:red",    linewidth=1.0, label="sensor1")
+            ax.set_title(f"joint {i}")
+            ax.set_ylabel("[degC]")
+            ax.grid(True)
+        axes[0].legend(loc="upper right")
+    else:
+        print("[SKIP] 'motor_temp' not in log, skipping temperature figure")
 
     plt.show()
 

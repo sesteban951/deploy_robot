@@ -29,14 +29,14 @@ from utils.logger import Logger
 # CONSTANTS
 ############################################################################
 
-# start logging only while in this FSM state (hardware mode only)
-TARGET_FSM_STATE = "control"
+# start logging only while in one of these FSM states (hardware mode only)
+TARGET_FSM_STATES = ("control", "track")
 
 # datasets that MUST have a publisher; logger hard-fails if any are missing at discovery
 REQUIRED_DATASETS = ["joint_state", "pelvis_imu", "torso_imu", "time"]
 
-# datasets logged only if a publisher exists at discovery time (e.g. no joystick connected)
-OPTIONAL_DATASETS = ["command", "joystick"]
+# datasets logged only if a publisher exists at discovery time (e.g. no joystick connected, no temps in sim)
+OPTIONAL_DATASETS = ["command", "joystick", "motor_temp"]
 
 # all candidate datasets (topic discovery picks the active subset)
 DATASET_NAMES = REQUIRED_DATASETS + OPTIONAL_DATASETS
@@ -44,6 +44,7 @@ DATASET_NAMES = REQUIRED_DATASETS + OPTIONAL_DATASETS
 # dataset name -> topic name (time is mode-dependent, resolved via MODE_CONFIG)
 DATASET_TOPICS = {
     "joint_state": "deploy_robot/joint_state",
+    "motor_temp":  "deploy_robot/motor_temperature",
     "pelvis_imu":  "deploy_robot/pelvis_imu_state",
     "torso_imu":   "deploy_robot/torso_imu_state",
     "command":     "deploy_robot/command",
@@ -58,7 +59,7 @@ MODE_CONFIG = {
         "logs_subdir":  "simulation",
     },
     "hw": {
-        "time_topic":   "deploy_robot/fsm_time",
+        "time_topic":   "deploy_robot/hardware_time",   # monotonic (never resets) -> continuous across control+track
         "use_fsm":      True,
         "logs_subdir":  "hardware",
     },
@@ -100,12 +101,13 @@ class LogNode(Node):
         self._last_missing_key: tuple = ()
 
         # ROS subscribers
-        self.joint_sub      = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state',      self.joint_callback,      10)
-        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 10)
-        self.torso_imu_sub  = self.create_subscription(Float32MultiArray, 'deploy_robot/torso_imu_state',  self.torso_imu_callback,  10)
-        self.command_sub    = self.create_subscription(Float32MultiArray, 'deploy_robot/command',          self.command_callback,    10)
-        self.joystick_sub   = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick',         self.joystick_callback,   10)
-        self.time_sub       = self.create_subscription(Float64,           self.cfg["time_topic"],          self.time_callback,       10)
+        self.joint_sub      = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state',      self.joint_callback,       5)
+        self.motor_temp_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/motor_temperature', self.motor_temp_callback, 5)
+        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback,  5)
+        self.torso_imu_sub  = self.create_subscription(Float32MultiArray, 'deploy_robot/torso_imu_state',  self.torso_imu_callback,   5)
+        self.command_sub    = self.create_subscription(Float32MultiArray, 'deploy_robot/command',          self.command_callback,     5)
+        self.joystick_sub   = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick',         self.joystick_callback,    5)
+        self.time_sub       = self.create_subscription(Float64,           self.cfg["time_topic"],          self.time_callback,        5)
 
         # FSM subscription only in hardware mode
         if self.cfg["use_fsm"]:
@@ -124,7 +126,7 @@ class LogNode(Node):
         print(f"    Dump period:   {dump_period} s")
         print(f"    Time topic:    {self.cfg['time_topic']}")
         if self.cfg["use_fsm"]:
-            print(f"    Logging while fsm_state == '{TARGET_FSM_STATE}'.")
+            print(f"    Logging while fsm_state in {TARGET_FSM_STATES}.")
 
 
     #################################################################
@@ -137,7 +139,7 @@ class LogNode(Node):
     def _logging_enabled(self) -> bool:
         if not self.cfg["use_fsm"]:
             return True
-        return self.fsm_state == TARGET_FSM_STATE
+        return self.fsm_state in TARGET_FSM_STATES
 
     # cache the latest message and (on first arrival) create the Logger sized
     # to this particular topic's dimension
@@ -154,6 +156,9 @@ class LogNode(Node):
 
     def torso_imu_callback(self, msg: Float32MultiArray):
         self._handle_msg("torso_imu", np.array(msg.data, dtype=np.float32))
+
+    def motor_temp_callback(self, msg: Float32MultiArray):
+        self._handle_msg("motor_temp", np.array(msg.data, dtype=np.float32))
 
     def command_callback(self, msg: Float32MultiArray):
         self._handle_msg("command", np.array(msg.data, dtype=np.float32))

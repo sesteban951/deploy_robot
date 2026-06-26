@@ -127,7 +127,7 @@ class ControlNode(Node):
         self.dq = np.zeros(G1_NUM_MOTOR)              # joint velocities
         self.ddq = np.zeros(G1_NUM_MOTOR)             # joint accelerations
         self.tau_est = np.zeros(G1_NUM_MOTOR)         # estimated joint torques
-        self.motor_temp = np.zeros((G1_NUM_MOTOR, 2)) # motor temps [degC], 2 sensors/motor (only sensor1/col 1 is meaningful on G1)
+        self.motor_temp = np.zeros((G1_NUM_MOTOR, 2)) # motor temps [degC], 2 sensors/motor
 
         # command arrays
         self.q_cmd = np.array(self.default_joint_pos, dtype=np.float64)
@@ -334,7 +334,7 @@ class ControlNode(Node):
         joint_msg.data = np.concatenate([q, dq, ddq, tau_est]).tolist()
 
         # motor_temperature: [sensor0(29), sensor1(29)] [degC] = 58 floats
-        # NOTE: empirically only the SECOND (sensor1) half carries a meaningful reading
+        # NOTE: second half has actual moving temperatures
         motor_temp_msg = Float32MultiArray()
         motor_temp_msg.data = np.concatenate([motor_temp[:, 0], motor_temp[:, 1]]).tolist()
 
