@@ -122,11 +122,12 @@ class ControlNode(Node):
         self.torso_imu_gyroscope = None
         self.torso_imu_accelerometer = None
 
-        # Joint states
-        self.q = np.zeros(G1_NUM_MOTOR)        # joint positions
-        self.dq = np.zeros(G1_NUM_MOTOR)       # joint velocities
-        self.ddq = np.zeros(G1_NUM_MOTOR)      # joint accelerations
-        self.tau_est = np.zeros(G1_NUM_MOTOR)  # estimated joint torques
+        # joint states
+        self.q = np.zeros(G1_NUM_MOTOR)               # joint positions
+        self.dq = np.zeros(G1_NUM_MOTOR)              # joint velocities
+        self.ddq = np.zeros(G1_NUM_MOTOR)             # joint accelerations
+        self.tau_est = np.zeros(G1_NUM_MOTOR)         # estimated joint torques
+        self.motor_temp = np.zeros((G1_NUM_MOTOR, 2)) # motor temps [degC], 2 sensors/motor (only sensor1/col 1 is meaningful on G1)
 
         # command arrays
         self.q_cmd = np.array(self.default_joint_pos, dtype=np.float64)
@@ -229,22 +230,23 @@ class ControlNode(Node):
 
         # create subscribers
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
-        self.lowstate_subscriber.Init(self.LowStateHandler, 10)
+        self.lowstate_subscriber.Init(self.LowStateHandler, 1)
         self.torso_imu_subscriber = ChannelSubscriber("rt/secondary_imu", IMUState_)
-        self.torso_imu_subscriber.Init(self.TorsoIMUHandler, 10)
+        self.torso_imu_subscriber.Init(self.TorsoIMUHandler, 1)
 
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
         # ROS2 publishers
-        self.hardware_time_pub = self.create_publisher(Float64, "deploy_robot/hardware_time", 10)
-        self.fsm_time_pub = self.create_publisher(Float64, "deploy_robot/fsm_time", 10)
-        self.joint_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/joint_state", 10)
-        self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/pelvis_imu_state", 10)
-        self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/torso_imu_state", 10)
+        self.hardware_time_pub = self.create_publisher(Float64, "deploy_robot/hardware_time", 1)
+        self.fsm_time_pub = self.create_publisher(Float64, "deploy_robot/fsm_time", 1)
+        self.joint_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/joint_state", 1)
+        self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/pelvis_imu_state", 1)
+        self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/torso_imu_state", 1)
+        self.motor_temp_pub = self.create_publisher(Float32MultiArray, "deploy_robot/motor_temperature", 1)
 
         # ROS2 subscribers
-        self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 10)
-        self.fsm_sub = self.create_subscription(String, "deploy_robot/fsm", self.fsm_callback, 10)
+        self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 1)
+        self.fsm_sub = self.create_subscription(String, "deploy_robot/fsm", self.fsm_callback, 1)
 
         # sensor publish timer
         self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)
@@ -319,6 +321,7 @@ class ControlNode(Node):
             dq = self.dq.copy()
             ddq = self.ddq.copy()
             tau_est = self.tau_est.copy()
+            motor_temp = self.motor_temp.copy()
 
         # imu_state: [rpy(3), quaternion(4), gyroscope(3), accelerometer(3)] = 13 floats
         pelvis_imu_msg = Float32MultiArray()
@@ -329,6 +332,11 @@ class ControlNode(Node):
         # joint_state: [q(29), dq(29), ddq(29), tau_est(29)] = 116 floats
         joint_msg = Float32MultiArray()
         joint_msg.data = np.concatenate([q, dq, ddq, tau_est]).tolist()
+
+        # motor_temperature: [sensor0(29), sensor1(29)] [degC] = 58 floats
+        # NOTE: empirically only the SECOND (sensor1) half carries a meaningful reading
+        motor_temp_msg = Float32MultiArray()
+        motor_temp_msg.data = np.concatenate([motor_temp[:, 0], motor_temp[:, 1]]).tolist()
 
         # hardware_time: single float
         time_msg = Float64()
@@ -342,6 +350,7 @@ class ControlNode(Node):
         self.pelvis_imu_state_pub.publish(pelvis_imu_msg)
         self.torso_imu_state_pub.publish(torso_imu_msg)
         self.joint_state_pub.publish(joint_msg)
+        self.motor_temp_pub.publish(motor_temp_msg)
         self.hardware_time_pub.publish(time_msg)
         self.fsm_time_pub.publish(fsm_time_msg)
 
@@ -372,6 +381,7 @@ class ControlNode(Node):
                 self.dq[i] = self.low_state.motor_state[i].dq
                 self.ddq[i] = self.low_state.motor_state[i].ddq
                 self.tau_est[i] = self.low_state.motor_state[i].tau_est
+                self.motor_temp[i] = self.low_state.motor_state[i].temperature
 
 
     # callback to receive torso IMU messages
