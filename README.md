@@ -10,20 +10,9 @@ A brief overview of the repo structure is as follows:
 - `policy`: contains the policies to use for controlling the robot.
 - `utils`: contains utility code.
 
-Download a policy from WandB:
-```bash
-python policy/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
-```
-
 ---
 
 # Installation
-## Setting the environment variable
-Set the directory of this repo as a environment variable in your `~/.bashrc` file, for example:
-```bash
-export DEPLOY_ROOT_DIR="/<path-to>/deploy_robot"
-```
-
 ## ROS2
 Use `ROS2 Humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
 
@@ -34,22 +23,36 @@ sudo apt install ros-humble-joy
 ```
 
 ## Conda Environment
-Use `conda` and install via:
+Use `make` to create the `deploy` conda environment from `environment.yml`:
 ```bash
-conda env create -f environment.yml
-conda activate env_deploy
+make install
+```
+This creates the env **and** sets the `DEPLOY_ROOT_DIR` environment variable (scoped to the env) to this repo. Then, activate the env:
+```bash
+conda activate deploy
+```
+Other `make` targets:
+```bash
+make update      # update the env from environment.yml (after editing dependencies)
+make uninstall   # remove the deploy env (run `conda deactivate` first)
 ```
 
 ## Unitree SDK2 for Python
 After the `conda` environment is set up, install the Unitree SDK inside the conda environment.
-Make sure you are in the `env_deploy` conda environment by using `conda activate env_deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
+Make sure you are in the `deploy` conda environment by using `conda activate deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
+
+## Policy
+To download a policy from WandB into the `policy/` folder, you can for example run:
+```bash
+python policy/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
+```
 
 ---
 
 # Deployment
 ## Simulation
 ### Launching
-You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
+You will open three terminals (plus an optional fourth to log data), each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
 
 Terminal 1 (if you use joystick):
 ```bash
@@ -62,6 +65,10 @@ python deploy/simulation/<control_script>.py --config <your-config-file>.yaml
 Terminal 3:
 ```bash
 python deploy/simulation/simulation.py --config <your-config-file>.yaml
+```
+Terminal 4 (optional, to log data to `logs/simulation/`):
+```bash
+python deploy/logger/log.py --mode sim
 ```
 
 ## Hardware
@@ -83,7 +90,7 @@ python deploy/hardware/g1_low_level_example.py <network_interface_name>
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
 ### Launching
-You will open three terminals, each with in the `env_deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
+You will open three terminals (plus an optional fourth to log data), each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
 
 Terminal 1 (if you use joystick):
 ```bash
@@ -96,6 +103,10 @@ python deploy/hardware/<control_script>.py --config <your-config-file>.yaml
 Terminal 3:
 ```bash
 python deploy/hardware/hardware.py --config <your-config-file>.yaml
+```
+Terminal 4 (optional, to log data to `logs/hardware/`):
+```bash
+python deploy/logger/log.py --mode hw
 ```
 
 ---

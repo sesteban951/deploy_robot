@@ -1,5 +1,5 @@
 # hardware deploy env
-name: env_deploy
+name: deploy
 channels:
   - conda-forge
 dependencies:
