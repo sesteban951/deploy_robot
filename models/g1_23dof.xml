@@ -1,5 +1,6 @@
+<!-- G1 23-DOF robot, compiled from mjlab. Scene/floor: g1_23dof_scene.xml -->
 <mujoco model="g1_23dof_rev_1_0">
-  <compiler angle="radian" meshdir="meshes/"/>
+  <compiler angle="radian" meshdir="assets/"/>
 
   <size nkey="1"/>
 
@@ -57,7 +58,7 @@
       <geom class="visual" material="black" mesh="pelvis"/>
       <geom class="visual" mesh="pelvis_contour_link"/>
       <geom name="pelvis_collision" class="collision" size="0.07" pos="0 0 -0.08" type="sphere" condim="1" priority="0"/>
-      <site name="imu_in_pelvis" pos="0.04525 0 -0.08339" size="0.01"/>
+      <site name="imu_pelvis" pos="0.04525 0 -0.08339" size="0.01"/>
       <camera name="tracking" pos="1.734 -1.135 0.35" quat="0.683353 0.555871 0.298684 0.367183" mode="trackcom"/>
       <light pos="0 0 2" dir="0 0 -1" mode="trackcom"/>
       <body name="left_hip_pitch_link" pos="0 0.064452 -0.1027">
@@ -152,7 +153,7 @@
         <geom class="visual" pos="0.0039635 0 -0.044" material="black" mesh="head_link"/>
         <geom name="torso_collision" class="collision" size="0.09 0.06" pos="0.01 0 0.14" quat="0 1 0 0" condim="1" priority="0"/>
         <geom name="head_collision" class="collision" size="0.06" pos="0 0 0.43" type="sphere" condim="1" priority="0"/>
-        <site name="imu_in_torso" pos="-0.03959 -0.00224 0.14792" size="0.01"/>
+        <site name="imu_torso" pos="-0.03959 -0.00224 0.14792" size="0.01"/>
         <body name="left_shoulder_pitch_link" pos="0.0039563 0.10022 0.24778" quat="0.990264 0.139201 1.38722e-05 -9.86868e-05">
           <inertial pos="0 0.035892 -0.011628" quat="0.654152 0.0130458 -0.326267 0.68225" mass="0.718" diaginertia="0.000465864 0.000432842 0.000406394"/>
           <joint name="left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.0892 2.6704" armature="0.00360972"/>
@@ -250,14 +251,14 @@
 
   <sensor>
     <!-- torso IMU -->
-    <framequat name="torso_imu_quat_sensor" objtype="site" objname="imu_in_torso" noise="0.01"/>
-    <gyro name="torso_imu_gyro_sensor" site="imu_in_torso" noise="0.05"/>
-    <accelerometer name="torso_imu_acc_sensor" site="imu_in_torso" noise="0.1"/>
+    <framequat name="torso_imu_quat_sensor" objtype="site" objname="imu_torso" noise="0.01"/>
+    <gyro name="torso_imu_gyro_sensor" site="imu_torso" noise="0.05"/>
+    <accelerometer name="torso_imu_acc_sensor" site="imu_torso" noise="0.1"/>
 
     <!-- pelvis IMU -->
-    <framequat name="pelvis_imu_quat_sensor" objtype="site" objname="imu_in_pelvis" noise="0.01"/>
-    <gyro name="pelvis_imu_gyro_sensor" site="imu_in_pelvis" noise="0.05"/>
-    <accelerometer name="pelvis_imu_acc_sensor" site="imu_in_pelvis" noise="0.1"/>
+    <framequat name="pelvis_imu_quat_sensor" objtype="site" objname="imu_pelvis" noise="0.01"/>
+    <gyro name="pelvis_imu_gyro_sensor" site="imu_pelvis" noise="0.05"/>
+    <accelerometer name="pelvis_imu_acc_sensor" site="imu_pelvis" noise="0.1"/>
 
     <!-- Left Leg -->
     <jointpos name="left_hip_pitch_joint_pos_sensor" joint="left_hip_pitch_joint" noise="0.01"/>
@@ -319,23 +320,5 @@
   <keyframe>
     <key name="init_state" qpos="0 0 0.8 1 0 0 0 -0.1 0 0 0.3 -0.2 0 -0.1 0 0 0.3 -0.2 0 0 0.35 0.18 0 0.87 0 0.35 -0.18 0 0.87 0" ctrl="0.35 0.18 0 0.87 0 0.35 -0.18 0 0.87 0 -0.1 0 -0.1 0 0 0 0.3 0 0.3 -0.2 0 -0.2 0"/>
   </keyframe>
-
-  <statistic center="0.0 0.0 0.5" extent="1.5"/>
-
-  <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="140" elevation="-20"/>
-  </visual>
-
-  <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
-      markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
-  </asset>
-
-  <worldbody>
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
-  </worldbody>
+  
 </mujoco>
