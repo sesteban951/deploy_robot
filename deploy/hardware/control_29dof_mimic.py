@@ -30,7 +30,7 @@ from utils.math_utils import (
     quat_conjugate,
     quat_multiply,
     quat_to_rot6d,
-    yaw_quat,
+    heading_about_z_world,
 )
 
 
@@ -218,9 +218,8 @@ class ControlNode(Node):
     # OBSERVATION
     #################################################################
 
-    # build the observation vector for the policy at the given motion frame
+    # build the observation vector at the given frame
     # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
-    # frame is chosen by the caller: 0 while holding frame 0 in "control", advancing in "track".
     def build_observation(self, frame):
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
@@ -304,10 +303,11 @@ class ControlNode(Node):
         # align motion frame 0 with the robot's current yaw on the first policy tick.
         if not self.init_quat_captured:
             motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
-            self.init_quat = quat_multiply(
-                yaw_quat(self.anchor_quat),
-                quat_conjugate(yaw_quat(motion_anchor_quat_0)),
+            # heading offset (about world z) between robot and reference
+            q_rel = quat_multiply(
+                self.anchor_quat, quat_conjugate(motion_anchor_quat_0)
             )
+            self.init_quat = heading_about_z_world(q_rel)
             self.init_quat_captured = True
 
         # run the policy and publish the command

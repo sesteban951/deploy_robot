@@ -31,7 +31,7 @@ from utils.math_utils import (
     quat_conjugate,
     quat_multiply,
     quat_to_rot6d,
-    yaw_quat,
+    heading_about_z_world,
 )
 
 
@@ -76,12 +76,14 @@ class ControlNode(Node):
         # initialize the action
         self.action = np.zeros(self.act_size)
 
-        # yaw alignment between robot-at-policy-start and motion frame 0 (identity until captured on first tick)
+        # yaw alignment between the robot's current heading and motion frame 0
         self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.init_quat_captured = False
         self.policy_start_time = None
+        self.prev_frame = 0  # to detect the loop wrap in no-joystick mode
 
         # joystick / FSM gating of the motion playback
-        self.joystick_connected = False  # latest connection flag from the joystick node
+        self.joystick_connected = False   # latest connection flag from the joystick node
         self.fsm_state = "control"        # connected default: "control" = frozen on the first frame
         self.track_start_time = None      # sim time the current "track" episode began (None = not tracking)
 
@@ -224,11 +226,10 @@ class ControlNode(Node):
     def joystick_callback(self, msg):
         self.joystick_connected = (msg.data[0] > 0.5)
 
-    # FSM state from the joystick node. The trajectory only advances while in "track":
-    # entering "track" (re)starts playback from the first frame; leaving "track" holds
-    # the first frame again, so control <-> track can be repeated.
+    # FSM state from the joystick node; the trajectory only advances while in "track"
     def fsm_callback(self, msg):
         state = msg.data
+        entering_control = (state == "control" and self.fsm_state != "control")
         if state == "track" and self.fsm_state != "track":
             # entering track: (re)start the trajectory from the first frame
             self.track_start_time = self.sim_time
@@ -237,6 +238,10 @@ class ControlNode(Node):
             # leaving track: reset so the next 'track' replays from the start
             self.track_start_time = None
             print(f"FSM left 'track' (now '{state}'): holding the first frame.")
+        
+        # re-align the yaw to the robot's current heading on every (re)entry to control
+        if entering_control:
+            self.init_quat_captured = False
         self.fsm_state = state
 
 
@@ -244,22 +249,24 @@ class ControlNode(Node):
     # OBSERVATION
     #################################################################
 
-    # build the observation vector for the policy
-    # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
-    def build_observation(self):
-
-        # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
+    # current motion frame index for this tick
+    # 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
+    def compute_frame(self):
         if not self.use_fsm:
             # no joystick: loop the trajectory continuously
             elapsed = self.sim_time - self.policy_start_time
-            frame = int(elapsed / self.ctrl_dt) % self.motion_num_frames
+            return int(elapsed / self.ctrl_dt) % self.motion_num_frames
         elif self.track_start_time is None:
             # in "control" (not tracking): hold the first frame
-            frame = 0
+            return 0
         else:
             # tracking: advance from frame 0, then freeze at the last frame (no loop)
             elapsed = self.sim_time - self.track_start_time
-            frame = min(int(elapsed / self.ctrl_dt), self.motion_num_frames - 1)
+            return min(int(elapsed / self.ctrl_dt), self.motion_num_frames - 1)
+
+    # build the observation vector for the policy
+    # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
+    def build_observation(self, frame):
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
@@ -291,7 +298,7 @@ class ControlNode(Node):
             qj, dqj, self.action,
         ]).astype(np.float32)
 
-        return obs, frame
+        return obs
 
 
     #################################################################
@@ -301,17 +308,31 @@ class ControlNode(Node):
     # control published at the control frequency
     def control_callback(self):
 
-        # on the first tick, align motion frame 0 with the robot's current yaw
+        # one-time timing origin (used by the no-FSM continuous-loop mode)
         if self.policy_start_time is None:
             self.policy_start_time = self.sim_time
-            motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
-            self.init_quat = quat_multiply(
-                yaw_quat(self.anchor_quat),
-                quat_conjugate(yaw_quat(motion_anchor_quat_0)),
-            )
 
-        # get the current observation and motion frame index
-        obs, frame = self.build_observation()
+        # current motion frame for this tick
+        frame = self.compute_frame()
+
+        # no-FSM loop: re-align heading at each wrap so a turning motion chains
+        # (the FSM path does this on control re-entry instead)
+        if not self.use_fsm and frame < self.prev_frame:
+            self.init_quat_captured = False
+        self.prev_frame = frame
+
+        # capture the heading offset once per control/loop (re)entry; lets a turning motion chain
+        if not self.init_quat_captured:
+            motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
+            # heading offset (about world z) between robot and reference
+            q_rel = quat_multiply(
+                self.anchor_quat, quat_conjugate(motion_anchor_quat_0)
+            )
+            self.init_quat = heading_about_z_world(q_rel)
+            self.init_quat_captured = True
+
+        # get the current observation
+        obs = self.build_observation(frame)
 
         # target joint positions (PD control)
         self.action = self.policy.inference(obs, time_step=frame)

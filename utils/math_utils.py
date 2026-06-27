@@ -73,3 +73,14 @@ def yaw_quat(q):
     w, x, y, z = q
     yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
     return np.array([np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)], dtype=np.float32)
+
+
+def heading_about_z_world(q):
+    """Heading-only quaternion: the rotation about world +z within q=[w,x,y,z] (keep
+    w & z, drop x & y, renormalize). No pitch +/-90 gimbal lock, unlike yaw_quat."""
+    w, x, y, z = q
+    heading_q = np.array([w, 0.0, 0.0, z], dtype=np.float32)
+    n = np.linalg.norm(heading_q)
+    if n < 1e-6:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    return heading_q / n
