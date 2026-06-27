@@ -68,9 +68,9 @@ if __name__ == "__main__":
     # auto-select the G1 mujoco model based on the motion's joint count
     n_joints = qpos.shape[1]
     if n_joints == 23:
-        xml_path = ROOT_DIR + "/models/g1_23dof_mjlab.xml"
+        xml_path = ROOT_DIR + "/models/g1_23dof_scene.xml"
     elif n_joints == 29:
-        xml_path = ROOT_DIR + "/models/g1_29dof_mjlab.xml"
+        xml_path = ROOT_DIR + "/models/g1_29dof_scene.xml"
     else:
         raise ValueError(f"Unsupported joint count {n_joints}; expected 23 or 29.")
     print(f"Using model: [{xml_path}].")

@@ -32,6 +32,15 @@ from utils.math_utils import quat_to_rpy
 
 
 ############################################################################
+# SIMULATION SETTINGS
+############################################################################
+
+# Physics integrates at SIM_HZ; the viewer renders at RENDER_HZ (decoupled).
+SIM_HZ = 1000.0    # [Hz] simulation rate
+RENDER_HZ = 50.0   # [Hz] viewer render rate
+
+
+############################################################################
 # SIMULATION NODE
 ############################################################################
 
@@ -123,6 +132,9 @@ class SimulationNode(Node):
         self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
         self.mj_data = mujoco.MjData(self.mj_model)
 
+        # simulate at the global SIM_HZ (overrides the model's <option timestep>)
+        self.mj_model.opt.timestep = 1.0 / SIM_HZ
+
         # load model properties
         self.nq = self.mj_model.nq
         self.nv = self.mj_model.nv
@@ -172,10 +184,14 @@ class SimulationNode(Node):
         self.viewer.cam.distance  = 2.5    # meters from lookat point
         self.viewer.cam.lookat[:] = list(self.default_base[0:3]) # (x, y, z) point to look at
 
-        self.viewer_render_hz = 50.0
+        self.viewer_render_hz = RENDER_HZ
         self._last_viewer_sync = 0.0
         self._real_start_time = time.perf_counter()
         self._next_step_deadline = self._real_start_time + self.sim_dt
+
+        # real-time-rate tracking (sim time vs wall time over a render interval)
+        self._rtr_last_sim = 0.0
+        self._rtr_last_wall = self._real_start_time
 
 
     #################################################################
@@ -289,12 +305,22 @@ class SimulationNode(Node):
             # update the viewer with the current simulation state
             self.viewer.sync()
 
-            # display sim time first and wall-clock elapsed time second
+            # real-time rate (RTR): sim seconds advanced per wall second over the
+            # last render interval (1.0 == running exactly at real-time)
             real_elapsed = now - self._real_start_time
+            d_wall = now - self._rtr_last_wall
+            rtr = (self.mj_data.time - self._rtr_last_sim) / d_wall if d_wall > 0.0 else 0.0
+            self._rtr_last_sim = self.mj_data.time
+            self._rtr_last_wall = now
+
             self.viewer.set_texts((
                 self._viewer_font_scale,
                 mujoco.mjtGridPos.mjGRID_TOPLEFT,
-                f"Sim time:   {self.mj_data.time:.2f}s\nReal time: {real_elapsed:.2f}s",
+                f"Sim time:    {self.mj_data.time:.2f}s\n"
+                f"Real time:   {real_elapsed:.2f}s\n"
+                f"RTR:         {rtr:.2f}\n"
+                f"Sim rate:    {SIM_HZ:.0f} Hz\n"
+                f"Render rate: {RENDER_HZ:.0f} Hz",
                 "",
             ))
 

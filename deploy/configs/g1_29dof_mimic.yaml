@@ -1,4 +1,4 @@
-xml_path: "g1_29dof_mjlab.xml"
+xml_path: "g1_29dof_scene.xml"
 
 # policy_path: "g1_29dof_mimic_pelvis.onnx"
 # policy_path: "g1_29dof_mimic_torso.onnx"
@@ -15,9 +15,12 @@ xml_path: "g1_29dof_mjlab.xml"
 # motion_path: "srb_jump_forward_jason.npz"
 # policy_path: "g1_29dof_mimic_crawling.onnx"
 # motion_path: "bone_seed_crawl.npz"
-policy_path: "g1_29dof_mimic_180_twist_kino.onnx"
-motion_path: "kino_180_twist_high.npz"
-
+# policy_path: "g1_29dof_mimic_180_twist_kino.onnx"
+# motion_path: "kino_180_twist_high.npz"
+# policy_path: "gait_walking_to.onnx"
+# motion_path: "gait_walking_29dof.npz"
+policy_path: "gait_crawling_to.onnx"
+motion_path: "gait_crawling_29dof.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
