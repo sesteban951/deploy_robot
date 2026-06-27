@@ -1,12 +1,11 @@
 ##
 #
-# Policy class for handling policy-related operations, 
+# Policy class for handling policy-related operations,
 # such as loading, inferencing, and getting properties.
 #
 ##
 
 import numpy as np
-import torch
 import onnx
 import onnxruntime as ort
 
@@ -14,30 +13,6 @@ import onnxruntime as ort
 ############################################################################
 # HELPERS
 ############################################################################
-
-# get the input and output dimensions of a torch policy
-def get_policy_io_size_torch(policy, max_input_size=1024):
-
-    # set the policy to eval mode
-    policy.eval()
-
-    # input size search
-    input_size = None
-    for input_size in range(1, max_input_size + 1):
-        try:
-            dummy = torch.zeros(1, input_size)
-            with torch.no_grad():
-                policy(dummy)
-            break
-        except Exception:
-            continue
-    
-    # query the output size
-    with torch.no_grad():
-        output = policy(torch.zeros(1, input_size))
-    output_size = output.shape[-1]
-
-    return input_size, output_size
 
 # get the input and output dimensions of an onnx policy
 def get_policy_io_size_onnx(policy):
@@ -85,18 +60,6 @@ def load_policy_metadata(onnx_model):
     return metadata
 
 
-# inference with a torch policy
-def policy_inference_torch(policy, input):
-
-    # convert to torch tensor and add batch dimension
-    input_tensor = torch.from_numpy(input).unsqueeze(0)
-
-    # forward pass (no_grad disables autograd for faster inference)
-    with torch.no_grad():
-        action = policy(input_tensor).numpy().squeeze()
-
-    return action
-
 # inference with an onnx policy
 def policy_inference_onnx(session, input, **extra_inputs):
 
@@ -125,7 +88,7 @@ def policy_inference_onnx(session, input, **extra_inputs):
 
 class Policy:
     """
-    Generic control policy class that can handle both PyTorch and ONNX policies.
+    Control policy class for ONNX policies (with embedded deployment metadata).
     """
 
     def __init__(self, policy_path):
@@ -136,58 +99,42 @@ class Policy:
         # compute important properties of the policy
         self._get_policy_properties()
 
-        
-    # load a policy given the path
+
+    # load an onnx policy given the path
     def _load_policy(self, policy_path):
 
         # metadata embedded in the policy
         self.metadata = {}
 
-        # torch file
-        if "pt" in policy_path.lower():
-            self.policy = torch.jit.load(policy_path)
-            self.policy.eval()
-            self._policy_type = "torch"
+        # only onnx policies are supported
+        if not policy_path.lower().endswith(".onnx"):
+            raise ValueError("Unsupported policy format. Only .onnx policies are supported.")
 
-        # onnx file
-        elif "onnx" in policy_path.lower():
-            self.policy = onnx.load(policy_path)
-            self._onnx_session = ort.InferenceSession(
-                self.policy.SerializeToString(), providers=["CPUExecutionProvider"]
-            )
-            self._policy_type = "onnx"
+        self.policy = onnx.load(policy_path)
+        self._onnx_session = ort.InferenceSession(
+            self.policy.SerializeToString(), providers=["CPUExecutionProvider"]
+        )
+        self._policy_type = "onnx"
 
-            # load embedded metadata if available
-            if self.policy.metadata_props:
-                self.metadata = load_policy_metadata(self.policy)
-        # incompatible file
-        else:
-            raise ValueError("Unsupported policy format. Please use .pt or .onnx files.")
+        # load embedded metadata if available
+        if self.policy.metadata_props:
+            self.metadata = load_policy_metadata(self.policy)
 
 
     # get important properties of the policy
     def _get_policy_properties(self):
-        # I/O names and sizes
-        self.input_size = None
-        self.output_size = None
-        self.inputs = []
-        self.outputs = []
-        if self._policy_type == "torch":
-            self.input_size, self.output_size = get_policy_io_size_torch(self.policy)
-        elif self._policy_type == "onnx":
-            self.input_size, self.output_size = get_policy_io_size_onnx(self.policy)
-            self.inputs = [{"name": inp.name, "shape": inp.shape} for inp in self._onnx_session.get_inputs()]
-            self.outputs = [{"name": out.name, "shape": out.shape} for out in self._onnx_session.get_outputs()]
-            self.input_sizes = [inp.shape[-1] for inp in self._onnx_session.get_inputs()]
+        self.input_size, self.output_size = get_policy_io_size_onnx(self.policy)
+        self.inputs = [{"name": inp.name, "shape": inp.shape} for inp in self._onnx_session.get_inputs()]
+        self.outputs = [{"name": out.name, "shape": out.shape} for out in self._onnx_session.get_outputs()]
+        self.input_sizes = [inp.shape[-1] for inp in self._onnx_session.get_inputs()]
+
 
     # inference the policy given an input
     def inference(self, input, **extra_inputs):
-        if self._policy_type == "torch":
-            return policy_inference_torch(self.policy, input)
-        elif self._policy_type == "onnx":
-            return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
+        return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
 
-    # fetch a deployment parameter embedded in the policy metadata as a float32 array
+
+    # fetch a deployment parameter embedded in the policy metadata
     def get_param(self, key, default=None):
         if key in self.metadata:
             return np.asarray(self.metadata[key], dtype=np.float32)
@@ -199,7 +146,7 @@ class Policy:
 ############################################################################
 
 def main(args=None):
-    
+
     import os
     ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
