@@ -140,6 +140,9 @@ class Policy:
     # load a policy given the path
     def _load_policy(self, policy_path):
 
+        # metadata embedded in the policy
+        self.metadata = {}
+
         # torch file
         if "pt" in policy_path.lower():
             self.policy = torch.jit.load(policy_path)
@@ -183,6 +186,12 @@ class Policy:
             return policy_inference_torch(self.policy, input)
         elif self._policy_type == "onnx":
             return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
+
+    # fetch a deployment parameter embedded in the policy metadata as a float32 array
+    def get_param(self, key, default=None):
+        if key in self.metadata:
+            return np.asarray(self.metadata[key], dtype=np.float32)
+        return None if default is None else np.asarray(default, dtype=np.float32)
 
 
 ############################################################################

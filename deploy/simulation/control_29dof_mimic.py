@@ -120,11 +120,11 @@ class ControlNode(Node):
     # initialize the policy
     def init_policy(self):
 
-        # default joint positions
-        self.qpos_joints_default = np.array(self.config['default_joint_pos'])
+        # default_joint_pos and action_scale are loaded from the policy metadata
+        self.qpos_joints_default = self.config.get('default_joint_pos')
 
         # scaling params
-        self.action_scale = np.array(self.config["action_scale"], dtype=np.float32)
+        self.action_scale = self.config.get('action_scale')
 
         # PD gains
         self.Kp = np.array(self.config["Kp"], dtype=np.float32)
@@ -143,6 +143,16 @@ class ControlNode(Node):
         # alias for convenience
         self.obs_size = self.policy.input_size
         self.act_size = self.policy.output_size
+
+        # deployment params embedded in the policy
+        self.qpos_joints_default = self.policy.get_param('default_joint_pos', self.qpos_joints_default)
+        self.action_scale = self.policy.get_param('action_scale', self.action_scale)
+        assert len(self.qpos_joints_default) == self.act_size, \
+            f"default_joint_pos has {len(self.qpos_joints_default)} values, expected {self.act_size}."
+        assert len(self.action_scale) == self.act_size, \
+            f"action_scale has {len(self.action_scale)} values, expected {self.act_size}."
+        for _k in ('default_joint_pos', 'action_scale'):
+            print(f"    {_k}: from {'policy metadata' if _k in self.policy.metadata else 'yaml config'}")
 
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Policy type: {self.policy._policy_type}")
@@ -185,8 +195,8 @@ class ControlNode(Node):
         print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
 
     # spin briefly to detect whether a joystick is connected.
-    def check_joystick_connected(self, timeout: float = 2.0):
-        print(f"Checking for a joystick connection ({timeout:.0f}s)...")
+    def check_joystick_connected(self, timeout: float = 0.5):
+        print("Checking for a joystick connection...")
         t0 = time.time()
         while time.time() - t0 < timeout:
             rclpy.spin_once(self, timeout_sec=0.05)

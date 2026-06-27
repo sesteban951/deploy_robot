@@ -36,7 +36,7 @@ from utils.math_utils import quat_to_rpy
 ############################################################################
 
 # Physics integrates at SIM_HZ; the viewer renders at RENDER_HZ (decoupled).
-SIM_HZ = 1000.0    # [Hz] simulation rate
+SIM_HZ = 500.0    # [Hz] simulation rate
 RENDER_HZ = 50.0   # [Hz] viewer render rate
 
 
@@ -118,8 +118,8 @@ class SimulationNode(Node):
     def init_params(self):
 
         # set the default state
-        self.default_base = np.array(self.config['default_base_pos'])
-        self.default_joints = np.array(self.config['default_joint_pos'])
+        self.default_base = np.array(self.config['home_base_pos'])
+        self.home_joints = np.array(self.config['home_joint_pos'])
 
 
     # initialize the mujoco simulation
@@ -142,12 +142,12 @@ class SimulationNode(Node):
         self.sim_dt = self.mj_model.opt.timestep
 
         # make sure the default joints are the correct size
-        assert len(self.default_joints) == self.nu, (f"Default joint angles must be of size "
-                                                     f"{self.nu}, got {len(self.default_joints)}.")
+        assert len(self.home_joints) == self.nu, (f"Default joint angles must be of size "
+                                                     f"{self.nu}, got {len(self.home_joints)}.")
 
         # assign initial state
         self.mj_data.qpos[:7] = self.default_base
-        self.mj_data.qpos[7:7+self.nu] = self.default_joints
+        self.mj_data.qpos[7:7+self.nu] = self.home_joints
 
         # build list of joint sensor names (matching actuator order)
         self.joint_pos_sensor_names = []

@@ -17,10 +17,10 @@ xml_path: "g1_29dof_scene.xml"
 # motion_path: "bone_seed_crawl.npz"
 # policy_path: "g1_29dof_mimic_180_twist_kino.onnx"
 # motion_path: "kino_180_twist_high.npz"
-# policy_path: "gait_walking_to.onnx"
-# motion_path: "gait_walking_29dof.npz"
-policy_path: "gait_crawling_to.onnx"
-motion_path: "gait_crawling_29dof.npz"
+policy_path: "gait_walking_to.onnx"
+motion_path: "gait_walking_29dof.npz"
+# policy_path: "gait_crawling_to.onnx"
+# motion_path: "gait_crawling_29dof.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
@@ -40,18 +40,12 @@ Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
 
-# default positions
-default_base_pos: [0, 0, 0.78, 1, 0, 0, 0]
-default_joint_pos: [-0.312, 0.0, 0.0, 0.669, -0.363, 0.0, 
-                    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0, 
-                     0.0, 0.0, 0.0, 
-                     0.2,  0.2, 0.0, 0.6, 0.0, 0.0, 0.0, 
-                     0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
-
-action_scale: [0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
-               0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
-               0.548, 0.439, 0.439,
-               0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075,
-               0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075]
+# home positions (sim spawns here; hardware ramps to here during the 'home' FSM state)
+home_base_pos: [0, 0, 0.78, 1, 0, 0, 0]
+home_joint_pos: [-0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+                 -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+                  0.0, 0.0, 0.0,
+                  0.2,  0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
+                  0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
 
 control_dt: 0.02

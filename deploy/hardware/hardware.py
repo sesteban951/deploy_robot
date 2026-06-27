@@ -130,7 +130,7 @@ class ControlNode(Node):
         self.motor_temp = np.zeros((G1_NUM_MOTOR, 2)) # motor temps [degC], 2 sensors/motor
 
         # command arrays
-        self.q_cmd = np.array(self.default_joint_pos, dtype=np.float64)
+        self.q_cmd = np.array(self.home_joint_pos, dtype=np.float64)
         self.dq_cmd = np.zeros(G1_NUM_MOTOR)
         self.Kp_cmd = np.array(self.Kp, dtype=np.float64)
         self.Kd_cmd = np.array(self.Kd, dtype=np.float64)
@@ -184,7 +184,7 @@ class ControlNode(Node):
         self.home_pos_duration = self.config['home_pos_duration']   # float
 
         # default joint positions
-        self.default_joint_pos = self.config['default_joint_pos'] # list
+        self.home_joint_pos = self.config['home_joint_pos'] # list
 
         # PD gains
         self.Kp = self.config['Kp']  # list
@@ -192,7 +192,7 @@ class ControlNode(Node):
 
         # type checks
         assert type(self.home_pos_duration) in [float], "home_pos_duration must be a float."
-        assert type(self.default_joint_pos) == list, "default_joint_pos must be a list."
+        assert type(self.home_joint_pos) == list, "home_joint_pos must be a list."
         assert type(self.Kp) == list, "Kp must be a list."
         assert type(self.Kd) == list, "Kd must be a list."
 
@@ -202,8 +202,8 @@ class ControlNode(Node):
 
         # value checks
         assert self.home_pos_duration >= 3.0, "home_pos_duration must take at least 3 seconds."
-        assert len(self.default_joint_pos) == G1_NUM_MOTOR, (f"Expected {G1_NUM_MOTOR} default joint positions, "
-                                                             f"got {len(self.default_joint_pos)}")
+        assert len(self.home_joint_pos) == G1_NUM_MOTOR, (f"Expected {G1_NUM_MOTOR} default joint positions, "
+                                                             f"got {len(self.home_joint_pos)}")
         for i in range(G1_NUM_MOTOR):
             assert self.Kp[i] >= 0.0, f"Kp for joint {i} must be non-negative."
             assert self.Kd[i] >= 0.0, f"Kd for joint {i} must be non-negative."
@@ -463,7 +463,7 @@ class ControlNode(Node):
                 self.low_cmd.mode_machine = self.mode_machine_
                 self.low_cmd.motor_cmd[i].mode = 1
                 self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.fsm_start_q[i] + ratio * self.default_joint_pos[i]
+                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i]
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
