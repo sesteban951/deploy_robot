@@ -7,11 +7,19 @@ xml_path: "g1_29dof_mjlab.xml"
 # motion_path: "srb_squat.npz"
 # policy_path: "g1_29dof_mimic_jump.onnx"
 # motion_path: "srb_jump_up_spc.npz"
-policy_path: "g1_29dof_mimic_jump-srb-ik.onnx"
-motion_path: "srb_ik_jump.npz"
+# policy_path: "g1_29dof_mimic_jump-srb-ik.onnx"
+#motion_path: "srb_ik_jump.npz"
+#policy_path: "g1_29dof_mimic_backflip_sbo.onnx"
+#motion_path: "sbo_backflip.npz"
+#policy_path: "g1_29dof_mimic_backflip_kino.onnx"
+#motion_path: "kino_backflip.npz"
 # policy_path: "g1_29dof_mimic_jump-fwd-srb-ik.onnx"
 # motion_path: "srb_ik_jump_fwd.npz"
 
+#policy_path: "g1_29dof_mimic_180_twist_kino.onnx"
+#motion_path: "kino_180_twist_high.npz"
+policy_path: "g1_29dof_mimic_360_twist_kino.onnx"
+motion_path: "kino_360_twist.npz"
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
 
