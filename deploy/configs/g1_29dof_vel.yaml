@@ -1,6 +1,7 @@
 xml_path: "g1_29dof_scene.xml"
 # policy_path: "g1_29dof_vel.onnx"
-policy_path: "g1_29dof_vel_robust.onnx"
+# policy_path: "g1_29dof_vel_robust.onnx"
+policy_path: "g1_29dof_vel_robust_delay.onnx"
 
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
@@ -8,8 +9,8 @@ home_pos_duration: 3.0  # [sec]
 # PD gains per joint
 Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
      40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
-     35.179, 23.501, 23.501,  # Warning: ACTIVE WAIST, lower gains
-     # 40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST
+     # 35.179, 23.501, 23.501,  # Warning: ACTIVE WAIST, lower gains
+     40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST, normal gains
      # 40.179, 0.0,    0.0,     # Warning: LOCKED WAIST
      14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
      14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
