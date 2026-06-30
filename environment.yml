@@ -18,3 +18,5 @@ dependencies:
     - pygame
     - wandb
     - h5py
+    - pyqtgraph
+    - pyside6
