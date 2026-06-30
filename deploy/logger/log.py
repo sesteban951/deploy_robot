@@ -10,7 +10,9 @@ import datetime
 import os
 import sys
 import time
+import json
 import numpy as np
+import h5py
 
 # ROS2 imports
 import rclpy
@@ -23,6 +25,7 @@ sys.path.append(ROOT_DIR)
 
 # custom imports
 from utils.logger import Logger
+from utils.experiment_utils import EXPERIMENT_INFO_TOPIC, experiment_info_qos
 
 
 ############################################################################
@@ -76,7 +79,7 @@ class LogNode(Node):
     them to an HDF5 file via utils.logger.Logger.
     """
 
-    def __init__(self, mode: str, output_path: str, log_freq: float, dump_period: float):
+    def __init__(self, mode: str, filename: str, log_freq: float, dump_period: float):
 
         super().__init__('log_node')
 
@@ -88,8 +91,8 @@ class LogNode(Node):
         self.fsm_state = "init"
 
         # lazy Loggers + latest-message caches, both keyed by dataset name.
-        # Loggers are created on the first message of each topic
-        self.output_path = output_path
+        self.base_filename = filename
+        self.output_path = build_output_path(mode, filename)
         self._loggers: dict = {}
         self._latest: dict = {}
 
@@ -113,6 +116,11 @@ class LogNode(Node):
         if self.cfg["use_fsm"]:
             self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
 
+        # experiment info (latched): which config/policy/motion this run used
+        self._experiment_written = False
+        self.experiment_sub = self.create_subscription(
+            String, EXPERIMENT_INFO_TOPIC, self.experiment_info_callback, experiment_info_qos())
+
         # periodic log timer (snapshots latest messages into the loggers)
         self.log_timer = self.create_timer(log_period, self.log_callback)
 
@@ -121,7 +129,7 @@ class LogNode(Node):
 
         print(f"Log node initialized.")
         print(f"    Mode:          {mode}")
-        print(f"    Output file:   {output_path}")
+        print(f"    Output file:   {self.output_path}")
         print(f"    Log frequency: {log_freq} Hz ({log_period} s)")
         print(f"    Dump period:   {dump_period} s")
         print(f"    Time topic:    {self.cfg['time_topic']}")
@@ -168,6 +176,38 @@ class LogNode(Node):
 
     def time_callback(self, msg: Float64):
         self._handle_msg("time", np.array([msg.data], dtype=np.float32))
+
+    # latched experiment info -> written once into the HDF5 file as root attributes
+    def experiment_info_callback(self, msg: String):
+        if self._experiment_written:
+            return
+        try:
+            info = json.loads(msg.data)
+        except Exception:
+            info = {}
+
+        # append the config name to the filename: <timestamp>_<config>.h5,
+        config = info.get("config")
+        if config:
+            new_path = build_output_path(self.mode, f"{self.base_filename}_{config}")
+            if new_path != self.output_path:
+                if os.path.exists(self.output_path):
+                    os.rename(self.output_path, new_path)
+                for logger in self._loggers.values():
+                    logger.file_path = new_path
+                self.output_path = new_path
+                print(f"Log file renamed to include config: {self.output_path}")
+
+        try:
+            with h5py.File(self.output_path, "a") as f:
+                for key, value in info.items():
+                    f.attrs[key] = str(value)
+                f.attrs["experiment_info"] = msg.data
+                f.attrs["data_logged_at"] = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
+            self._experiment_written = True
+            print(f"Recorded experiment info into log: config='{info.get('config')}', fields={list(info.keys())}")
+        except Exception as e:
+            print(f"WARNING: could not write experiment info to log: {e}")
 
 
     #################################################################
@@ -297,11 +337,8 @@ def main(args=None):
     else:
         filename = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
 
-    output_path = build_output_path(args.mode, filename)
-
-
     # create the log node
-    log_node = LogNode(args.mode, output_path, args.hz, args.dump_period)
+    log_node = LogNode(args.mode, filename, args.hz, args.dump_period)
 
     try:
         # spin the node

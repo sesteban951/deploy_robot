@@ -26,6 +26,7 @@ sys.path.append(ROOT_DIR)
 
 # custom imports
 from utils.policy import Policy
+from utils.experiment_utils import publish_experiment_info
 from utils.math_utils import (
     quat_conjugate,
     quat_multiply,
@@ -52,6 +53,9 @@ class ControlNode(Node):
 
         # load params
         self.init_policy()
+
+        # broadcast which experiment is running so the logger can record it
+        self.experiment_info_pub = publish_experiment_info(self, config_path, self.config, self.policy)
 
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)

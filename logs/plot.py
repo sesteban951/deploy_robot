@@ -9,6 +9,7 @@ import glob
 import math
 import os
 import h5py
+import yaml
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -24,16 +25,73 @@ def find_latest_log() -> str:
 
 
 # build a (rows, cols) grid that fits N subplots, and return flat axes
-def _joint_grid(N: int, title: str, figsize=(14, 9)):
+def _joint_grid(N: int, title: str, figsize=(14, 9), suptitle_extra: str = ""):
     cols = min(6, N)
     rows = math.ceil(N / cols)
     fig, axes = plt.subplots(rows, cols, figsize=figsize, sharex=True)
-    fig.suptitle(title)
+    fig.suptitle(f"{title}\n{suptitle_extra}" if suptitle_extra else title)
     axes = axes.flatten() if N > 1 else [axes]
     # hide any unused axes on the last row
     for ax in axes[N:]:
         ax.set_visible(False)
     return fig, axes[:N]
+
+
+# print the experiment metadata (root attributes written by the logger)
+def print_experiment_info(meta: dict):
+    bar = "=" * 72
+    sub = "-" * 72
+    if not meta:
+        print("Experiment: (none recorded -- no control node broadcast for this log)")
+        return
+
+    print("")
+    print(bar)
+    print("  EXPERIMENT")
+    print(bar)
+    print("")
+    for key in ("config", "policy_trained_at", "data_logged_at"):
+        if key in meta:
+            print(f"  {key:18s} {meta[key]}")
+
+    # config parameters: parse the yaml snapshot and print the resolved key->value
+    # pairs (drops comments and commented-out alternatives). raw snapshot stays in the file.
+    if "config_yaml" in meta:
+        print("")
+        print(sub)
+        print(f"  CONFIG  ({meta.get('config', '')})")
+        print(sub)
+        print("")
+        try:
+            cfg = yaml.safe_load(str(meta["config_yaml"])) or {}
+            width = max((len(str(k)) for k in cfg), default=0)
+            for k, v in cfg.items():
+                print(f"  {str(k):<{width}}  {v}")
+        except Exception:
+            for line in str(meta["config_yaml"]).splitlines():
+                print(f"  {line}")
+    print(bar)
+    print("")
+
+
+# pull the active policy_path out of the config-yaml snapshot (for the title)
+def _policy_from_snapshot(meta: dict):
+    if meta.get("config_yaml"):
+        try:
+            return yaml.safe_load(str(meta["config_yaml"])).get("policy_path")
+        except Exception:
+            return None
+    return None
+
+
+# compact one-line experiment label for figure titles
+def experiment_label(meta: dict) -> str:
+    bits = []
+    if meta.get("config"):       bits.append(str(meta["config"]))
+    policy = _policy_from_snapshot(meta)
+    if policy:                   bits.append(str(policy))
+    if meta.get("data_logged_at"):    bits.append(f"logged {meta['data_logged_at']}")
+    return "   |   ".join(bits)
 
 
 # load and log all avilable data from the log
@@ -42,6 +100,17 @@ def plot_log(file_path: str):
     print(f"Loading {file_path}")
     with h5py.File(file_path, "r") as f:
         data = {name: f[name][:] for name in f.keys()}
+        meta = {k: f.attrs[k] for k in f.attrs.keys()}
+
+    # experiment metadata (config / policy / motion) recorded as root attributes
+    print_experiment_info(meta)
+    exp_label = experiment_label(meta)
+
+    # a log may contain only experiment metadata (e.g. a run that never entered the
+    # control/track FSM state, so no data rows were logged) -- nothing to plot then
+    if "time" not in data or "joint_state" not in data:
+        print("No time-series data in this log (only experiment metadata) -- nothing to plot.")
+        return
 
     # drop stale leading rows of time when fsm is in not in right state
     t_raw = data["time"][:, 0]
@@ -77,7 +146,7 @@ def plot_log(file_path: str):
     torso  = data["torso_imu"]
 
     # joint positions, one subplot per joint (q blue on top, q_des solid black behind)
-    _, axes = _joint_grid(N, f"joint positions ({N} joints)")
+    _, axes = _joint_grid(N, f"joint positions ({N} joints)", suptitle_extra=exp_label)
     for i, ax in enumerate(axes):
         if has_command:
             ax.plot(t, q_des[:, i], color="black", linewidth=0.75, label="q_des", zorder=1)
@@ -88,7 +157,7 @@ def plot_log(file_path: str):
     axes[0].legend(loc="upper right")
 
     # joint velocities, one subplot per joint (dq blue on top, dq_des solid black behind)
-    _, axes = _joint_grid(N, f"joint velocities ({N} joints)")
+    _, axes = _joint_grid(N, f"joint velocities ({N} joints)", suptitle_extra=exp_label)
     for i, ax in enumerate(axes):
         if has_command:
             ax.plot(t, dq_des[:, i], color="black", linewidth=0.75, label="dq_des", zorder=1)
@@ -99,7 +168,7 @@ def plot_log(file_path: str):
     axes[0].legend(loc="upper right")
 
     # estimated torque, one subplot per joint
-    _, axes = _joint_grid(N, f"tau_est ({N} joints)")
+    _, axes = _joint_grid(N, f"tau_est ({N} joints)", suptitle_extra=exp_label)
     for i, ax in enumerate(axes):
         ax.plot(t, tau_est[:, i], color="tab:blue")
         ax.set_title(f"joint {i}")
@@ -108,6 +177,8 @@ def plot_log(file_path: str):
 
     # IMUs (rows = rpy/quat/gyro/acc, columns = pelvis/torso)
     fig, axes = plt.subplots(4, 2, figsize=(12, 9), sharex=True)
+    if exp_label:
+        fig.suptitle(exp_label)
     for col, (name, imu) in enumerate([("pelvis", pelvis), ("torso", torso)]):
         axes[0, col].plot(t, imu[:, 0:3],   label=["roll", "pitch", "yaw"])
         axes[0, col].set_title(f"{name} IMU")
@@ -130,6 +201,8 @@ def plot_log(file_path: str):
     if has_joystick:
         js = data["joystick"]
         fig, axes = plt.subplots(3, 1, figsize=(10, 6), sharex=True)
+        if exp_label:
+            fig.suptitle(exp_label)
         axes[0].plot(t, js[:, 1])
         axes[0].set_ylabel("vx [m/s]")
         axes[0].set_title("joystick command")
@@ -149,7 +222,7 @@ def plot_log(file_path: str):
         Nt = mt.shape[1] // 2          # layout: [sensor0(Nt), sensor1(Nt)]
         s0 = mt[:, 0:Nt]
         s1 = mt[:, Nt:2*Nt]
-        _, axes = _joint_grid(Nt, f"motor temperatures ({Nt} motors)")
+        _, axes = _joint_grid(Nt, f"motor temperatures ({Nt} motors)", suptitle_extra=exp_label)
         for i, ax in enumerate(axes):
             ax.plot(t, s0[:, i], color="tab:orange", linewidth=1.0, label="sensor0")
             ax.plot(t, s1[:, i], color="tab:red",    linewidth=1.0, label="sensor1")
