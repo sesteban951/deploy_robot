@@ -1,15 +1,20 @@
 xml_path: "g1_29dof_scene.xml"
 
-# reference-free crawling policy (Mjlab-Crawling-V1-Flat-Unitree-G1).
-# actor obs (96) = base_ang_vel, joint_pos, joint_vel, actions, commanded_speed,
+# twist-conditioned reference-free crawling policy (G1-Crawling-Fwd).
+# actor obs (98) = base_ang_vel, joint_pos, joint_vel, actions, commanded_twist,
 # motion_phase, projected_gravity. No motion file is needed at runtime.
-policy_path: "crawl_v1.onnx"
+policy_path: "crawl_fwd.onnx"
 
-# crawl gait command
+# gait clock
 motion_period_frames: 130   # T: frames per gait cycle (phase = t/T); 130 @ 50 Hz = 2.6 s
-speed_min: 0.08             # library forward-speed span [m/s]
-speed_max: 0.40
-default_speed: 0.28         # commanded speed when no joystick input (matches library play speed)
+
+# commanded twist [vx, vy, wz] (m/s, m/s, rad/s). The trained library is forward-only
+# (vx ~0.11-0.26) plus a zero-twist idle/stop pose; vy/wz stay 0 until turn/strafe clips
+# are added (bump twist_scale/clip_hi for those axes once they exist).
+default_twist: [0.18, 0.0, 0.0]    # twist with no joystick (autonomous forward crawl for viewing)
+twist_scale:   [0.264, 0.0, 0.0]   # joystick stick -> twist; centered stick -> 0 (idle/stop)
+twist_clip_lo: [0.0, 0.0, 0.0]
+twist_clip_hi: [0.264, 0.0, 0.0]
 
 # PD gains per joint (mjlab training gains, from the policy's joint_stiffness/damping metadata)
 Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
@@ -23,16 +28,14 @@ Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
 
-# spawn pose = the trained crawl attitude, recovered from the policy's obs-normalizer
-# mean: base pitched ~84 deg forward (prone, near-zero roll) with joints near the
-# standing default (a commando/seal crawl -- NOT the library's tucked frame-0 pose).
-# Spawning tucked/rolled puts the policy out-of-distribution and it collapses to default.
-# base = [x, y, z, qw, qx, qy, qz]   (quat = 84 deg pitch about y)
-home_base_pos: [0.0, 0.0, 0.20, 0.743, 0.0, 0.669, 0.0]
-home_joint_pos: [-0.0797,  0.0779, -0.0134,  0.5204, -0.1796, -0.0190,
-                 -0.1840, -0.2138,  0.0273,  0.5154, -0.1965, -0.0041,
-                 -0.0561,  0.0684, -0.2922,
-                 -0.6837,  0.4285, -0.0133,  0.2401, -0.0736, -0.4261,  0.0876,
-                 -0.5129, -0.4241, -0.0474,  0.2446, -0.1310, -0.3834, -0.0917]
+# spawn pose = the trained crawl attitude, recovered from crawl_fwd's obs-normalizer mean:
+# prone base (~82 deg pitch) + tucked crawl joints. Must NOT spawn standing (that is OOD).
+# base = [x, y, z, qw, qx, qy, qz]   (quat = ~82 deg pitch about y)
+home_base_pos: [0.0, 0.0, 0.20, 0.755, 0.0, 0.656, 0.0]
+home_joint_pos: [-0.5128,  0.3658,  0.2778,  1.2481, -0.3362, -0.0986,
+                 -0.7203, -0.7260, -0.1476,  1.2393, -0.3281,  0.0079,
+                 -0.2194, -0.0324,  0.1680,
+                 -2.0175,  1.0301, -0.8078,  0.3016, -0.0237, -0.0618,  0.2649,
+                 -1.5849, -0.8564,  0.3592, -0.0028, -0.8422,  0.2123, -0.0432]
 
 control_dt: 0.02

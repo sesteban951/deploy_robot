@@ -1,6 +1,6 @@
 ##
 #
-# Control node for 29DoF MjLab reference-free crawling (crawl_v1).
+# Control node for 29DoF MjLab twist-conditioned crawling (G1-Crawling-Fwd).
 #
 ##
 
@@ -35,11 +35,12 @@ from utils.policy import Policy
 
 class ControlNode(Node):
     """
-    Asynchronous control node that runs the reference-free crawling policy.
+    Asynchronous control node for the twist-conditioned reference-free crawling
+    policy (G1-Crawling-Fwd).
 
-    The actor is velocity-style, not a motion tracker: it sees only proprioception,
-    a free-running gait phase clock, a commanded forward speed, and projected gravity.
-    No reference motion is loaded at runtime.
+    The actor is velocity-style: it sees only proprioception, a free-running gait
+    phase clock, a commanded planar twist [vx, vy, wz], and projected gravity. No
+    reference motion is loaded at runtime. A zero twist is the trained idle/stop pose.
     """
 
     def __init__(self, config_path: str):
@@ -71,8 +72,9 @@ class ControlNode(Node):
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.sim_time = 0.0
 
-        # joystick command [vx, vy, omega]; vx maps to the commanded crawl speed
+        # joystick command [vx, vy, wz] + connection flag
         self.cmd = np.zeros(3)
+        self.joystick_connected = False
 
         # initialize the action
         self.action = np.zeros(self.act_size)
@@ -114,11 +116,12 @@ class ControlNode(Node):
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
 
-        # crawl gait params
+        # crawl gait + twist command params
         self.motion_period_frames = int(self.config["motion_period_frames"])  # T
-        self.speed_min = float(self.config["speed_min"])
-        self.speed_max = float(self.config["speed_max"])
-        self.default_speed = float(self.config["default_speed"])
+        self.default_twist = np.array(self.config["default_twist"], dtype=np.float32)
+        self.twist_scale = np.array(self.config["twist_scale"], dtype=np.float32)
+        self.twist_clip_lo = np.array(self.config["twist_clip_lo"], dtype=np.float32)
+        self.twist_clip_hi = np.array(self.config["twist_clip_hi"], dtype=np.float32)
 
         # import the policy
         policy_path = self.config['policy_path']
@@ -157,6 +160,7 @@ class ControlNode(Node):
     # joystick command: [is_connected, vx, vy, omega]
     def cmd_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
+        self.joystick_connected = (data[0] > 0.5)
         self.cmd = np.array([data[1], data[2], data[3]], dtype=np.float32)
 
     # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
@@ -176,13 +180,12 @@ class ControlNode(Node):
     def time_callback(self, msg):
         self.sim_time = msg.data
 
-    # commanded forward crawl speed: forward joystick stick mapped into the trained
-    # speed range; falls back to the default speed when the stick is idle
-    def commanded_speed(self):
-        vx = float(self.cmd[0])
-        if abs(vx) < 0.05:
-            return self.default_speed
-        return float(np.clip(vx * self.speed_max, self.speed_min, self.speed_max))
+    # commanded planar twist [vx, vy, wz]:
+    def commanded_twist(self):
+        if not self.joystick_connected:
+            return self.default_twist
+        twist = self.cmd * self.twist_scale
+        return np.clip(twist, self.twist_clip_lo, self.twist_clip_hi).astype(np.float32)
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -191,24 +194,24 @@ class ControlNode(Node):
         qj = self.qpos_joints - self.qpos_joints_default
         dqj = self.qvel_joints
 
+        # commanded twist
+        twist = self.commanded_twist()
+
         # gait phase clock: (sin, cos) of 2*pi*t/T, matching training (time_steps / T)
         phase = self.phase_step / self.motion_period_frames
         ang = 2.0 * math.pi * phase
         motion_phase = np.array([math.sin(ang), math.cos(ang)], dtype=np.float32)
-
-        # commanded forward speed
-        speed = np.array([self.commanded_speed()], dtype=np.float32)
 
         # projected gravity from the pelvis IMU (roll/pitch; yaw-invariant)
         proj_grav = get_gravity_orientation(self.quat).astype(np.float32)
 
         # concatenate in the trained order (from the policy's observation_names metadata):
         # base_ang_vel(3), joint_pos(29), joint_vel(29), actions(29),
-        # commanded_speed(1), motion_phase(2), projected_gravity(3) = 96
+        # commanded_twist(3), motion_phase(2), projected_gravity(3) = 98
         obs = np.concatenate([
             self.omega,
             qj, dqj, self.action,
-            speed, motion_phase, proj_grav,
+            twist, motion_phase, proj_grav,
         ]).astype(np.float32)
 
         return obs
@@ -219,8 +222,8 @@ class ControlNode(Node):
         # get the current observation
         obs = self.build_observation()
 
-        # target joint positions (PD control)
-        self.action = self.policy.inference(obs)
+        # target joint positions (PD control); time_step feeds the gait frame index
+        self.action = self.policy.inference(obs, time_step=self.phase_step)
 
         # build the command: [q_des, dq_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
@@ -247,7 +250,7 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Control Node for the MjLab reference-free crawling policy.'
+        description='Asynchronous Control Node for the MjLab twist-conditioned crawling policy.'
     )
     # config path argument
     parser.add_argument(
