@@ -1,16 +1,10 @@
 xml_path: "g1_29dof_scene.xml"
-
-# twist-conditioned reference-free crawling policy (G1-Crawling-Fwd).
-# actor obs (98) = base_ang_vel, joint_pos, joint_vel, actions, commanded_twist,
-# motion_phase, projected_gravity. No motion file is needed at runtime.
-policy_path: "crawl_fwd.onnx"
+# policy_path: "crawl_fwd.onnx"
+policy_path: "crawl_fwd_blend.onnx"
 
 # gait clock
 motion_period_frames: 130   # T: frames per gait cycle (phase = t/T); 130 @ 50 Hz = 2.6 s
 
-# commanded twist [vx, vy, wz] (m/s, m/s, rad/s). The trained library is forward-only
-# (vx ~0.11-0.26) plus a zero-twist idle/stop pose; vy/wz stay 0 until turn/strafe clips
-# are added (bump twist_scale/clip_hi for those axes once they exist).
 default_twist: [0.18, 0.0, 0.0]    # twist with no joystick (autonomous forward crawl for viewing)
 twist_scale:   [0.264, 0.0, 0.0]   # joystick stick -> twist; centered stick -> 0 (idle/stop)
 twist_clip_lo: [0.0, 0.0, 0.0]
@@ -28,9 +22,6 @@ Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
 
-# spawn pose = the trained crawl attitude, recovered from crawl_fwd's obs-normalizer mean:
-# prone base (~82 deg pitch) + tucked crawl joints. Must NOT spawn standing (that is OOD).
-# base = [x, y, z, qw, qx, qy, qz]   (quat = ~82 deg pitch about y)
 home_base_pos: [0.0, 0.0, 0.20, 0.755, 0.0, 0.656, 0.0]
 home_joint_pos: [-0.5128,  0.3658,  0.2778,  1.2481, -0.3362, -0.0986,
                  -0.7203, -0.7260, -0.1476,  1.2393, -0.3281,  0.0079,
