@@ -257,7 +257,7 @@ def main(args=None):
         '--config',
         type=str,
         required=True,
-        help='Path to the config yaml file. Example: "g1_29dof_crawl.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof_crawl_fwd.yaml".'
     )
     args = parser.parse_args()
 

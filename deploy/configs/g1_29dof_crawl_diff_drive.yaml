@@ -1,0 +1,32 @@
+xml_path: "g1_29dof_scene.xml"
+policy_path: "crawl_diff_drive.onnx"
+
+# gait clock
+motion_period_frames: 130   # T: frames per gait cycle (phase = t/T); 130 @ 50 Hz = 2.6 s
+
+default_twist:  [0.18, 0.0, 0.0]     # autonomous pure-forward crawl when no joystick
+twist_scale:    [0.264, 0.0, 0.55]   # joystick stick -> [vx, vy(unused), wz]
+twist_clip_lo:  [-0.25, 0.0, -0.55]  # vx forward (+) / reverse (-); wz either sign (turn L/R)
+twist_clip_hi:  [0.264, 0.0, 0.55]
+twist_deadband: [0.10, 0.0, 0.25]    # below the trained min magnitude -> idle stop pose
+
+# PD gains per joint (mjlab training gains, from the policy's joint_stiffness/damping metadata)
+Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 28.501, 28.501,  # waist
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
+Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 1.814, 1.814,  # waist
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+
+home_base_pos: [ 0.000476,  0.000090,  0.106523, -0.715142, -0.031392, -0.697991,  0.019848]
+home_joint_pos: [ 0.004593,  0.398317,  1.158895,  0.501901,  0.163135, -0.007864,
+                  0.022245, -0.586872, -1.181935,  0.565157,  0.267927,  0.077018,
+                 -0.026588, -0.095096,  0.092985,
+                 -1.960660,  1.607161, -0.361312, -0.170657,  0.013174,  0.264816,  0.146871,
+                 -2.077732, -1.549371,  0.488804, -0.262013, -0.141616,  0.414991, -0.097014]
+
+control_dt: 0.02
