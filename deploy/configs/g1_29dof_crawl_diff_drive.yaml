@@ -1,6 +1,9 @@
 xml_path: "g1_29dof_scene.xml"
 policy_path: "crawl_diff_drive.onnx"
 
+# interpolate to home position
+home_pos_duration: 5.0   # [sec] (hardware.py requires >= 3.0)
+
 # gait clock
 motion_period_frames: 130   # T: frames per gait cycle (phase = t/T); 130 @ 50 Hz = 2.6 s
 
