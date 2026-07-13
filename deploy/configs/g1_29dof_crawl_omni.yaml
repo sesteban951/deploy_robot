@@ -1,17 +1,19 @@
 xml_path: "g1_29dof_scene.xml"
-policy_path: "crawl_diff_drive.onnx"
-
-# interpolate to home position
-home_pos_duration: 3.0   # [sec] (hardware.py requires >= 3.0)
+policy_path: "crawl_omni.onnx"
 
 # gait clock
 motion_period_frames: 130   # T: frames per gait cycle (phase = t/T); 130 @ 50 Hz = 2.6 s
 
-default_twist:  [0.18, 0.0, 0.0]     # autonomous pure-forward crawl when no joystick
-twist_scale:    [0.264, 0.0, 0.55]   # joystick stick -> [vx, vy(unused), wz]
-twist_clip_lo:  [-0.25, 0.0, -0.55]  # vx forward (+) / reverse (-); wz either sign (turn L/R)
-twist_clip_hi:  [0.264, 0.0, 0.55]
-twist_deadband: [0.10, 0.0, 0.25]    # below the trained min magnitude -> idle stop pose
+default_twist:  [0.20, 0.0, 0.0]      # autonomous mid-forward crawl when no joystick
+twist_scale:    [0.30, 0.15, 0.15]    # joystick stick -> [vx, vy, wz] (full stick -> range max)
+twist_clip_lo:  [0.00, -0.15, -0.15]  # vx forward-only, floor 0 (no reverse); vy/wz two-sided
+twist_clip_hi:  [0.30,  0.15,  0.15]
+twist_deadband: [0.10,  0.0,   0.0]   # vx<0.10 -> 0 (snaps untrained 0-0.10 band to idle); vy/wz
+                                      # trained to 0 (joy_node already applies a 0.05 raw deadzone)
+
+# hardware: time for the 'home' FSM state to ramp the robot from its current pose into the
+# crawl idle/laydown pose (home_joint_pos). Longer = gentler standing->laydown transition.
+home_pos_duration: 5.0   # [sec] (hardware.py requires >= 3.0)
 
 # PD gains per joint (mjlab training gains, from the policy's joint_stiffness/damping metadata)
 Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
