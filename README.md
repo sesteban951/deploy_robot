@@ -13,8 +13,13 @@ A brief overview of the repo structure is as follows:
 ---
 
 # Installation
+> [!IMPORTANT]
+> If you are on **Ubuntu 24**:
+> - Use ROS2 `jazzy` instead. Simply replace every mention of `humble` with `jazzy`.
+> - Install the conda env with `Python 3.12`. Simply change `python=3.10` to `python=3.12` in the `environment.yml` file.
+
 ## ROS2
-Use `ROS2 Humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
+Use ROS2 `humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
 
 If your scripts use the ROS joystick, you can install `joy` package via:
 ```bash
@@ -102,12 +107,13 @@ python deploy/hardware/<control_script>.py --config <your-config-file>.yaml
 ```
 Terminal 3:
 ```bash
-python deploy/hardware/hardware.py --config <your-config-file>.yaml
+python deploy/hardware/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
 ```
 Terminal 4 (optional, to log data to `logs/hardware/`):
 ```bash
 python deploy/logger/log.py --mode hw
 ```
+where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
 ---
 
