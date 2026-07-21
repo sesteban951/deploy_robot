@@ -23,13 +23,16 @@ xml_path: "g1_29dof_scene.xml"
 # motion_path: "gait_walking_29dof.npz"
 
 # GAIT CRAWL
-policy_path: "gait_crawling_to.onnx"
-motion_path: "gait_crawling_29dof.npz"
+# policy_path: "gait_crawling_to.onnx"
+# motion_path: "gait_crawling_29dof.npz"
 
 # 180 TWIST JUMP
 # policy_path: "kd_to_180_twist_jump.onnx"
 # motion_path: "kd_to_twist_180_jump_29dof.npz"
 
+# ROLLOVER
+policy_path: "to_sideroll_first_try.onnx"
+motion_path: "v3_tracking_sideroll_crop0-544.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
