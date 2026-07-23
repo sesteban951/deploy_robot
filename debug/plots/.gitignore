@@ -1,0 +1,3 @@
+# ignore generated plot outputs, keep the folder
+*.png
+!.gitkeep

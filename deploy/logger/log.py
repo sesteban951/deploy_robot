@@ -38,8 +38,9 @@ TARGET_FSM_STATES = ("control", "track")
 # datasets that MUST have a publisher; logger hard-fails if any are missing at discovery
 REQUIRED_DATASETS = ["joint_state", "pelvis_imu", "torso_imu", "time"]
 
-# datasets logged only if a publisher exists at discovery time (e.g. no joystick connected, no temps in sim)
-OPTIONAL_DATASETS = ["command", "joystick", "motor_temp"]
+# datasets logged only if a publisher exists at discovery time (e.g. no joystick connected,
+# no temps in sim, no control_phase in sim / older control nodes)
+OPTIONAL_DATASETS = ["command", "joystick", "motor_temp", "control_phase"]
 
 # all candidate datasets (topic discovery picks the active subset)
 DATASET_NAMES = REQUIRED_DATASETS + OPTIONAL_DATASETS
@@ -52,6 +53,7 @@ DATASET_TOPICS = {
     "torso_imu":   "deploy_robot/torso_imu_state",
     "command":     "deploy_robot/command",
     "joystick":    "deploy_robot/joystick",
+    "control_phase": "deploy_robot/control_phase",
 }
 
 # per-mode config: everything that differs between sim and hardware
@@ -110,6 +112,7 @@ class LogNode(Node):
         self.torso_imu_sub  = self.create_subscription(Float32MultiArray, 'deploy_robot/torso_imu_state',  self.torso_imu_callback,   5)
         self.command_sub    = self.create_subscription(Float32MultiArray, 'deploy_robot/command',          self.command_callback,     5)
         self.joystick_sub   = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick',         self.joystick_callback,    5)
+        self.control_phase_sub = self.create_subscription(Float64,        'deploy_robot/control_phase',    self.control_phase_callback, 5)
         self.time_sub       = self.create_subscription(Float64,           self.cfg["time_topic"],          self.time_callback,        5)
 
         # FSM subscription only in hardware mode
@@ -176,6 +179,10 @@ class LogNode(Node):
 
     def time_callback(self, msg: Float64):
         self._handle_msg("time", np.array([msg.data], dtype=np.float32))
+
+    # control phase (-1 idle / 0 interp / 1 frame-0 hold / 2 track); marks when each phase begins
+    def control_phase_callback(self, msg: Float64):
+        self._handle_msg("control_phase", np.array([msg.data], dtype=np.float32))
 
     # latched experiment info -> written once into the HDF5 file as root attributes
     def experiment_info_callback(self, msg: String):

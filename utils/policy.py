@@ -155,7 +155,8 @@ def main(args=None):
     # policy_name = "g1_29dof_vel.onnx"
     # policy_name = "g1_29dof_mimic_pelvis.onnx"
     # policy_name = "g1_29dof_mimic_torso.onnx"
-    policy_name = "g1_29dof_mimic_squat.onnx"
+    # policy_name = "g1_29dof_mimic_squat.onnx"
+    policy_name = "g1_29_dof_mimic_jump_forward_jason.onnx"
 
     # load the policy
     policy_path = ROOT_DIR + "/policy/" + policy_name

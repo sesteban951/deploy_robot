@@ -23,23 +23,38 @@ xml_path: "g1_29dof_scene.xml"
 # motion_path: "gait_walking_29dof.npz"
 
 # GAIT CRAWL
-policy_path: "gait_crawling_to.onnx"
-motion_path: "gait_crawling_29dof.npz"
+# policy_path: "gait_crawling_to.onnx"
+# motion_path: "gait_crawling_29dof.npz"
 
 # 180 TWIST JUMP
 # policy_path: "kd_to_180_twist_jump.onnx"
 # motion_path: "kd_to_twist_180_jump_29dof.npz"
 
+# Sideroll
+policy_path: "to_sideroll_hold.onnx"
+motion_path: "v3_tracking_sideroll_hold.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
 frame_pos_duration: 3.0  # [sec]
 
+# rotate the motion reference into the robot's initial heading (yaw alignment).
+# true = replay in the robot's starting yaw (default); false = replay in the
+# motion's own world frame (no init_quat). Recorded in the log's config snapshot.
+align_heading: false
+
+# alternative to align_heading: instead of rotating the motion reference, zero the
+# anchor IMU's yaw at the start of the control policy and apply that offset to all
+# future measurements fed to the policy. Enable at most one of align_heading /
+# zero_imu_yaw (both on => yaw double-corrected). Recorded in the config snapshot.
+zero_imu_yaw: true
+
 # PD gains per joint
-Kp: [45.179, 104.098, 45.179, 104.098, 33.501, 33.501, # higher gains
-     45.179, 104.098, 45.179, 104.098, 33.501, 33.501,
-     # 40.179, 99.098, 40.179, 99.098, 28.501, 28.501, # nominal gains
-     # 40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+Kp: [
+     # 45.179, 104.098, 45.179, 104.098, 33.501, 33.501, # higher gains
+     # 45.179, 104.098, 45.179, 104.098, 33.501, 33.501,
+     40.179, 99.098, 40.179, 99.098, 28.501, 28.501, # nominal gains
+     40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
      35.179, 23.501, 23.501,  # Warning: ACTIVE WAIST  # lower gains
      # 40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST, nominal gains
      # 40.179, 0.0,    0.0,  # Warning: LOCKED WAIST

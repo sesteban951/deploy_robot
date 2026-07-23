@@ -35,6 +35,14 @@ from utils.math_utils import (
 )
 
 
+# control-phase codes broadcast on 'deploy_robot/control_phase' so the logger can
+# mark exactly when each phase begins (see deploy/logger/log.py).
+PHASE_IDLE = -1    # init/damp/home: this node sends nothing
+PHASE_INTERP = 0   # [control] ramp: plain-PD lerp to frame 0, policy off
+PHASE_HOLD = 1     # [control] ramp done: policy holding frame 0
+PHASE_TRACK = 2    # [track] advancing the motion
+
+
 ############################################################################
 # CONTROLLER NODE
 ############################################################################
@@ -59,6 +67,8 @@ class ControlNode(Node):
 
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
+        # control-phase signal (interp / frame-0 hold / track) for the logger
+        self.phase_pub = self.create_publisher(Float64, 'deploy_robot/control_phase', 10)
 
         # ROS subscribers
         self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 10)
@@ -85,6 +95,11 @@ class ControlNode(Node):
         # yaw alignment between robot-at-track-start and motion frame 0 (re-captured each time FSM enters "track")
         self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self.init_quat_captured = False
+
+        # yaw-zeroing offset for the anchor IMU (conjugate of the captured heading), applied
+        # to the measured anchor quat in build_observation when zero_imu_yaw is enabled.
+        # Identity when disabled -> no-op. Captured alongside init_quat at the policy handoff.
+        self.yaw_offset_conj = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
         # "control" interpolates joints from the entry pose to frame 0 (plain PD, no policy).
         # start pose captured on entry: covers both home->control and last-frame->control.
@@ -129,6 +144,19 @@ class ControlNode(Node):
 
         # duration to interpolate the motion reference into frame 0 when entering "control"
         self.frame_pos_duration = float(self.config["frame_pos_duration"])
+
+        # whether to rotate the motion reference into the robot's initial heading (yaw
+        # alignment via init_quat). When False, the motion is replayed in its own world
+        # frame (init_quat stays identity). Recorded in the log via the config snapshot.
+        self.align_heading = bool(self.config.get("align_heading", True))
+
+        # alternative to align_heading: zero the anchor IMU's yaw at policy start and apply
+        # that offset to every measured anchor quat feeding the observation (instead of
+        # rotating the motion reference). Intended as an alternative; enable at most one.
+        self.zero_imu_yaw = bool(self.config.get("zero_imu_yaw", False))
+        if self.align_heading and self.zero_imu_yaw:
+            print("WARNING: align_heading and zero_imu_yaw are both enabled -- yaw will be "
+                  "double-corrected. They are intended as alternatives; enable at most one.")
 
         # import the policy
         policy_path = self.config['policy_path']
@@ -190,6 +218,7 @@ class ControlNode(Node):
             raise ValueError(f"Unsupported anchor body name: {anchor_name}")
 
         print(f"    Anchor body: {anchor_name} (index {self.anchor_body_idx})")
+        print(f"    Heading alignment (init_quat): {'ON' if self.align_heading else 'OFF'}")
 
 
     #################################################################
@@ -243,10 +272,13 @@ class ControlNode(Node):
         ])
 
         # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
-        # apply the captured yaw offset so the motion is replayed in the robot's initial heading
+        # init_quat rotates the motion reference into the robot's heading (align_heading);
+        # yaw_offset_conj zeroes the measured anchor yaw (zero_imu_yaw). Both are identity
+        # when their flag is off, so this reduces to the plain error in that case.
+        anchor_quat = quat_multiply(self.yaw_offset_conj, self.anchor_quat)
         motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
         ref_quat_corrected = quat_multiply(self.init_quat, motion_anchor_quat_w)
-        rel_quat = quat_multiply(quat_conjugate(self.anchor_quat), ref_quat_corrected)
+        rel_quat = quat_multiply(quat_conjugate(anchor_quat), ref_quat_corrected)
         anchor_ori_b = quat_to_rot6d(rel_quat)
 
         # --- base_ang_vel (3) : pelvis angular velocity (training uses imu_in_pelvis site) ---
@@ -279,6 +311,10 @@ class ControlNode(Node):
         cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
+    # publish the current control phase (PHASE_* code) for the logger
+    def publish_phase(self, code):
+        self.phase_pub.publish(Float64(data=float(code)))
+
 
     # control published at the control frequency
     def control_callback(self):
@@ -288,6 +324,7 @@ class ControlNode(Node):
             self.action = np.zeros(self.act_size)
             self.init_quat_captured = False
             self.interp_captured = False
+            self.publish_phase(PHASE_IDLE)
             return
 
         # [control] ramp phase: plain PD interpolation from the entry pose to frame 0 (no policy).
@@ -305,23 +342,34 @@ class ControlNode(Node):
                 qvel_des = np.zeros(self.act_size, dtype=np.float32)
                 tau_ff = np.zeros(self.act_size, dtype=np.float32)
                 self.publish_command(qpos_des, qvel_des, tau_ff)
+                self.publish_phase(PHASE_INTERP)
                 return
             # ramp done: hand off to the policy, holding frame 0
             frame = 0
+            phase = PHASE_HOLD
         else:
             # [track]: advance the motion from frame 0, then freeze at the last frame (no loop)
             self.interp_captured = False
             frame = min(int(self.fsm_time / self.ctrl_dt), self.motion_num_frames - 1)
+            phase = PHASE_TRACK
 
         # policy query (control: holding frame 0 after the ramp; track: advancing the motion).
-        # align motion frame 0 with the robot's current yaw on the first policy tick.
+        # capture the heading references once on the first policy tick (reused through the
+        # hold and the whole track). init_quat rotates the motion into the robot's heading
+        # (align_heading); yaw_offset_conj zeroes the measured anchor yaw (zero_imu_yaw).
+        # Both come from the same first-tick anchor quat; each is only set when its flag is on
+        # (otherwise it stays identity -> no-op).
         if not self.init_quat_captured:
-            motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
-            # heading offset (about world z) between robot and reference
-            q_rel = quat_multiply(
-                self.anchor_quat, quat_conjugate(motion_anchor_quat_0)
-            )
-            self.init_quat = heading_about_z_world(q_rel)
+            if self.align_heading:
+                motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
+                # heading offset (about world z) between robot and reference
+                q_rel = quat_multiply(
+                    self.anchor_quat, quat_conjugate(motion_anchor_quat_0)
+                )
+                self.init_quat = heading_about_z_world(q_rel)
+            if self.zero_imu_yaw:
+                # offset that zeroes the measured anchor yaw at capture (world-z heading)
+                self.yaw_offset_conj = quat_conjugate(heading_about_z_world(self.anchor_quat))
             self.init_quat_captured = True
 
         # run the policy and publish the command
@@ -331,6 +379,7 @@ class ControlNode(Node):
         qvel_des = np.zeros(self.act_size, dtype=np.float32)
         tau_ff = np.zeros(self.act_size, dtype=np.float32)
         self.publish_command(qpos_des, qvel_des, tau_ff)
+        self.publish_phase(phase)
 
 
 ############################################################################
