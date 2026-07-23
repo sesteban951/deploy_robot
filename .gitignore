@@ -2,4 +2,4 @@
 **/.vscode/
 **/.claude/
 **/MUJOCO_LOG.TXT
-logs/
+logs/simulation
