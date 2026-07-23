@@ -1,0 +1,15 @@
+{
+  "policy": "traj_opt_kino_1",
+  "run_idx": 2,
+  "config": "g1_29dof_mimic_sweep",
+  "motion_path": "ablation/traj_kino_backflip.npz",
+  "num_frames": 140,
+  "fps": 50.0,
+  "control_dt": 0.02,
+  "motion_duration": 2.8000000000000003,
+  "track_start_time": 0.9460000000000007,
+  "gate_tilt_deg": 5.066550924587171,
+  "standing_ok": true,
+  "tilt_threshold": 40.0,
+  "complete": true
+}

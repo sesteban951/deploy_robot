@@ -1,0 +1,95 @@
+/home/jason/humanoid_ws/deploy_robot/sweep/fsm_driver.py:68: DeprecationWarning: Conversion of an array with ndim > 0 to a scalar is deprecated, and will error in future. Ensure you extract a single element from your array before performing this operation. (Deprecated NumPy 1.25.)
+  self.fps = float(motion["fps"])
+FSM driver: policy=traj_opt_kino_3 reps=15 motion_duration=2.80s (140 frames @ 50.0 fps)
+FSM: init -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 0 gate tilt=1.5deg -> OK
+FSM: control -> track
+FSM driver: rep 0 track started at sim_time=0.430
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 1 gate tilt=3.7deg -> OK
+FSM: control -> track
+FSM driver: rep 1 track started at sim_time=3.850
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 2 gate tilt=3.4deg -> OK
+FSM: control -> track
+FSM driver: rep 2 track started at sim_time=7.270
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 3 gate tilt=4.2deg -> OK
+FSM: control -> track
+FSM driver: rep 3 track started at sim_time=10.610
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 4 gate tilt=3.6deg -> OK
+FSM: control -> track
+FSM driver: rep 4 track started at sim_time=13.950
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 5 gate tilt=3.8deg -> OK
+FSM: control -> track
+FSM driver: rep 5 track started at sim_time=17.350
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 6 gate tilt=3.2deg -> OK
+FSM: control -> track
+FSM driver: rep 6 track started at sim_time=20.770
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 7 gate tilt=3.5deg -> OK
+FSM: control -> track
+FSM driver: rep 7 track started at sim_time=24.190
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 8 gate tilt=3.9deg -> OK
+FSM: control -> track
+FSM driver: rep 8 track started at sim_time=27.610
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 9 gate tilt=3.7deg -> OK
+FSM: control -> track
+FSM driver: rep 9 track started at sim_time=31.030
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 10 gate tilt=4.0deg -> OK
+FSM: control -> track
+FSM driver: rep 10 track started at sim_time=34.370
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 11 gate tilt=3.7deg -> OK
+FSM: control -> track
+FSM driver: rep 11 track started at sim_time=37.710
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 12 gate tilt=3.5deg -> OK
+FSM: control -> track
+FSM driver: rep 12 track started at sim_time=41.050
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 13 gate tilt=3.2deg -> OK
+FSM: control -> track
+FSM driver: rep 13 track started at sim_time=44.390
+FSM: track -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: rep 14 gate tilt=3.3deg -> OK
+FSM: control -> track
+FSM driver: rep 14 track started at sim_time=47.730
+FSM driver: done, 15 reps (15 standing). Wrote /home/jason/humanoid_ws/deploy_robot/sweep/results/sidecars/traj_opt_kino_3.json
+FSM driver shutdown complete.

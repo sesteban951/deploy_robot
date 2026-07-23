@@ -1,0 +1,254 @@
+[sweep] python:   /home/jason/anaconda3/envs/deploy/bin/python
+[sweep] policies: ['kino_backflip_1', 'kino_backflip_2', 'kino_backflip_3', 'srb_ik_backflip_1', 'srb_ik_backflip_2', 'srb_ik_backflip_3', 'srb_traj_backflip_0', 'srb_traj_backflip_1', 'srb_traj_backflip_2', 'traj_opt_kino_1', 'traj_opt_kino_3', 'traj_opt_kino_4']
+[sweep] runs each: 15   view: False
+
+[sweep] === kino_backflip_1  (15 chained reps) ===
+[sweep]   rep  0: pos=0.3301 vel=3.611 ori=84.6 cov=1.00
+[sweep]   rep  1: pos=0.3567 vel=2.894 ori=111.3 cov=1.00
+[sweep]   rep  2: pos=0.3229 vel=3.302 ori=86.4 cov=1.00
+[sweep]   rep  3: pos=0.3918 vel=4.167 ori=85.0 cov=1.00
+[sweep]   rep  4: pos=0.3710 vel=4.066 ori=85.7 cov=1.00
+[sweep]   rep  5: pos=0.3558 vel=4.323 ori=83.6 cov=1.00
+[sweep]   rep  6: pos=0.4599 vel=3.660 ori=83.0 cov=1.00
+[sweep]   rep  7: pos=0.3675 vel=3.702 ori=83.4 cov=1.00
+[sweep]   rep  8: pos=0.4681 vel=3.869 ori=83.8 cov=1.00
+[sweep]   rep  9: pos=0.3883 vel=3.183 ori=110.9 cov=1.00
+[sweep]   rep 10: pos=0.3574 vel=4.053 ori=81.2 cov=1.00
+[sweep]   rep 11: pos=0.4874 vel=3.795 ori=84.4 cov=1.00
+[sweep]   rep 12: pos=0.3382 vel=2.761 ori=107.2 cov=1.00
+[sweep]   rep 13: pos=0.4798 vel=3.949 ori=86.6 cov=1.00
+[sweep]   rep 14: pos=0.3991 vel=4.174 ori=84.7 cov=1.00
+[sweep]   15/15 valid reps in 89s
+
+[sweep] === kino_backflip_2  (15 chained reps) ===
+[sweep]   rep  0: pos=0.4010 vel=4.936 ori=83.1 cov=1.00
+[sweep]   rep  1: pos=0.4090 vel=5.094 ori=81.5 cov=1.00
+[sweep]   rep  2: pos=0.4071 vel=5.065 ori=82.5 cov=1.00
+[sweep]   rep  3: pos=0.3928 vel=4.827 ori=81.4 cov=1.00
+[sweep]   rep  4: pos=0.4198 vel=5.055 ori=86.1 cov=1.00
+[sweep]   rep  5: pos=0.4046 vel=4.950 ori=81.3 cov=1.00
+[sweep]   rep  6: pos=0.3918 vel=4.934 ori=80.9 cov=1.00
+[sweep]   rep  7: pos=0.3909 vel=4.886 ori=81.1 cov=1.00
+[sweep]   rep  8: pos=0.4096 vel=5.003 ori=83.7 cov=1.00
+[sweep]   rep  9: pos=0.4015 vel=5.001 ori=84.3 cov=1.00
+[sweep]   rep 10: pos=0.4420 vel=5.307 ori=90.6 cov=1.00
+[sweep]   rep 11: pos=0.4112 vel=5.205 ori=81.7 cov=1.00
+[sweep]   rep 12: pos=0.4069 vel=5.605 ori=87.6 cov=1.00
+[sweep]   rep 13: pos=0.3968 vel=4.924 ori=81.0 cov=1.00
+[sweep]   rep 14: pos=0.4371 vel=5.012 ori=85.8 cov=1.00
+[sweep]   15/15 valid reps in 89s
+
+[sweep] === kino_backflip_3  (15 chained reps) ===
+[sweep]   rep  0: pos=0.3988 vel=4.277 ori=82.2 cov=1.00
+[sweep]   rep  1: pos=0.3644 vel=4.035 ori=82.7 cov=1.00
+[sweep]   rep  2: pos=0.4743 vel=3.215 ori=97.6 cov=1.00
+[sweep]   rep  3: pos=0.4280 vel=4.198 ori=85.9 cov=1.00
+[sweep]   rep  4: pos=0.4135 vel=3.733 ori=84.5 cov=1.00
+[sweep]   rep  5: pos=0.3267 vel=3.298 ori=80.7 cov=1.00
+[sweep]   rep  6: pos=0.3785 vel=3.986 ori=81.7 cov=1.00
+[sweep]   rep  7: pos=0.3962 vel=3.666 ori=97.2 cov=1.00
+[sweep]   rep  8: pos=0.4303 vel=3.982 ori=91.2 cov=1.00
+[sweep]   rep  9: pos=0.3246 vel=3.291 ori=80.8 cov=1.00
+[sweep]   rep 10: pos=0.3958 vel=3.488 ori=95.7 cov=1.00
+[sweep]   rep 11: pos=0.3813 vel=3.774 ori=81.1 cov=1.00
+[sweep]   rep 12: pos=0.4542 vel=3.784 ori=88.7 cov=1.00
+[sweep]   rep 13: pos=0.4283 vel=4.168 ori=88.7 cov=1.00
+[sweep]   rep 14: pos=0.3470 vel=3.451 ori=79.8 cov=1.00
+[sweep]   15/15 valid reps in 89s
+
+[sweep] === srb_ik_backflip_1  (15 chained reps) ===
+[sweep]   rep  0: pos=0.3729 vel=4.346 ori=83.5 cov=1.00
+[sweep]   rep  1: pos=0.4008 vel=5.390 ori=97.0 cov=1.00
+[sweep]   rep  2: pos=0.3954 vel=4.580 ori=82.4 cov=1.00
+[sweep]   rep  3: pos=0.3907 vel=4.462 ori=87.0 cov=1.00
+[sweep]   rep  4: pos=0.3814 vel=4.317 ori=82.8 cov=1.00
+[sweep]   rep  5: pos=0.3714 vel=4.222 ori=84.4 cov=1.00
+[sweep]   rep  6: pos=0.3696 vel=4.049 ori=83.5 cov=1.00
+[sweep]   rep  7: pos=0.3905 vel=4.368 ori=83.1 cov=1.00
+[sweep]   rep  8: pos=0.3821 vel=4.567 ori=84.0 cov=1.00
+[sweep]   rep  9: pos=0.3903 vel=4.647 ori=84.5 cov=1.00
+[sweep]   rep 10: pos=0.3779 vel=4.409 ori=85.5 cov=1.00
+[sweep]   rep 11: pos=0.3788 vel=4.416 ori=81.5 cov=1.00
+[sweep]   rep 12: pos=0.3675 vel=4.336 ori=85.5 cov=1.00
+[sweep]   rep 13: pos=0.4051 vel=4.512 ori=94.8 cov=1.00
+[sweep]   rep 14: pos=0.3780 vel=4.413 ori=81.4 cov=1.00
+[sweep]   15/15 valid reps in 83s
+
+[sweep] === srb_ik_backflip_2  (15 chained reps) ===
+[sweep]   rep  0: pos=0.3971 vel=4.691 ori=82.6 cov=1.00
+[sweep]   rep  1: pos=0.4548 vel=6.124 ori=97.7 cov=1.00
+[sweep]   rep  2: pos=0.4500 vel=5.403 ori=94.8 cov=1.00
+[sweep]   rep  3: pos=0.3986 vel=4.647 ori=86.1 cov=1.00
+[sweep]   rep  4: pos=0.3992 vel=4.807 ori=83.9 cov=1.00
+[sweep]   rep  5: pos=0.4455 vel=5.641 ori=102.7 cov=1.00
+[sweep]   rep  6: pos=0.3999 vel=4.545 ori=85.9 cov=1.00
+[sweep]   rep  7: pos=0.3926 vel=4.889 ori=82.3 cov=1.00
+[sweep]   rep  8: pos=0.4015 vel=4.784 ori=83.6 cov=1.00
+[sweep]   rep  9: pos=0.3955 vel=4.886 ori=80.9 cov=1.00
+[sweep]   rep 10: pos=0.3925 vel=4.930 ori=81.7 cov=1.00
+[sweep]   rep 11: pos=0.4442 vel=5.905 ori=94.5 cov=1.00
+[sweep]   rep 12: pos=0.3969 vel=4.755 ori=84.3 cov=1.00
+[sweep]   rep 13: pos=0.3921 vel=4.756 ori=83.1 cov=1.00
+[sweep]   rep 14: pos=0.4024 vel=4.789 ori=84.3 cov=1.00
+[sweep]   15/15 valid reps in 83s
+
+[sweep] === srb_ik_backflip_3  (15 chained reps) ===
+[sweep]   rep  0: pos=0.3943 vel=5.680 ori=80.5 cov=1.00
+[sweep]   rep  1: pos=0.3887 vel=5.235 ori=81.8 cov=1.00
+[sweep]   rep  2: pos=0.4421 vel=4.911 ori=87.5 cov=1.00
+[sweep]   rep  3: pos=0.4021 vel=5.426 ori=82.7 cov=1.00
+[sweep]   rep  4: pos=0.4019 vel=5.545 ori=88.5 cov=1.00
+[sweep]   rep  5: pos=0.4108 vel=5.121 ori=97.2 cov=1.00
+[sweep]   rep  6: pos=0.4206 vel=5.394 ori=102.5 cov=1.00
+[sweep]   rep  7: pos=0.4359 vel=5.096 ori=106.2 cov=1.00
+[sweep]   rep  8: pos=0.3998 vel=5.632 ori=96.5 cov=1.00
+[sweep]   rep  9: pos=0.3822 vel=5.358 ori=81.1 cov=1.00
+[sweep]   rep 10: pos=0.4126 vel=4.748 ori=110.4 cov=1.00
+[sweep]   rep 11: pos=0.3993 vel=5.347 ori=78.9 cov=1.00
+[sweep]   rep 12: pos=0.4186 vel=5.145 ori=104.9 cov=1.00
+[sweep]   rep 13: pos=0.4034 vel=5.923 ori=85.8 cov=1.00
+[sweep]   rep 14: pos=0.4220 vel=5.116 ori=107.2 cov=1.00
+[sweep]   15/15 valid reps in 82s
+
+[sweep] === srb_traj_backflip_0  (15 chained reps) ===
+[sweep]   rep  0: pos=0.1035 vel=1.186 ori=5.4 cov=1.00
+[sweep]   rep  1: pos=0.1045 vel=1.184 ori=5.0 cov=1.00
+[sweep]   rep  2: pos=0.1006 vel=0.946 ori=3.6 cov=1.00
+[sweep]   rep  3: pos=0.1040 vel=1.141 ori=4.8 cov=1.00
+[sweep]   rep  4: pos=0.1048 vel=1.184 ori=5.2 cov=1.00
+[sweep]   rep  5: pos=0.1037 vel=1.192 ori=5.2 cov=1.00
+[sweep]   rep  6: pos=0.1050 vel=1.169 ori=5.3 cov=1.00
+[sweep]   rep  7: pos=0.1003 vel=0.949 ori=4.1 cov=1.00
+[sweep]   rep  8: pos=0.1004 vel=0.936 ori=3.5 cov=1.00
+[sweep]   rep  9: pos=0.1010 vel=0.934 ori=3.8 cov=1.00
+[sweep]   rep 10: pos=0.1008 vel=0.923 ori=3.6 cov=1.00
+[sweep]   rep 11: pos=0.1000 vel=0.926 ori=3.6 cov=1.00
+[sweep]   rep 12: pos=0.1004 vel=0.926 ori=3.7 cov=1.00
+[sweep]   rep 13: pos=0.1040 vel=1.178 ori=5.1 cov=1.00
+[sweep]   rep 14: pos=0.1052 vel=1.213 ori=5.3 cov=1.00
+[sweep]   15/15 valid reps in 83s
+
+[sweep] === srb_traj_backflip_1  (15 chained reps) ===
+[sweep]   rep  0: pos=0.1060 vel=1.152 ori=5.4 cov=1.00
+[sweep]   rep  1: pos=0.1092 vel=1.184 ori=5.2 cov=1.00
+[sweep]   rep  2: pos=0.1042 vel=0.951 ori=4.0 cov=1.00
+[sweep]   rep  3: pos=0.1090 vel=1.193 ori=5.2 cov=1.00
+[sweep]   rep  4: pos=0.1092 vel=1.188 ori=5.1 cov=1.00
+[sweep]   rep  5: pos=0.1098 vel=1.197 ori=5.2 cov=1.00
+[sweep]   rep  6: pos=0.1089 vel=1.170 ori=5.7 cov=1.00
+[sweep]   rep  7: pos=0.1065 vel=0.993 ori=4.5 cov=1.00
+[sweep]   rep  8: pos=0.1040 vel=0.946 ori=4.0 cov=1.00
+[sweep]   rep  9: pos=0.1049 vel=0.958 ori=4.3 cov=1.00
+[sweep]   rep 10: pos=0.1049 vel=0.977 ori=4.2 cov=1.00
+[sweep]   rep 11: pos=0.1055 vel=0.947 ori=4.3 cov=1.00
+[sweep]   rep 12: pos=0.1047 vel=0.953 ori=4.1 cov=1.00
+[sweep]   rep 13: pos=0.1095 vel=1.199 ori=5.1 cov=1.00
+[sweep]   rep 14: pos=0.1091 vel=1.185 ori=5.1 cov=1.00
+[sweep]   15/15 valid reps in 83s
+
+[sweep] === srb_traj_backflip_2  (15 chained reps) ===
+[sweep]   rep  0: pos=0.1018 vel=1.122 ori=4.5 cov=1.00
+[sweep]   rep  1: pos=0.1041 vel=1.195 ori=4.6 cov=1.00
+[sweep]   rep  2: pos=0.1019 vel=0.977 ori=4.1 cov=1.00
+[sweep]   rep  3: pos=0.1052 vel=1.184 ori=5.1 cov=1.00
+[sweep]   rep  4: pos=0.1041 vel=1.148 ori=4.7 cov=1.00
+[sweep]   rep  5: pos=0.1042 vel=1.155 ori=4.8 cov=1.00
+[sweep]   rep  6: pos=0.1043 vel=1.159 ori=4.9 cov=1.00
+[sweep]   rep  7: pos=0.1011 vel=0.972 ori=4.0 cov=1.00
+[sweep]   rep  8: pos=0.1003 vel=0.971 ori=3.9 cov=1.00
+[sweep]   rep  9: pos=0.1031 vel=0.976 ori=4.5 cov=1.00
+[sweep]   rep 10: pos=0.1008 vel=0.980 ori=3.8 cov=1.00
+[sweep]   rep 11: pos=0.1014 vel=0.987 ori=3.9 cov=1.00
+[sweep]   rep 12: pos=0.1021 vel=0.986 ori=4.1 cov=1.00
+[sweep]   rep 13: pos=0.1043 vel=1.151 ori=4.6 cov=1.00
+[sweep]   rep 14: pos=0.1042 vel=1.188 ori=4.8 cov=1.00
+[sweep]   15/15 valid reps in 83s
+
+[sweep] === traj_opt_kino_1  (15 chained reps) ===
+[sweep]   rep  0: pos=0.1415 vel=1.360 ori=7.2 cov=1.00
+[sweep]   rep  1: pos=0.1398 vel=1.558 ori=8.2 cov=1.00
+[sweep]   rep  2: pos=0.1486 vel=1.886 ori=9.5 cov=1.00
+[sweep]   rep  3: pos=0.1392 vel=1.348 ori=9.7 cov=1.00
+[sweep]   rep  4: pos=0.1420 vel=1.473 ori=8.9 cov=1.00
+[sweep]   rep  5: pos=0.1424 vel=1.594 ori=7.9 cov=1.00
+[sweep]   rep  6: pos=0.1419 vel=1.576 ori=8.2 cov=1.00
+[sweep]   rep  7: pos=0.1409 vel=1.572 ori=8.0 cov=1.00
+[sweep]   rep  8: pos=0.1418 vel=1.646 ori=8.1 cov=1.00
+[sweep]   rep  9: pos=0.1390 vel=1.597 ori=7.9 cov=1.00
+[sweep]   rep 10: pos=0.1413 vel=1.366 ori=9.7 cov=1.00
+[sweep]   rep 11: pos=0.1408 vel=1.336 ori=9.5 cov=1.00
+[sweep]   rep 12: pos=0.1395 vel=1.375 ori=8.6 cov=1.00
+[sweep]   rep 13: pos=0.1394 vel=1.349 ori=9.0 cov=1.00
+[sweep]   rep 14: pos=0.1393 vel=1.357 ori=8.6 cov=1.00
+[sweep]   15/15 valid reps in 59s
+
+[sweep] === traj_opt_kino_3  (15 chained reps) ===
+[sweep]   rep  0: pos=0.1206 vel=1.155 ori=6.3 cov=1.00
+[sweep]   rep  1: pos=0.1206 vel=1.247 ori=5.3 cov=1.00
+[sweep]   rep  2: pos=0.1265 vel=1.510 ori=6.7 cov=1.00
+[sweep]   rep  3: pos=0.1237 vel=1.155 ori=7.4 cov=1.00
+[sweep]   rep  4: pos=0.1180 vel=1.149 ori=6.5 cov=1.00
+[sweep]   rep  5: pos=0.1189 vel=1.239 ori=5.4 cov=1.00
+[sweep]   rep  6: pos=0.1177 vel=1.253 ori=5.2 cov=1.00
+[sweep]   rep  7: pos=0.1200 vel=1.308 ori=5.3 cov=1.00
+[sweep]   rep  8: pos=0.1211 vel=1.299 ori=5.2 cov=1.00
+[sweep]   rep  9: pos=0.1184 vel=1.322 ori=5.2 cov=1.00
+[sweep]   rep 10: pos=0.1229 vel=1.116 ori=7.4 cov=1.00
+[sweep]   rep 11: pos=0.1197 vel=1.135 ori=6.9 cov=1.00
+[sweep]   rep 12: pos=0.1193 vel=1.154 ori=7.0 cov=1.00
+[sweep]   rep 13: pos=0.1189 vel=1.140 ori=6.9 cov=1.00
+[sweep]   rep 14: pos=0.1189 vel=1.157 ori=6.8 cov=1.00
+[sweep]   15/15 valid reps in 59s
+
+[sweep] === traj_opt_kino_4  (15 chained reps) ===
+[sweep]   rep  0: pos=0.1219 vel=1.164 ori=6.1 cov=1.00
+[sweep]   rep  1: pos=0.1221 vel=1.400 ori=5.4 cov=1.00
+[sweep]   rep  2: pos=0.1254 vel=1.548 ori=5.8 cov=1.00
+[sweep]   rep  3: pos=0.1226 vel=1.154 ori=6.9 cov=1.00
+[sweep]   rep  4: pos=0.1227 vel=1.214 ori=6.4 cov=1.00
+[sweep]   rep  5: pos=0.1197 vel=1.355 ori=5.4 cov=1.00
+[sweep]   rep  6: pos=0.1229 vel=1.408 ori=5.3 cov=1.00
+[sweep]   rep  7: pos=0.1230 vel=1.343 ori=5.3 cov=1.00
+[sweep]   rep  8: pos=0.1223 vel=1.379 ori=5.3 cov=1.00
+[sweep]   rep  9: pos=0.1207 vel=1.356 ori=5.3 cov=1.00
+[sweep]   rep 10: pos=0.1202 vel=1.179 ori=6.2 cov=1.00
+[sweep]   rep 11: pos=0.1237 vel=1.173 ori=6.8 cov=1.00
+[sweep]   rep 12: pos=0.1271 vel=1.436 ori=5.5 cov=1.00
+[sweep]   rep 13: pos=0.1186 vel=1.297 ori=5.3 cov=1.00
+[sweep]   rep 14: pos=0.1177 vel=1.203 ori=4.9 cov=1.00
+[sweep]   15/15 valid reps in 59s
+
+==================================================================================================
+  SWEEP TRACKING-ERROR SUMMARY  (valid = standing at start)
+==================================================================================================
+  policy                 valid/total     pos RMSE (mean+/-std)          vel RMSE      ori RMSE deg
+  ------------------------------------------------------------------------------------------------
+  kino_backflip_1          15/15          0.3916 +/- 0.0539      3.701+/-0.459      89.45+/-10.30 
+  kino_backflip_2          15/15          0.4081 +/- 0.0146      5.054+/-0.189      83.51+/-2.79  
+  kino_backflip_3          15/15          0.3961 +/- 0.0423      3.756+/-0.338      86.57+/-6.08  
+  srb_ik_backflip_1        15/15          0.3835 +/- 0.0111      4.469+/-0.285      85.39+/-4.38  
+  srb_ik_backflip_2        15/15          0.4109 +/- 0.0231      5.037+/-0.472      87.22+/-6.50  
+  srb_ik_backflip_3        15/15          0.4090 +/- 0.0161      5.312+/-0.297      92.78+/-10.86 
+  srb_traj_backflip_0      15/15          0.1025 +/- 0.0020      1.066+/-0.124       4.49+/-0.75  
+  srb_traj_backflip_1      15/15          0.1070 +/- 0.0022      1.079+/-0.112       4.76+/-0.55  
+  srb_traj_backflip_2      15/15          0.1029 +/- 0.0015      1.077+/-0.094       4.43+/-0.39  
+  traj_opt_kino_1          15/15          0.1412 +/- 0.0023      1.493+/-0.153       8.60+/-0.73  
+  traj_opt_kino_3          15/15          0.1204 +/- 0.0023      1.223+/-0.102       6.23+/-0.83  
+  traj_opt_kino_4          15/15          0.1220 +/- 0.0024      1.307+/-0.116       5.72+/-0.59  
+  ------------------------------------------------------------------------------------------------
+==================================================================================================
+
+
+=====================================================================================
+  PER-MOTION TRACKING ERROR  (mean over valid reps, all seeds pooled)
+=====================================================================================
+  motion                           policies  reps   pos RMSE   vel RMSE  ori RMSE deg
+  -----------------------------------------------------------------------------------
+  ablation/kino_backflip.npz              3    45     0.3986      4.170         86.51
+  ablation/srb_backflip.npz               3    45     0.4011      4.939         88.46
+  ablation/srb_traj_backflip.npz          3    45     0.1041      1.074          4.56
+  ablation/traj_kino_backflip.npz         3    45     0.1278      1.341          6.85
+  -----------------------------------------------------------------------------------
+=====================================================================================
+
+[sweep] wrote /home/jason/humanoid_ws/deploy_robot/sweep/results/runs.csv, summary.csv, summary_by_motion.csv, summary.txt

@@ -1,0 +1,14 @@
+Log node initialized.
+    Mode:          sim
+    Output file:   /home/jason/humanoid_ws/deploy_robot/logs/simulation/sweep_kino_backflip_3.h5
+    Log frequency: 200.0 Hz (0.005 s)
+    Dump period:   1.0 s
+    Time topic:    deploy_robot/simulation_time
+Waiting for required topics: joint_state (deploy_robot/joint_state), pelvis_imu (deploy_robot/pelvis_imu_state), torso_imu (deploy_robot/torso_imu_state), time (deploy_robot/simulation_time)
+Log file renamed to include config: /home/jason/humanoid_ws/deploy_robot/logs/simulation/sweep_kino_backflip_3_g1_29dof_mimic_sweep.h5
+Recorded experiment info into log: config='g1_29dof_mimic_sweep', fields=['config', 'config_yaml', 'policy_trained_at']
+Topic discovery: all required topics ready.
+    [OK]   command      <- deploy_robot/command  (1 pub)
+    [OK]   joystick     <- deploy_robot/joystick  (1 pub)
+    [SKIP] motor_temp   <- deploy_robot/motor_temperature  (optional, no publisher)
+Logger shutdown complete.

@@ -1,0 +1,103 @@
+{
+  "policy": "srb_ik_backflip_2",
+  "config": "g1_29dof_mimic_sweep",
+  "motion_path": "ablation/srb_backflip.npz",
+  "num_frames": 219,
+  "fps": 50.0,
+  "control_dt": 0.02,
+  "motion_duration": 4.38,
+  "tilt_threshold": 40.0,
+  "reps": [
+    {
+      "rep": 0,
+      "gate_tilt_deg": 10.771007167611451,
+      "standing_ok": true,
+      "track_start_time": 0.44000000000000034
+    },
+    {
+      "rep": 1,
+      "gate_tilt_deg": 13.707407597029043,
+      "standing_ok": true,
+      "track_start_time": 5.401999999999627
+    },
+    {
+      "rep": 2,
+      "gate_tilt_deg": 13.358210134669728,
+      "standing_ok": true,
+      "track_start_time": 10.342000000000123
+    },
+    {
+      "rep": 3,
+      "gate_tilt_deg": 9.1326048248392,
+      "standing_ok": true,
+      "track_start_time": 15.280000000001772
+    },
+    {
+      "rep": 4,
+      "gate_tilt_deg": 7.531394134070911,
+      "standing_ok": true,
+      "track_start_time": 20.25999999999965
+    },
+    {
+      "rep": 5,
+      "gate_tilt_deg": 7.78108875552048,
+      "standing_ok": true,
+      "track_start_time": 25.24199999999689
+    },
+    {
+      "rep": 6,
+      "gate_tilt_deg": 8.541505601911199,
+      "standing_ok": true,
+      "track_start_time": 30.241999999994118
+    },
+    {
+      "rep": 7,
+      "gate_tilt_deg": 12.898380055131891,
+      "standing_ok": true,
+      "track_start_time": 35.159999999997005
+    },
+    {
+      "rep": 8,
+      "gate_tilt_deg": 13.095673210724144,
+      "standing_ok": true,
+      "track_start_time": 40.08000000000302
+    },
+    {
+      "rep": 9,
+      "gate_tilt_deg": 12.345042954863922,
+      "standing_ok": true,
+      "track_start_time": 45.020000000009055
+    },
+    {
+      "rep": 10,
+      "gate_tilt_deg": 11.388847071650215,
+      "standing_ok": true,
+      "track_start_time": 49.962000000015095
+    },
+    {
+      "rep": 11,
+      "gate_tilt_deg": 13.542629280034827,
+      "standing_ok": true,
+      "track_start_time": 54.88200000002111
+    },
+    {
+      "rep": 12,
+      "gate_tilt_deg": 11.149707597716986,
+      "standing_ok": true,
+      "track_start_time": 59.82000000002714
+    },
+    {
+      "rep": 13,
+      "gate_tilt_deg": 15.017369865444143,
+      "standing_ok": true,
+      "track_start_time": 64.80000000003038
+    },
+    {
+      "rep": 14,
+      "gate_tilt_deg": 12.45890356636464,
+      "standing_ok": true,
+      "track_start_time": 69.78200000001877
+    }
+  ],
+  "complete": true
+}

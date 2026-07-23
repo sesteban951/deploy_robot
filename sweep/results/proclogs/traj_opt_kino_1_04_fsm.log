@@ -1,0 +1,11 @@
+/home/jason/humanoid_ws/deploy_robot/sweep/fsm_driver.py:69: DeprecationWarning: Conversion of an array with ndim > 0 to a scalar is deprecated, and will error in future. Ensure you extract a single element from your array before performing this operation. (Deprecated NumPy 1.25.)
+  self.fps = float(motion["fps"])
+FSM driver initialized: policy=traj_opt_kino_1 run=4 motion_duration=2.80s (140 frames @ 50.0 fps)
+FSM: init -> damp
+FSM: damp -> home
+FSM: home -> control
+FSM driver: start gate tilt=9.1deg (threshold 40.0deg) -> OK
+FSM: control -> track
+FSM driver: 'track' started at sim_time=1.102
+FSM driver: run complete, wrote sidecar /home/jason/humanoid_ws/deploy_robot/sweep/results/sidecars/traj_opt_kino_1_04.json
+FSM driver shutdown complete.

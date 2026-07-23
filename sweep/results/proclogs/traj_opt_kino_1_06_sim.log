@@ -1,0 +1,10 @@
+Loaded Mujoco model from [/home/jason/humanoid_ws/deploy_robot/models/g1_29dof_scene.xml].
+    Sim dt: 0.002 seconds.
+    nq: 36
+    nv: 35
+    nu: 29
+    Headless: viewer disabled.
+Simulation node initialized.
+    Press [Tab] to toggle the left UI.
+    Press [Shift + Tab] to toggle the right UI.
+Simulation shutdown complete.
