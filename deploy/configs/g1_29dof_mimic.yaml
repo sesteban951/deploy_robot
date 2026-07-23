@@ -29,20 +29,30 @@ xml_path: "g1_29dof_scene.xml"
 # 180 TWIST JUMP
 # policy_path: "kd_to_180_twist_jump.onnx"
 # motion_path: "kd_to_twist_180_jump_29dof.npz"
+# policy_path: "kd_to_180_twist_jump_mysetup.onnx"
+# motion_path: "kd_to_twist_180_jump_29dof_long.npz"
+
+# 360 TWIST JUMP
+# policy_path: "g1_29dof_mimic_traj_360_twist.onnx"
+# motion_path: "traj_opt_kino_360_twist.npz"
 
 # ROLLOVER
-policy_path: "to_sideroll_first_try.onnx"
-motion_path: "v3_tracking_sideroll_crop0-544.npz"
+# policy_path: "to_sideroll_first_try.onnx"
+# motion_path: "v3_tracking_sideroll_crop0-544.npz"
+# policy_path: "to_sideroll_hold.onnx"
+# motion_path: "v3_tracking_sideroll_hold.npz"
+policy_path: "to_sideroll_mysetup.onnx"
+motion_path: "to_sideroll_29dof.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
 frame_pos_duration: 3.0  # [sec]
 
 # PD gains per joint
-Kp: [45.179, 104.098, 45.179, 104.098, 33.501, 33.501, # higher gains
-     45.179, 104.098, 45.179, 104.098, 33.501, 33.501,
-     # 40.179, 99.098, 40.179, 99.098, 28.501, 28.501, # nominal gains
-     # 40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+# Kp: [45.179, 104.098, 45.179, 104.098, 33.501, 33.501, # higher gains
+#      45.179, 104.098, 45.179, 104.098, 33.501, 33.501,
+Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501, # nominal gains
+     40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
      35.179, 23.501, 23.501,  # Warning: ACTIVE WAIST  # lower gains
      # 40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST, nominal gains
      # 40.179, 0.0,    0.0,  # Warning: LOCKED WAIST
@@ -51,6 +61,7 @@ Kp: [45.179, 104.098, 45.179, 104.098, 33.501, 33.501, # higher gains
 Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
      2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
      2.558, 1.814, 1.814,  # Warning: ACTIVE WAIST
+     # 2.558, 2.814, 2.814,  # Warning: ACTIVE WAIST
      # 2.558, 0.0,   0.0,    # Warning: LOCKED WAIST
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
