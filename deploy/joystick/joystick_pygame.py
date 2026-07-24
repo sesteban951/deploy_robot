@@ -119,10 +119,12 @@ class JoystickNode(Node):
             self.fsm_pub.publish(fsm_msg)
 
             # convert the joystick state to a command message
+            #   vx = left stick fore/aft, vy = right stick lateral,
+            #   wz = left trigger (turn +) minus right trigger (turn -)
             is_connected = 1.0
             vx_cmd = self.joystick_state.LS_Y
-            vy_cmd = self.joystick_state.LS_X
-            omega_cmd = self.joystick_state.RS_X
+            vy_cmd = self.joystick_state.RS_X
+            omega_cmd = self.joystick_state.LT - self.joystick_state.RT
 
         # publish the command
         cmd_msg = Float32MultiArray()

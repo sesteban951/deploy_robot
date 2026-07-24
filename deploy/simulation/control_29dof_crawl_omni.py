@@ -27,6 +27,7 @@ sys.path.append(ROOT_DIR)
 # custom imports
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
+from utils.crawl_modes import resolve_crawl_twist
 
 
 ############################################################################
@@ -40,18 +41,17 @@ class ControlNode(Node):
 
     The actor sees proprioception, a free-running gait phase clock, a commanded
     planar twist [vx, vy, wz], and projected gravity. No reference motion is loaded
-    at runtime. Unlike the differential-drive policy (translate XOR rotate), the omni
-    command is FULL 3-D with all three axes live and INDEPENDENT: forward vx, strafe
-    vy, and turn wz can be commanded in any combination (a mixed arc with strafing).
-    Each stick axis maps straight to its twist component, deadbanded near center and
-    clipped to the trained range; all sticks centered -> the zero-twist idle/stop pose.
+    at runtime. The commanded twist is assigned to one of three library motions --
+    forward, backward, or in-place turn -- by its magnitude (see utils.crawl_modes),
+    then clamped to that motion's trained range; anything else -> the zero-twist
+    idle/stop pose. This keeps combined commands on the gait-library manifold instead
+    of collapsing a big forward+turn into a pure in-place spin.
 
-    Ranges match the G1-Crawling-Omni gait library (a 5x5x5 grid + idle clip):
-    vx forward-only in {0} u [0.10, 0.30] (no reverse; the untrained 0-0.10 band is
-    deadbanded to idle), vy in [-0.15, 0.15], wz in [-0.15, 0.15]. NOTE the library is
-    forward-biased -- every non-idle *clip* has vx >= 0.10 -- so commanding strafe/turn
-    with vx = 0 (pure sideways or turn-in-place) is a mild extrapolation the policy was
-    not explicitly trained on, but the command path allows it.
+    Ranges match the G1-Crawling-Omni "alldir" gait library and the mjlab training
+    TWIST_RANGE: vx in [-0.25, 0.30] (reverse crawl INCLUDED), vy in [-0.12, 0.12],
+    wz in [-0.60, 0.60]. The center is deadbanded (|vx| < 0.10 -> idle) and all sticks
+    centered -> the zero-twist idle/stop pose. Keep the yaml twist_clip_* in sync with
+    the trained range (mjlab tasks/crawling_omni/config/g1/env_cfgs.py: TWIST_RANGE).
     """
 
     def __init__(self, config_path: str):
@@ -93,6 +93,10 @@ class ControlNode(Node):
         # free-running gait phase clock (integer frame index, wraps at T)
         self.phase_step = 0
 
+        # active crawl mode (forward / backward / turn / idle) for logging
+        self.mode = "idle"
+        self._last_mode = None
+
         print("Control node initialized.")
 
 
@@ -133,7 +137,6 @@ class ControlNode(Node):
         self.twist_scale = np.array(self.config["twist_scale"], dtype=np.float32)
         self.twist_clip_lo = np.array(self.config["twist_clip_lo"], dtype=np.float32)
         self.twist_clip_hi = np.array(self.config["twist_clip_hi"], dtype=np.float32)
-        self.twist_deadband = np.array(self.config["twist_deadband"], dtype=np.float32)
 
         # import the policy
         policy_path = self.config['policy_path']
@@ -192,22 +195,18 @@ class ControlNode(Node):
     def time_callback(self, msg):
         self.sim_time = msg.data
 
-    # commanded planar twist [vx, vy, wz] -- full 3-D, each axis independent
+    # commanded planar twist [vx, vy, wz]: raw joystick command -> mode-select +
+    # clamp to the gait library (utils.crawl_modes), so a big combined command
+    # can't leave the reachable set and collapse to a pure in-place turn.
     def commanded_twist(self):
         # autonomous forward crawl when no joystick is connected (for viewing)
         if not self.joystick_connected:
+            self.mode = "forward"
             return self.default_twist
 
-        # independent per-axis mapping: forward -> vx, lateral -> vy, turn -> wz (no cross-gating)
         twist = self.cmd * self.twist_scale
-
-        # per-axis deadband: sticks near center -> 0 on THAT axis only (all centered -> idle stop).
-        # vx's deadband = its trained min so the untrained (0, min) forward band snaps to idle;
-        # vy/wz are trained continuously down to 0, so their deadband is just stick-noise rejection.
-        twist = np.where(np.abs(twist) < self.twist_deadband, 0.0, twist)
-
-        # clip each axis to its trained range (vx is forward-only: clip_lo[0] = 0, no reverse)
-        return np.clip(twist, self.twist_clip_lo, self.twist_clip_hi).astype(np.float32)
+        self.mode, shaped = resolve_crawl_twist(twist, self.config)
+        return shaped
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -243,6 +242,11 @@ class ControlNode(Node):
 
         # get the current observation
         obs = self.build_observation()
+
+        # announce crawl-mode changes (forward / backward / turn / idle)
+        if self.mode != self._last_mode:
+            print(f"[mode] {self._last_mode} -> {self.mode}")
+            self._last_mode = self.mode
 
         # target joint positions (PD control); time_step feeds the gait frame index
         self.action = self.policy.inference(obs, time_step=self.phase_step)

@@ -1,15 +1,32 @@
 xml_path: "g1_29dof_scene.xml"
-policy_path: "crawl_omni.onnx"
+policy_path: "crawl_omni_alldir.onnx"
 
 # gait clock
 motion_period_frames: 130   # T: frames per gait cycle (phase = t/T); 130 @ 50 Hz = 2.6 s
 
-default_twist:  [0.20, 0.0, 0.0]      # autonomous mid-forward crawl when no joystick
-twist_scale:    [0.30, 0.15, 0.15]    # joystick stick -> [vx, vy, wz] (full stick -> range max)
-twist_clip_lo:  [0.00, -0.15, -0.15]  # vx forward-only, floor 0 (no reverse); vy/wz two-sided
-twist_clip_hi:  [0.30,  0.15,  0.15]
-twist_deadband: [0.10,  0.0,   0.0]   # vx<0.10 -> 0 (snaps untrained 0-0.10 band to idle); vy/wz
-                                      # trained to 0 (joy_node already applies a 0.05 raw deadzone)
+default_twist:  [0.20,  0.0,   0.0]   # autonomous mid-forward crawl when no joystick
+twist_scale:    [0.30,  0.12,  0.60]  # input -> [vx, vy, wz] (full stick/trigger -> trained range max)
+twist_clip_lo:  [-0.25, -0.12, -0.60] # raw command safety box: trained TWIST_RANGE mins
+twist_clip_hi:  [ 0.30,  0.12,  0.60] # raw command safety box: trained TWIST_RANGE maxs
+                                      # (mjlab tasks/crawling_omni/config/g1/env_cfgs.py: TWIST_RANGE)
+
+# --- mode selection + command shaping (utils/crawl_modes.py) --------------------------
+# The gait library is 3 disjoint motions (forward / backward / in-place turn) + idle.
+# Each control step the commanded twist selects a mode by magnitude, then is clamped to
+# that mode's trained range so we never command a combination the library lacks (which
+# otherwise collapses a big forward+turn into a pure in-place spin).
+#
+# mode thresholds (tune these). Mode is a partition of the vx axis:
+mode_fwd_vx_min:   0.10   # vx >= this               -> forward mode
+mode_bwd_vx_max:  -0.05   # vx <= this               -> backward mode
+mode_turn_wz_min:  0.25   # in between: |wz| > this  -> in-place turn (else idle)
+#
+# per-mode gait-library ranges (facts about the trained grid; not tuning knobs):
+fwd_vx_range:  [ 0.10, 0.30]   # forward vx clamp
+bwd_vx_range:  [-0.25, -0.05]  # backward vx clamp
+crab_max:      0.12            # |vy| cap while translating
+curve_max:     0.12            # |wz| cap while translating (gentle curve)
+turn_wz_range: [ 0.28, 0.60]   # in-place |wz| clamp (min turn .. max turn)
 
 # hardware: time for the 'home' FSM state to ramp the robot from its current pose into the
 # crawl idle/laydown pose (home_joint_pos). Longer = gentler standing->laydown transition.
