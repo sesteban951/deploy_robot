@@ -31,8 +31,8 @@ xml_path: "g1_29dof_scene.xml"
 # motion_path: "kd_to_twist_180_jump_29dof.npz"
 
 # 360 TWIST JUMP
-policy_path: "ablation/traj_opt_kino_4.onnx"
-motion_path: "ablation/traj_kino_backflip.npz"
+policy_path: "ablation/srb_traj_backflip_0.onnx"
+motion_path: "ablation/srb_traj_backflip.npz"
 
 #### Ablation  ####
 # policy_path: "ablation/srb_ik.onnx"

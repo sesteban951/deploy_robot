@@ -10,93 +10,63 @@
   "reps": [
     {
       "rep": 0,
-      "gate_tilt_deg": 1.1349484475522176,
+      "gate_tilt_deg": 1.1038336532368354,
       "standing_ok": true,
-      "track_start_time": 0.4280000000000003
+      "track_start_time": 0.44200000000000034
     },
     {
       "rep": 1,
-      "gate_tilt_deg": 1.4008137552832145,
+      "gate_tilt_deg": 1.211163062238291,
       "standing_ok": true,
-      "track_start_time": 5.46799999999962
+      "track_start_time": 5.481999999999618
     },
     {
       "rep": 2,
-      "gate_tilt_deg": 0.26261892453897695,
+      "gate_tilt_deg": 0.400575537500511,
       "standing_ok": true,
-      "track_start_time": 10.428000000000152
+      "track_start_time": 10.442000000000156
     },
     {
       "rep": 3,
-      "gate_tilt_deg": 0.36979530447449027,
+      "gate_tilt_deg": 0.36192540850685057,
       "standing_ok": true,
-      "track_start_time": 15.388000000001808
+      "track_start_time": 15.42200000000182
     },
     {
       "rep": 4,
-      "gate_tilt_deg": 1.3174670130951822,
+      "gate_tilt_deg": 1.1458757381734785,
       "standing_ok": true,
-      "track_start_time": 20.427999999999557
+      "track_start_time": 20.461999999999538
     },
     {
       "rep": 5,
-      "gate_tilt_deg": 1.3306763018746421,
+      "gate_tilt_deg": 1.4031636851520988,
       "standing_ok": true,
-      "track_start_time": 25.467999999996763
+      "track_start_time": 25.501999999996745
     },
     {
       "rep": 6,
-      "gate_tilt_deg": 1.2469094559295737,
+      "gate_tilt_deg": 0.843166074962309,
       "standing_ok": true,
-      "track_start_time": 30.50799999999397
+      "track_start_time": 30.521999999993962
     },
     {
       "rep": 7,
-      "gate_tilt_deg": 0.00602102283501642,
+      "gate_tilt_deg": 0.3295074111583154,
       "standing_ok": true,
-      "track_start_time": 35.46799999999738
+      "track_start_time": 35.4819999999974
     },
     {
       "rep": 8,
-      "gate_tilt_deg": 0.3421458717330514,
+      "gate_tilt_deg": 0.46224908481586546,
       "standing_ok": true,
-      "track_start_time": 40.42800000000344
+      "track_start_time": 40.44200000000346
     },
     {
       "rep": 9,
-      "gate_tilt_deg": 0.26763201978987844,
+      "gate_tilt_deg": 0.5143512957124365,
       "standing_ok": true,
-      "track_start_time": 45.388000000009505
-    },
-    {
-      "rep": 10,
-      "gate_tilt_deg": 0.38591026805561096,
-      "standing_ok": true,
-      "track_start_time": 50.34800000001557
-    },
-    {
-      "rep": 11,
-      "gate_tilt_deg": 1.038396787412224,
-      "standing_ok": true,
-      "track_start_time": 55.32800000002165
-    },
-    {
-      "rep": 12,
-      "gate_tilt_deg": 0.19495586214732763,
-      "standing_ok": true,
-      "track_start_time": 60.288000000027715
-    },
-    {
-      "rep": 13,
-      "gate_tilt_deg": 1.3676051170726526,
-      "standing_ok": true,
-      "track_start_time": 65.3080000000292
-    },
-    {
-      "rep": 14,
-      "gate_tilt_deg": 1.344702315787363,
-      "standing_ok": true,
-      "track_start_time": 70.34800000001745
+      "track_start_time": 45.40200000000952
     }
   ],
   "complete": true

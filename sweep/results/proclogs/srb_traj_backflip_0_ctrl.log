@@ -13,20 +13,10 @@ Loaded motion from [/home/jason/humanoid_ws/deploy_robot/motions/ablation/srb_tr
     Frames: 221
     Duration: 4.4s
     Anchor body: torso_link (index 15)
-[INFO] [1784833764.631878395] [control_node]: Broadcasting experiment info: config='g1_29dof_mimic_sweep', fields=['config', 'config_yaml', 'policy_trained_at']
+[INFO] [1784846546.742301038] [control_node]: Broadcasting experiment info: config='g1_29dof_mimic_sweep', fields=['config', 'config_yaml', 'policy_trained_at']
 Checking for a joystick connection...
 Joystick connected: holding the first motion frame until FSM enters 'track'.
 Control node initialized.
-FSM entered 'track': starting motion trajectory.
-FSM left 'track' (now 'damp'): holding the first frame.
-FSM entered 'track': starting motion trajectory.
-FSM left 'track' (now 'damp'): holding the first frame.
-FSM entered 'track': starting motion trajectory.
-FSM left 'track' (now 'damp'): holding the first frame.
-FSM entered 'track': starting motion trajectory.
-FSM left 'track' (now 'damp'): holding the first frame.
-FSM entered 'track': starting motion trajectory.
-FSM left 'track' (now 'damp'): holding the first frame.
 FSM entered 'track': starting motion trajectory.
 FSM left 'track' (now 'damp'): holding the first frame.
 FSM entered 'track': starting motion trajectory.

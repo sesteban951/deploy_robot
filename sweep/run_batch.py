@@ -376,10 +376,20 @@ def main():
     write_csv(os.path.join(args.outdir, "summary_by_motion.csv"), motion_rows,
               ["motion", "policies", "valid_reps", "pos_rmse_mean", "vel_rmse_mean", "ori_rmse_deg_mean"])
 
+    # combined single-number metric (fixed-scale normalized + summed), computed
+    # from the logs/sidecars this run just produced. Lazy import avoids the
+    # combined_error <-> run_batch circular import at module load.
+    combined_report = ""
+    try:
+        import combined_error
+        combined_report, _ = combined_error.report(policies, results_dir=args.outdir)
+    except Exception as e:
+        print(f"[sweep] combined-error step skipped: {e}")
+
     with open(os.path.join(args.outdir, "summary.txt"), "w") as f:
-        f.write(report + "\n" + motion_report + "\n")
+        f.write(report + "\n" + motion_report + "\n" + combined_report + "\n")
     print(f"[sweep] wrote {os.path.join(args.outdir, 'runs.csv')}, summary.csv, "
-          f"summary_by_motion.csv, summary.txt")
+          f"summary_by_motion.csv, combined_error.csv, summary.txt")
 
 
 if __name__ == "__main__":
