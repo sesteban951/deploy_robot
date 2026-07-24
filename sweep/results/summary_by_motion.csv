@@ -1,2 +1,0 @@
-motion,policies,valid_reps,pos_rmse_mean,vel_rmse_mean,ori_rmse_deg_mean
-ablation/srb_traj_backflip.npz,1,10,0.10274569830542091,1.1318570003738395,4.546241548116518

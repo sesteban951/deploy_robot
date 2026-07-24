@@ -3,3 +3,7 @@
 **/.claude/
 **/MUJOCO_LOG.TXT
 logs/simulation
+sweep/results/**/*.csv
+sweep/results/**/*.json
+sweep/results/*.csv
+sweep/results/*.json

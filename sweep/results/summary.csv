@@ -1,2 +1,0 @@
-policy,valid,total,pos_rmse_mean,pos_rmse_std,vel_rmse_mean,vel_rmse_std,ori_rmse_deg_mean,ori_rmse_deg_std
-srb_traj_backflip_0,10,10,0.10274569830542091,0.001694677008053291,1.1318570003738395,0.08012960485524491,4.546241548116518,0.40971691505538727
