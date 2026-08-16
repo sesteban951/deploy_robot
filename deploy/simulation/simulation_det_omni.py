@@ -29,6 +29,10 @@
 # Use this to tune the omni controller: change knobs in g1_29dof_crawl_omni.yaml
 # (twist range, gait period, gains, ...) and compare runs on equal footing.
 #
+# Velocity-tracking experiments: --profile {fwd,bwd,crab,turn,all} runs a scripted
+# staircase of body-frame twist setpoints, logs commanded vs achieved base velocity
+# to an npz, and you visualize it with plot_velocity_tracking.py.
+#
 ##
 
 
@@ -76,6 +80,86 @@ RENDER_HZ = 50.0   # [Hz] viewer render rate
 
 
 ############################################################################
+# VELOCITY-TRACKING STAIRCASE PROFILES
+############################################################################
+
+# Each profile is a list of body-frame twist setpoints [vx, vy, wz]. The sim holds
+# each for an integer number of GAIT CYCLES (after an initial idle settle), so the
+# steady-state average spans whole cycles -- the crawl gait makes the base velocity
+# oscillate at the gait period, so a whole-cycle window cancels that swing.
+N_HOLD_CYCLES = 3     # setpoint hold length, in gait cycles (multiple of the ~2.6 s period)
+N_SETTLE_CYCLES = 1   # initial idle settle, in gait cycles
+
+_FWD  = [[v,   0.0,  0.0] for v  in (0.10, 0.15, 0.20, 0.25, 0.30)]
+_BWD  = [[v,   0.0,  0.0] for v  in (-0.05, -0.10, -0.15, -0.20, -0.25)]
+_CRAB = [[0.20, vy,  0.0] for vy in (0.0, 0.06, 0.12, -0.06, -0.12)]
+_TURN = [[0.0, 0.0,  wz] for wz in (0.28, 0.40, 0.50, 0.60, -0.28, -0.40, -0.60)]
+PROFILES = {
+    "fwd":  _FWD,     # forward vx staircase
+    "bwd":  _BWD,     # backward vx staircase
+    "crab": _CRAB,    # lateral vy staircase at a fixed forward vx
+    "turn": _TURN,    # in-place yaw-rate staircase
+    "all":  _FWD + _BWD + _CRAB + _TURN,
+}
+
+# --- "combo" paper experiment: ONE run through the three mode regions, sampling
+# real twist clips from the gait library --------------------------------------
+# N_PER_REGION commands are drawn per motion (forward / backward / in-place turn)
+# from the ACTUAL library twist table (bundled snapshot of the mjlab crawl_omni
+# clips), seeded by --seed for reproducibility. Regions run back-to-back.
+N_PER_REGION = 2
+
+# bundled snapshot of the mjlab crawl_omni gait-library twist labels (285 clips)
+_TWIST_TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crawl_omni_twists.npy")
+
+# fallback grid, used only if the twist-table file is missing
+_LIB_FWD_VX   = (0.10, 0.15, 0.20, 0.25, 0.30)
+_LIB_BWD_VX   = (-0.05, -0.10, -0.15, -0.20, -0.25)
+_LIB_CRAB_VY  = (-0.12, -0.06, 0.0, 0.06, 0.12)
+_LIB_CURVE_WZ = (-0.12, -0.06, 0.0, 0.06, 0.12)
+_LIB_TURN_WZ  = tuple(sorted(s * round(0.28 + 0.02 * i, 2) for i in range(17) for s in (-1.0, 1.0)))
+
+
+def sample_combo_setpoints(seed, n=N_PER_REGION):
+    """Sample n real gait-library twist clips from each motion (seeded -> reproducible)."""
+    rng = np.random.default_rng(int(seed))
+
+    if os.path.exists(_TWIST_TABLE):
+        T = np.load(_TWIST_TABLE)
+        vx, vy, wz = T[:, 0], T[:, 1], T[:, 2]
+        fwd_mask  = vx >= 0.10
+        bwd_mask  = vx <= -0.05
+        turn_mask = (np.abs(vx) < 1e-6) & (np.abs(vy) < 1e-6) & (np.abs(wz) > 0.25)
+
+        # stratified draw: pick n DISTINCT values of the primary axis, then a real
+        # library clip at each -> genuine library points that span the motion's range
+        def draw(mask, key_col):
+            idx = np.where(mask)[0]
+            keys = np.unique(np.round(T[idx, key_col], 3))
+            chosen = rng.choice(keys, size=min(n, len(keys)), replace=False)
+            out = []
+            for kv in chosen:
+                sub = idx[np.isclose(T[idx, key_col], kv)]
+                out.append(T[int(rng.choice(sub))].astype(float).tolist())
+            return out
+
+        fwd  = sorted(draw(fwd_mask, 0),  key=lambda c: c[0])    # ascending vx
+        bwd  = sorted(draw(bwd_mask, 0),  key=lambda c: -c[0])   # increasingly negative vx
+        turn = sorted(draw(turn_mask, 2), key=lambda c: c[2])    # ascending wz
+        return fwd + bwd + turn
+
+    # fallback: reconstruct from the known grid
+    def region(vx_set):
+        vxs = rng.choice(vx_set, size=n, replace=False)
+        return [[float(v), float(rng.choice(_LIB_CRAB_VY)), float(rng.choice(_LIB_CURVE_WZ))] for v in vxs]
+    fwd = sorted(region(_LIB_FWD_VX), key=lambda c: c[0])
+    bwd = sorted(region(_LIB_BWD_VX), key=lambda c: -c[0])
+    wzs = rng.choice(_LIB_TURN_WZ, size=n, replace=False)
+    turn = sorted([[0.0, 0.0, float(w)] for w in wzs], key=lambda c: c[2])
+    return fwd + bwd + turn
+
+
+############################################################################
 # DETERMINISTIC SIMULATION
 ############################################################################
 
@@ -92,7 +176,8 @@ class DeterministicOmniSim:
     def __init__(self, config_path: str, seed: int = 0,
                  twist_override=None, use_joystick: bool = True,
                  apply_noise: bool = False,
-                 headless: bool = False, realtime: bool = True):
+                 headless: bool = False, realtime: bool = True,
+                 profile=None, log_path=None):
 
         # determinism: seed every RNG we might touch (noise path only, but seed
         # unconditionally so nothing downstream can depend on process entropy)
@@ -106,9 +191,19 @@ class DeterministicOmniSim:
         self.use_joystick = use_joystick
         self._pygame_inited = False
 
-        # load config, control params, joystick, policy, and the mujoco model
+        # velocity-tracking profile run: scripted + deterministic, so it never
+        # grabs a live joystick or honors a --twist override
+        self.profile_name = profile
+        if profile is not None:
+            self.use_joystick = False
+            self.twist_override = None
+        self.log_path = log_path
+        self.log_enabled = log_path is not None
+
+        # load config, control params, profile, joystick, policy, and the model
         self.config = self.load_config(config_path)
         self.init_control_params()
+        self.init_profile()
         self.init_joystick()
         self.init_policy()
         self.init_simulation()
@@ -161,6 +256,53 @@ class DeterministicOmniSim:
         self.twist = self.default_twist.copy()
         self.mode = "idle"
         self._last_mode = None
+
+    # build the staircase schedule for a --profile run (list of timed segments)
+    def init_profile(self):
+        # gait period in seconds; hold/settle are integer multiples of it so
+        # steady-state averaging spans whole gait cycles
+        self.period_s = self.motion_period_frames * self.ctrl_dt
+        self.hold_s = 0.0
+        self.settle_s = 0.0
+        self.profile_segments = None   # [(t_start, t_end, twist, seg_id), ...]
+        self.profile_total_s = None
+        self._seg = -1                 # current setpoint index (-1 = settle/idle)
+        if self.profile_name is None:
+            return
+        if self.profile_name == "combo":
+            setpoints = sample_combo_setpoints(self.seed)
+        elif self.profile_name in PROFILES:
+            setpoints = PROFILES[self.profile_name]
+        else:
+            raise ValueError(f"unknown --profile '{self.profile_name}'; "
+                             f"choices: {list(PROFILES) + ['combo']}")
+
+        self.hold_s = N_HOLD_CYCLES * self.period_s
+        self.settle_s = N_SETTLE_CYCLES * self.period_s
+
+        segs = []
+        t = 0.0
+        segs.append((t, t + self.settle_s, np.zeros(3, dtype=np.float32), -1))  # settle at idle
+        t += self.settle_s
+        for i, tw in enumerate(setpoints):
+            segs.append((t, t + self.hold_s, np.array(tw, dtype=np.float32), i))
+            t += self.hold_s
+        self.profile_segments = segs
+        self.profile_total_s = t
+        print(f"Profile '{self.profile_name}': {len(setpoints)} setpoints x {self.hold_s:.1f}s "
+              f"({N_HOLD_CYCLES} gait cycles) + {self.settle_s:.1f}s settle = {t:.0f}s total.")
+        if self.profile_name == "combo":
+            print(f"    sampled from library (seed {self.seed}), {N_PER_REGION} per motion:")
+            for c in setpoints:
+                print(f"      [vx={c[0]:+.2f}, vy={c[1]:+.2f}, wz={c[2]:+.2f}]")
+
+    # the scripted setpoint (twist, seg_id) active at sim time t
+    def profile_twist(self, t):
+        for (t0, t1, tw, seg) in self.profile_segments:
+            if t0 <= t < t1:
+                return tw, seg
+        last = self.profile_segments[-1]
+        return last[2], last[3]
 
     # set up the pygame joystick (the default command source). Falls back to the
     # config default_twist when no joystick is present / pygame is unavailable.
@@ -291,6 +433,16 @@ class DeterministicOmniSim:
         self.phase_step = 0                                       # free-running gait clock
         self.qpos_des = self.qpos_joints_default.astype(np.float64).copy()  # PD target (held)
 
+        # velocity-tracking measurement state: track the floating base (pelvis).
+        # The achieved twist is read in the robot's heading frame, where "heading"
+        # is the yaw of the base +z axis -- in the crawl pose the base is pitched
+        # ~90 deg nose-down, so body +z points along ground-forward and is nearly
+        # horizontal, making its yaw well-conditioned (no gimbal issue).
+        self.track_body_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        if self.track_body_id < 0:
+            self.track_body_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
+        self.log_rows = []   # (t, cmd_vx, cmd_vy, cmd_wz, ach_vx, ach_vy, ach_wz, seg)
+
         print(f"Loaded Mujoco model from [{xml_path}].")
         print(f"    Sim dt: {self.sim_dt:.6f} s ({SIM_HZ:.0f} Hz), "
               f"decimation: {self.decimation} physics steps / policy step")
@@ -346,7 +498,10 @@ class DeterministicOmniSim:
     # physical command from the active source, then mode-select + clamp it to the
     # gait library (utils.crawl_modes) so it can never leave the reachable set.
     def commanded_twist(self):
-        if self.fixed_twist is not None:
+        if self.profile_segments is not None:
+            # scripted staircase setpoint for the current sim time
+            twist, self._seg = self.profile_twist(self.mj_data.time)
+        elif self.fixed_twist is not None:
             # explicit fixed command (deterministic; ignores the joystick)
             twist = self.fixed_twist
         elif self.joystick is not None:
@@ -427,6 +582,32 @@ class DeterministicOmniSim:
 
 
     #################################################################
+    # VELOCITY-TRACKING MEASUREMENT
+    #################################################################
+
+    # achieved twist [vx, vy, wz] of the base, expressed in the robot's heading
+    # frame (the frame the twist command lives in). World linear/angular velocity
+    # come from mj_objectVelocity; the heading is the instantaneous yaw of the base
+    # +z axis (ground-forward in the crawl pose) read straight from the orientation
+    # -- no integration, so no gait-wag accumulation or drift.
+    def achieved_twist(self):
+        vel6 = np.zeros(6)
+        mujoco.mj_objectVelocity(self.mj_model, self.mj_data,
+                                 mujoco.mjtObj.mjOBJ_BODY, self.track_body_id, vel6, 0)  # 0 = world
+        omega_world = vel6[0:3]
+        v_world = vel6[3:6]
+        wz = float(omega_world[2])
+
+        # forward-on-ground = base +z axis in world (3rd column of world_R_body)
+        R = self.mj_data.xmat[self.track_body_id].reshape(3, 3)
+        heading = math.atan2(R[1, 2], R[0, 2])
+        c, s = math.cos(heading), math.sin(heading)
+        vx = float(c * v_world[0] + s * v_world[1])
+        vy = float(-s * v_world[0] + c * v_world[1])
+        return vx, vy, wz
+
+
+    #################################################################
     # MAIN LOOP
     #################################################################
 
@@ -458,6 +639,13 @@ class DeterministicOmniSim:
             mujoco.mj_step(self.mj_model, self.mj_data)
             if self.apply_noise:
                 self.apply_sensor_noise()
+
+        # measure achieved body-frame velocity and log it (velocity-tracking exps)
+        if self.log_enabled:
+            avx, avy, awz = self.achieved_twist()
+            self.log_rows.append((float(self.mj_data.time),
+                                  float(self.twist[0]), float(self.twist[1]), float(self.twist[2]),
+                                  avx, avy, awz, float(self._seg)))
 
         # advance the free-running gait clock (wraps at T)
         self.phase_step = (self.phase_step + 1) % self.motion_period_frames
@@ -491,6 +679,7 @@ class DeterministicOmniSim:
             pass
 
         self.report(step)
+        self.save_log()
 
     # deterministic run summary -- a fingerprint you can diff across runs
     def report(self, num_steps: int):
@@ -510,6 +699,20 @@ class DeterministicOmniSim:
             print("    NOTE: a live joystick drove this run -> not reproducible (expected).")
         else:
             print(f"    state checksum:     {checksum:.6f}   (identical across runs => deterministic)")
+
+    # write the velocity-tracking log to an npz for plot_velocity_tracking.py
+    def save_log(self):
+        if not self.log_enabled or not self.log_rows:
+            return
+        arr = np.array(self.log_rows, dtype=np.float64)
+        out_dir = os.path.dirname(self.log_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        np.savez(self.log_path,
+                 t=arr[:, 0], cmd=arr[:, 1:4], ach=arr[:, 4:7], seg=arr[:, 7],
+                 profile=str(self.profile_name),
+                 hold_s=self.hold_s, settle_s=self.settle_s, period_s=self.period_s)
+        print(f"Saved velocity-tracking log: {len(self.log_rows)} rows -> {self.log_path}")
 
     def close(self):
         if self.viewer is not None and self.viewer.is_running():
@@ -538,6 +741,15 @@ def main():
                              'range), ignoring the joystick. Makes the run reproducible.')
     parser.add_argument('--no-joystick', action='store_true',
                         help='Do not open a joystick; always use the default forward command.')
+    parser.add_argument('--profile', type=str, default=None, choices=list(PROFILES) + ["combo"],
+                        help='Run a velocity-tracking staircase instead of live driving '
+                             '(overrides joystick/--twist). "combo" samples library commands '
+                             'across the 3 motions. Logs commanded vs achieved velocity.')
+    parser.add_argument('--log', type=str, default=None,
+                        help='Path to write the velocity-tracking npz. Default for a --profile '
+                             'run: logs/veltrack_<profile>.npz.')
+    parser.add_argument('--no-plot', action='store_true',
+                        help='For a --profile run, skip auto-opening the tracking plot afterward.')
     parser.add_argument('--noise', action='store_true',
                         help='Enable seeded per-sensor Gaussian noise (off by default).')
     parser.add_argument('--headless', action='store_true',
@@ -545,6 +757,11 @@ def main():
     parser.add_argument('--fast', action='store_true',
                         help='Do not pace to real time (run as fast as possible).')
     args = parser.parse_args()
+
+    # a --profile run always logs; default the path if none was given
+    log_path = args.log
+    if args.profile is not None and log_path is None:
+        log_path = f"{ROOT_DIR}/logs/veltrack_{args.profile}.npz"
 
     sim = DeterministicOmniSim(
         config_path=args.config,
@@ -554,12 +771,17 @@ def main():
         apply_noise=args.noise,
         headless=args.headless,
         realtime=not args.fast,
+        profile=args.profile,
+        log_path=log_path,
     )
 
-    # duration: an explicit --duration always wins; otherwise an interactive joystick
-    # session runs indefinitely and fixed-command / headless runs default to 20 s.
+    # a --profile run is bounded to the staircase length. Otherwise: an explicit
+    # --duration wins; an interactive joystick session runs indefinitely; and
+    # fixed-command / headless runs default to 20 s.
     joystick_mode = sim.use_joystick and sim.fixed_twist is None and not sim.headless
-    if args.duration is not None:
+    if sim.profile_segments is not None:
+        num_steps = int(round(sim.profile_total_s / sim.ctrl_dt))
+    elif args.duration is not None:
         num_steps = int(round(args.duration / sim.ctrl_dt))
     elif joystick_mode:
         num_steps = None
@@ -577,6 +799,15 @@ def main():
         pass
     finally:
         sim.close()
+
+    # auto-open the tracking plot right after a profile run (fast iterate)
+    if args.profile is not None and log_path and not args.no_plot:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from plot_velocity_tracking import render_log
+            render_log(log_path, show=True)
+        except Exception as e:
+            print(f"(auto-plot failed: {e})")
 
     print("Deterministic simulation complete.")
 
