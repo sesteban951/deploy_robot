@@ -39,7 +39,7 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.math_utils import quat_to_rpy
+from utils.math_utils import quat_to_rpy, quat_to_rotation_matrix
 
 
 ############################################################################
@@ -86,6 +86,9 @@ class SimulationNode(Node):
         self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/torso_imu_state', 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
+        # ground-truth floating-base state. SIM ONLY -- hardware has no such
+        # measurement (the IMUs are orientation-only), so nothing may depend on it.
+        self.base_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/base_state', 10)
 
         # ROS subscribers
         self.command_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/command', self.command_callback, 10)
@@ -111,6 +114,7 @@ class SimulationNode(Node):
         self.pelvis_imu_timer = self.create_timer(imu_state_period, self.publish_pelvis_imu)
         self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
+        self.base_timer = self.create_timer(joint_state_period, self.publish_base_state)
 
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
@@ -273,6 +277,27 @@ class SimulationNode(Node):
         torso_msg.data = np.concatenate([torso_rpy, torso_quat, torso_gyro, torso_acc]).tolist()
         self.torso_imu_state_pub.publish(torso_msg)
 
+
+    # publish ground-truth base state: [pos(3), quat(4) wxyz, lin_vel(3), ang_vel(3)]
+    #
+    # Straight off the free joint, NOT a sensor -- no noise is applied, this is
+    # ground truth for offline scoring only (the reference motions carry
+    # body_pos_w / body_lin_vel_w / body_ang_vel_w to compare against).
+    #
+    # FRAME NOTE: for a MuJoCo free joint, qvel[0:3] is linear velocity in the
+    # WORLD frame but qvel[3:6] is angular velocity in the BODY frame. The
+    # reference stores both in world ("_w"), so the angular part is rotated into
+    # world here -- publishing it raw would silently compare mismatched frames.
+    def publish_base_state(self):
+        pos = self.mj_data.qpos[0:3].copy()
+        quat = self.mj_data.qpos[3:7].copy()          # wxyz
+        lin_vel = self.mj_data.qvel[0:3].copy()       # world frame
+        ang_vel_body = self.mj_data.qvel[3:6].copy()  # body frame
+        ang_vel = quat_to_rotation_matrix(quat) @ ang_vel_body
+
+        msg = Float32MultiArray()
+        msg.data = np.concatenate([pos, quat, lin_vel, ang_vel]).tolist()
+        self.base_state_pub.publish(msg)
 
     # publish joint state: [q(nu), dq(nu), ddq(nu), tau_est(nu)]
     def publish_joint_state(self):

@@ -39,7 +39,8 @@ TARGET_FSM_STATES = ("control", "track")
 REQUIRED_DATASETS = ["joint_state", "pelvis_imu", "torso_imu", "time"]
 
 # datasets logged only if a publisher exists at discovery time (e.g. no joystick connected, no temps in sim)
-OPTIONAL_DATASETS = ["command", "joystick", "motor_temp"]
+# base_state is SIM-ONLY ground truth (hardware cannot measure base pose), hence optional.
+OPTIONAL_DATASETS = ["command", "joystick", "motor_temp", "base_state"]
 
 # all candidate datasets (topic discovery picks the active subset)
 DATASET_NAMES = REQUIRED_DATASETS + OPTIONAL_DATASETS
@@ -52,6 +53,7 @@ DATASET_TOPICS = {
     "torso_imu":   "deploy_robot/torso_imu_state",
     "command":     "deploy_robot/command",
     "joystick":    "deploy_robot/joystick",
+    "base_state":  "deploy_robot/base_state",
 }
 
 # per-mode config: everything that differs between sim and hardware
@@ -110,6 +112,7 @@ class LogNode(Node):
         self.torso_imu_sub  = self.create_subscription(Float32MultiArray, 'deploy_robot/torso_imu_state',  self.torso_imu_callback,   5)
         self.command_sub    = self.create_subscription(Float32MultiArray, 'deploy_robot/command',          self.command_callback,     5)
         self.joystick_sub   = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick',         self.joystick_callback,    5)
+        self.base_state_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/base_state',       self.base_state_callback,  5)
         self.time_sub       = self.create_subscription(Float64,           self.cfg["time_topic"],          self.time_callback,        5)
 
         # FSM subscription only in hardware mode
@@ -173,6 +176,10 @@ class LogNode(Node):
 
     def joystick_callback(self, msg: Float32MultiArray):
         self._handle_msg("joystick", np.array(msg.data, dtype=np.float32))
+
+    # sim-only ground truth: [pos(3), quat(4) wxyz, lin_vel(3), ang_vel(3)], all world frame
+    def base_state_callback(self, msg: Float32MultiArray):
+        self._handle_msg("base_state", np.array(msg.data, dtype=np.float32))
 
     def time_callback(self, msg: Float64):
         self._handle_msg("time", np.array([msg.data], dtype=np.float32))

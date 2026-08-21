@@ -51,7 +51,9 @@ def ref_ori_range(ref, anchor_idx):
 
 # gather residuals across all valid reps for one policy; returns stacked
 # (samples, 29) joint-pos and joint-vel residuals + measured/ref orientation
-def collect(policy):
+def collect(policy, rep_filter=None):
+    """rep_filter: optional set of rep indices to keep (e.g. only the reps that
+    landed). None keeps every rep that passed the standing gate."""
     sidecar = os.path.join(RESULTS, "sidecars", f"{policy}.json")
     if not os.path.exists(sidecar):
         return None
@@ -79,6 +81,8 @@ def collect(policy):
     for rep in sc.get("reps", []):
         if not rep.get("standing_ok") or rep.get("track_start_time") is None:
             continue
+        if rep_filter is not None and rep.get("rep") not in rep_filter:
+            continue
         ts = rep["track_start_time"]
         frame = np.round((t - ts) / control_dt).astype(np.int64)
         win = (t >= ts) & (t < ts + sc["motion_duration"]) & (frame >= 0) & (frame <= num_frames - 1)
@@ -98,6 +102,7 @@ def collect(policy):
         return None
     return {
         "policy": policy, "motion": cfg["motion_path"], "ref": ref, "anchor_idx": anchor_idx,
+        "n_reps": len(pos_res),
         "pos_res": np.concatenate(pos_res), "vel_res": np.concatenate(vel_res),
         "ori_ang": np.concatenate(ori_ang) if ori_ang else None,
     }

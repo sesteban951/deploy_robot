@@ -7,3 +7,6 @@ sweep/results/**/*.csv
 sweep/results/**/*.json
 sweep/results/*.csv
 sweep/results/*.json
+
+**.log
+policy/ablation/*.onnx

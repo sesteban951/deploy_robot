@@ -56,20 +56,37 @@ def combined(c, roms):
     if c["ori_ang"] is not None:
         ori_term = float(np.sqrt(np.mean(c["ori_ang"] ** 2)) / np.pi)
     return {
-        "policy": c["policy"], "motion": c["motion"],
+        "policy": c["policy"], "motion": c["motion"], "n_reps": c.get("n_reps"),
         "pos_term": pos_term, "vel_term": vel_term, "ori_term": ori_term,
         "combined_error": pos_term + vel_term + ori_term,
     }
 
 
-# compute the combined error for each policy (skips policies with no log/sidecar)
-def compute(policies):
+# compute the combined error for each policy (skips policies with no log/sidecar).
+# rep_filter: optional {policy: {rep indices}} restricting which reps are scored
+# (used to score only the reps that landed). Policies left with no reps are
+# reported as dropped rather than silently vanishing.
+def compute(policies, rep_filter=None):
     roms = joint_roms()
-    return [combined(c, roms) for p in policies for c in [collect(p)] if c]
+    rows, dropped = [], []
+    for p in policies:
+        # a policy absent from rep_filter has NO qualifying reps -> empty set,
+        # not None (None means "no filtering" and would score every rep)
+        c = collect(p, rep_filter=(rep_filter.get(p, set()) if rep_filter is not None else None))
+        if c:
+            rows.append(combined(c, roms))
+        else:
+            dropped.append(p)
+    if dropped and rep_filter is not None:
+        print(f"  [note] no scorable reps for {len(dropped)} policies "
+              f"(no rep passed the filter): {', '.join(dropped)}")
+    return rows
 
 
-# build the printable report string + per-motion rollup
-def format_report(rows):
+# build the printable report string + per-motion rollup. per_motion=False omits
+# the collapsed per-motion lines (run_batch prints its own, split into the three
+# components instead of summing them).
+def format_report(rows, per_motion=True):
     hdr = f"  {'policy':<22}  {'pos':>7}  {'vel':>7}  {'ori':>7}  {'COMBINED':>9}"
     bar = "=" * len(hdr)
     lines = ["", bar, "  COMBINED TRACKING ERROR  (fixed-scale normalized, summed)",
@@ -79,26 +96,28 @@ def format_report(rows):
         lines.append(f"  {r['policy']:<22}  {r['pos_term']:>7.4f}  {r['vel_term']:>7.4f}  "
                      f"{r['ori_term']:>7.4f}  {r['combined_error']:>9.4f}")
     lines.append("  " + "-" * (len(hdr) - 2))
-    bym = defaultdict(list)
-    for r in rows:
-        bym[r["motion"]].append(r["combined_error"])
-    lines.append("\n  per motion (mean over seeds):")
-    for m, vals in sorted(bym.items(), key=lambda kv: np.mean(kv[1])):
-        lines.append(f"    {m:<32} {np.mean(vals):>8.4f}   (n={len(vals)})")
+    if per_motion:
+        bym = defaultdict(list)
+        for r in rows:
+            bym[r["motion"]].append(r["combined_error"])
+        lines.append("\n  per motion (mean over seeds):")
+        for m, vals in sorted(bym.items(), key=lambda kv: np.mean(kv[1])):
+            lines.append(f"    {m:<32} {np.mean(vals):>8.4f}   (n={len(vals)})")
     lines += [bar, ""]
     return "\n".join(lines)
 
 
 # compute + print + write combined_error.csv; returns (report_string, rows)
-def report(policies, results_dir=RESULTS):
-    rows = compute(policies)
+def report(policies, results_dir=RESULTS, per_motion=True, rep_filter=None):
+    rows = compute(policies, rep_filter=rep_filter)
     if not rows:
         return "", []
-    rep = format_report(rows)
+    rep = format_report(rows, per_motion=per_motion)
     print(rep)
     out = os.path.join(results_dir, "combined_error.csv")
     with open(out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["policy", "motion", "pos_term", "vel_term", "ori_term", "combined_error"])
+        w = csv.DictWriter(f, fieldnames=["policy", "motion", "n_reps", "pos_term", "vel_term",
+                                          "ori_term", "combined_error"])
         w.writeheader()
         for r in rows:
             w.writerow(r)

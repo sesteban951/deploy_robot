@@ -16,9 +16,13 @@
 # Before each 'track' it checks the torso is upright -- a per-rep validity gate,
 # so reps that never start standing are flagged and dropped from the stats.
 #
+# After the motion plays out it stays in 'track' for --land-hold seconds (the
+# control node freezes on the last frame there), giving the offline analysis a
+# clean window to decide whether the robot landed and stayed on its feet.
+#
 # On completion it writes a sidecar JSON with one entry per rep (track start
-# time + standing verdict), which the orchestrator uses to align and score each
-# tracking-error window.
+# time, motion end time, settle window + standing verdict), which the
+# orchestrator uses to align and score each tracking-error window.
 #
 ##
 
@@ -58,6 +62,7 @@ class FSMDriver(Node):
         self.reps = args.reps
         self.reset_settle = args.reset_settle
         self.post_settle = args.post_settle
+        self.land_hold = args.land_hold
         self.bringup_hold = args.bringup_hold
 
         # resolve motion duration from the config the run uses
@@ -77,6 +82,7 @@ class FSMDriver(Node):
             "control_dt": self.control_dt,
             "motion_duration": self.motion_duration,
             "tilt_threshold": self.tilt_threshold,
+            "land_hold": self.land_hold,
         }
 
         self.fsm = FiniteStateMachine()
@@ -95,8 +101,11 @@ class FSMDriver(Node):
                 {"kind": "press", "target": "home",    "button": "A",   "hold": self.bringup_hold},
                 {"kind": "press", "target": "control", "button": "LMB", "hold": self.reset_settle},
                 {"kind": "gate", "rep": r},
+                # stay in 'track' past the end of the motion: the control node
+                # freezes on the last frame, so land_hold is a clean "is it still
+                # standing?" window that the landing detector scores.
                 {"kind": "press", "target": "track", "button": "RMB",
-                 "hold": self.motion_duration + self.post_settle, "rep": r},
+                 "hold": self.motion_duration + self.land_hold + self.post_settle, "rep": r},
             ]
 
         self.step_idx = 0
@@ -187,10 +196,18 @@ class FSMDriver(Node):
             self.step_reached_at = self.sim_time
             if target == "track" and self.cur_rep is not None:
                 self.cur_rep["track_start_time"] = self.sim_time
+                self.cur_rep["motion_end_time"] = self.sim_time + self.motion_duration
+                self.cur_rep["land_hold"] = self.land_hold
                 self.reps_log.append(self.cur_rep)
                 print(f"FSM driver: rep {step.get('rep')} track started at sim_time={self.sim_time:.3f}")
         self._publish()  # hold in target state, no button
         if (self.sim_time - self.step_reached_at) >= hold:
+            # leaving 'track': note the tilt at the end of the settle window (a
+            # live sanity check; the authoritative verdict is scored from the log)
+            if target == "track" and self.cur_rep is not None:
+                tilt = tilt_deg_from_quat(self.torso_quat)
+                self.cur_rep["end_tilt_deg"] = tilt
+                print(f"FSM driver: rep {step.get('rep')} end-of-settle torso tilt={tilt:.1f}deg")
             self._advance()
 
     def _advance(self):
@@ -225,6 +242,9 @@ def main():
                    help="Dwell in each transition state (s). Default 0.02 (~1 tick).")
     p.add_argument("--reset-settle", type=float, default=0.2, dest="reset_settle",
                    help="Settle time (s) after a reset before firing the motion. Default 0.2.")
+    p.add_argument("--land-hold", type=float, default=3.0, dest="land_hold",
+                   help="Extra time (s) held in 'track' after the motion ends, observed to judge "
+                        "the landing and how long the pose is then held. Default 3.0.")
     p.add_argument("--post-settle", type=float, default=0.1, dest="post_settle",
                    help="Hold (s) after the motion ends before the next rep (dead time; the "
                         "scoring window is just the motion duration). Default 0.1.")
