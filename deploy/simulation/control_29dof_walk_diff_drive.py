@@ -1,6 +1,6 @@
 ##
 #
-# Control node for 29DoF MjLab omnidirectional crawling (G1-Crawling-Omni), HARDWARE.
+# Control node for 29DoF MjLab differential-drive upright WALKING (G1-Standing-DiffDrive).
 #
 ##
 
@@ -16,7 +16,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Float32MultiArray, String
+from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
 import sys
@@ -27,8 +27,7 @@ sys.path.append(ROOT_DIR)
 # custom imports
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
-from utils.locomotion.crawl_modes import resolve_crawl_twist
-from utils.experiment_utils import publish_experiment_info
+from utils.locomotion.walk_modes import WalkTwistCommander
 
 
 ############################################################################
@@ -37,28 +36,20 @@ from utils.experiment_utils import publish_experiment_info
 
 class ControlNode(Node):
     """
-    Asynchronous control node for the omnidirectional crawling policy
-    (G1-Crawling-Omni) on hardware.
+    Asynchronous control node for the differential-drive upright walking policy
+    (G1-Standing-DiffDrive).
 
-    The actor sees proprioception, a free-running gait phase clock, a commanded
-    planar twist [vx, vy, wz], and projected gravity. No reference motion is loaded
-    at runtime. The commanded twist is assigned to one of three library motions --
-    forward, backward, or in-place turn -- by its magnitude (see utils.locomotion.crawl_modes),
-    then clamped to that motion's trained range; anything else -> the zero-twist
-    idle/stop pose. This keeps combined commands on the gait-library manifold instead
-    of collapsing a big forward+turn into a pure in-place spin.
+    Same observation contract as the crawl library policies: proprioception (pelvis
+    gyro, joint pos relative to the default = standing idle pose, joint vel, last
+    action), a free-running gait phase clock (T = 70 frames = 1.4 s), the commanded
+    planar twist [vx, vy, wz], and projected gravity from the pelvis IMU. No reference
+    motion is loaded at runtime; a zero action is the standing idle pose.
 
-    Ranges match the G1-Crawling-Omni "alldir" gait library and the mjlab training
-    TWIST_RANGE: vx in [-0.25, 0.30] (reverse crawl INCLUDED), vy in [-0.12, 0.12],
-    wz in [-0.60, 0.60]. Keep the yaml twist_clip_* in sync with the trained range
-    (mjlab tasks/crawling_omni/config/g1/env_cfgs.py: TWIST_RANGE).
-
-    Hardware harness (hardware.py) FSM: init -> damp -> home -> control <-> track.
-    The 'home' state ramps the robot from its current pose into the crawl idle/laydown
-    pose (home_joint_pos == the policy's default qpos) with ramped gains, so this node
-    only runs the policy in the 'control'/'track' states and stays silent otherwise
-    (the low level holds the ramped pose). The gait clock resets to 0 while idle so
-    'control' always starts the gait at phase 0 from the idle pose.
+    The joystick is shaped by utils/locomotion/walk_modes.py: both sticks in the deadband -> idle
+    (stand); otherwise the dominant stick picks walk-straight XOR turn-in-place (with
+    hysteresis and a dwell on band changes), and the live stick range maps onto the
+    trained band -- forward vx 0.50..1.00, backward -0.40..-0.90, turn |wz| 0.50..1.50.
+    Nothing in the gaps and never a mixed arc, because the library has neither.
     """
 
     def __init__(self, config_path: str):
@@ -74,15 +65,11 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # broadcast which experiment is running so the logger can record it
-        self.experiment_info_pub = publish_experiment_info(self, config_path, self.config, self.policy)
-
         # ROS subscribers
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
-        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
+        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
 
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
@@ -92,22 +79,21 @@ class ControlNode(Node):
         self.omega = np.zeros(3)                      # pelvis gyro (base_ang_vel)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
-        self.fsm_state = "init"
-        self.fsm_time = 0.0
+        self.sim_time = 0.0
 
-        # joystick command [vx, vy, wz] + connection flag
+        # joystick command [vx, vy, wz] sticks in [-1, 1] + connection flag
         self.cmd = np.zeros(3)
         self.joystick_connected = False
+
+        # active walk mode (idle / forward / backward / turn) for logging
+        self.mode = "idle"
+        self._last_mode = None
 
         # initialize the action
         self.action = np.zeros(self.act_size)
 
         # free-running gait phase clock (integer frame index, wraps at T)
         self.phase_step = 0
-
-        # active crawl mode (forward / backward / turn / idle) for logging
-        self.mode = "idle"
-        self._last_mode = None
 
         print("Control node initialized.")
 
@@ -143,12 +129,10 @@ class ControlNode(Node):
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
 
-        # crawl gait + omnidirectional twist command params
+        # walk gait clock + joystick shaping (utils/locomotion/walk_modes.py)
         self.motion_period_frames = int(self.config["motion_period_frames"])  # T
         self.default_twist = np.array(self.config["default_twist"], dtype=np.float32)
-        self.twist_scale = np.array(self.config["twist_scale"], dtype=np.float32)
-        self.twist_clip_lo = np.array(self.config["twist_clip_lo"], dtype=np.float32)
-        self.twist_clip_hi = np.array(self.config["twist_clip_hi"], dtype=np.float32)
+        self.commander = WalkTwistCommander(self.config, self.ctrl_dt)
 
         # import the policy
         policy_path = self.config['policy_path']
@@ -171,6 +155,23 @@ class ControlNode(Node):
         for _k in ('default_joint_pos', 'action_scale'):
             print(f"    {_k}: from {'policy metadata' if _k in self.policy.metadata else 'yaml config'}")
 
+        # the yaml's home pose must be the policy's default pose: the sim spawns / hardware
+        # ramps to home_joint_pos, and a zero action holds default_joint_pos -- they must agree
+        home = np.array(self.config["home_joint_pos"], dtype=np.float32)
+        gap = float(np.abs(home - self.qpos_joints_default).max())
+        assert gap < 2e-3, \
+            f"home_joint_pos differs from the policy's default_joint_pos by {gap:.4f} rad; " \
+            f"they must be the same standing idle pose."
+
+        # the policy's gait period must match the yaml's clock
+        motion_len = None
+        for out in self.policy.outputs:
+            if out["name"] == "joint_pos" and len(out["shape"]) == 3:
+                motion_len = int(out["shape"][1])
+        if motion_len is not None:
+            assert motion_len == self.motion_period_frames, \
+                f"policy bundles a {motion_len}-frame motion but motion_period_frames = {self.motion_period_frames}."
+
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Policy type: {self.policy._policy_type}")
         print(f"    Input size: {self.obs_size}")
@@ -178,13 +179,15 @@ class ControlNode(Node):
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
         print(f"    Gait period: {self.motion_period_frames} frames "
               f"({self.motion_period_frames * self.ctrl_dt:.2f} s)")
+        print(f"    Joystick: {self.commander.describe()}")
+        print(f"    No joystick -> autonomous twist {self.default_twist.tolist()} (sim only)")
 
 
     #################################################################
     # HELPERS
     #################################################################
 
-    # joystick command: [is_connected, vx, vy, omega]
+    # joystick command: [is_connected, vx, vy, omega] (sticks in [-1, 1])
     def cmd_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
         self.joystick_connected = (data[0] > 0.5)
@@ -203,27 +206,21 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # FSM state (from the joystick node)
-    def fsm_callback(self, msg):
-        self.fsm_state = msg.data
-
-    # fsm time -- time since entering the current FSM state (hardware.py resets it on each transition)
+    # simulation time
     def time_callback(self, msg):
-        self.fsm_time = msg.data
+        self.sim_time = msg.data
 
-    # commanded planar twist [vx, vy, wz]: raw joystick command -> mode-select +
-    # clamp to the gait library (utils.locomotion.crawl_modes), so a big combined command
-    # can't leave the reachable set and collapse to a pure in-place turn.
+    # commanded planar twist [vx, vy, wz]: joystick sticks -> mode (idle / forward /
+    # backward / turn) -> twist on the trained band. Left stick Y = forward/back, right
+    # stick X = turn (left +). The lateral stick (vy) is ignored: the library has no vy.
     def commanded_twist(self):
-        # hardware safety: no joystick -> idle/stop pose. (The sim node crawls forward
-        # autonomously here for viewing; on hardware a dropped joystick must NOT keep driving.)
+        # autonomous walk when no joystick is connected (for viewing in sim)
         if not self.joystick_connected:
-            self.mode = "idle"
-            return np.zeros(3, dtype=np.float32)
+            self.mode = "forward" if self.default_twist[0] > 0 else "idle"
+            return self.default_twist
 
-        twist = self.cmd * self.twist_scale
-        self.mode, shaped = resolve_crawl_twist(twist, self.config)
-        return shaped
+        self.mode, twist = self.commander.update(fwd_stick=self.cmd[0], turn_stick=self.cmd[2])
+        return twist
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -252,24 +249,17 @@ class ControlNode(Node):
             twist, motion_phase, proj_grav,
         ]).astype(np.float32)
 
-        return obs
+        return obs, twist
 
     # control published at the control frequency
     def control_callback(self):
 
-        # idle states (init/damp/home): stay silent; the low level holds the ramped pose.
-        # reset the gait clock so 'control' always starts the gait from phase 0 at the idle pose.
-        if self.fsm_state not in ("control", "track"):
-            self.action = np.zeros(self.act_size)
-            self.phase_step = 0
-            return
-
         # get the current observation
-        obs = self.build_observation()
+        obs, twist = self.build_observation()
 
-        # announce crawl-mode changes (forward / backward / turn / idle)
+        # announce walk-mode changes (idle / forward / backward / turn) with the twist
         if self.mode != self._last_mode:
-            print(f"[mode] {self._last_mode} -> {self.mode}")
+            print(f"[mode] {self._last_mode} -> {self.mode}  twist vx {twist[0]:+.2f} wz {twist[2]:+.2f}")
             self._last_mode = self.mode
 
         # target joint positions (PD control); time_step feeds the gait frame index
@@ -300,14 +290,14 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Control Node for the MjLab omnidirectional crawling policy (hardware).'
+        description='Asynchronous Control Node for the MjLab differential-drive walking policy.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the config yaml file. Example: "g1_29dof_crawl_omni.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof_walk_diff_drive.yaml".'
     )
     args = parser.parse_args()
 

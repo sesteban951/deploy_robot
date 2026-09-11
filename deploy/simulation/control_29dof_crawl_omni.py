@@ -27,7 +27,7 @@ sys.path.append(ROOT_DIR)
 # custom imports
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
-from utils.crawl_modes import resolve_crawl_twist
+from utils.locomotion.crawl_modes import resolve_crawl_twist
 
 
 ############################################################################
@@ -42,7 +42,7 @@ class ControlNode(Node):
     The actor sees proprioception, a free-running gait phase clock, a commanded
     planar twist [vx, vy, wz], and projected gravity. No reference motion is loaded
     at runtime. The commanded twist is assigned to one of three library motions --
-    forward, backward, or in-place turn -- by its magnitude (see utils.crawl_modes),
+    forward, backward, or in-place turn -- by its magnitude (see utils.locomotion.crawl_modes),
     then clamped to that motion's trained range; anything else -> the zero-twist
     idle/stop pose. This keeps combined commands on the gait-library manifold instead
     of collapsing a big forward+turn into a pure in-place spin.
@@ -196,7 +196,7 @@ class ControlNode(Node):
         self.sim_time = msg.data
 
     # commanded planar twist [vx, vy, wz]: raw joystick command -> mode-select +
-    # clamp to the gait library (utils.crawl_modes), so a big combined command
+    # clamp to the gait library (utils.locomotion.crawl_modes), so a big combined command
     # can't leave the reachable set and collapse to a pure in-place turn.
     def commanded_twist(self):
         # autonomous forward crawl when no joystick is connected (for viewing)
