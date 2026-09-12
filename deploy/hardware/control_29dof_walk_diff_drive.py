@@ -42,9 +42,10 @@ class ControlNode(Node):
 
     Same observation contract as the crawl library policies: proprioception (pelvis
     gyro, joint pos relative to the default = standing idle pose, joint vel, last
-    action), a free-running gait phase clock (T = 70 frames = 1.4 s), the commanded
-    planar twist [vx, vy, wz], and projected gravity from the pelvis IMU. No reference
-    motion is loaded at runtime; a zero action is the standing idle pose.
+    action), a gait phase clock (T = 70 frames = 1.4 s) that is BLANKED to (0, 0) while
+    the commanded twist is zero, the commanded planar twist [vx, vy, wz], and projected
+    gravity from the pelvis IMU. No reference motion is loaded at runtime; a zero action
+    is the standing idle pose.
 
     The joystick is shaped by utils/locomotion/walk_modes.py: both sticks in the
     deadband -> idle (stand); otherwise the dominant stick picks walk-straight XOR
@@ -107,7 +108,8 @@ class ControlNode(Node):
         # initialize the action
         self.action = np.zeros(self.act_size)
 
-        # free-running gait phase clock (integer frame index, wraps at T)
+        # gait phase clock (integer frame index, wraps at T). Always free-running while in
+        # 'control'; the OBSERVATION derived from it is blanked at idle (see build_observation).
         self.phase_step = 0
 
         print("Control node initialized.")
@@ -251,10 +253,21 @@ class ControlNode(Node):
         # commanded twist
         twist = self.commanded_twist()
 
-        # gait phase clock: (sin, cos) of 2*pi*t/T, matching training (time_steps / T)
-        phase = self.phase_step / self.motion_period_frames
-        ang = 2.0 * math.pi * phase
-        motion_phase = np.array([math.sin(ang), math.cos(ang)], dtype=np.float32)
+        # gait phase clock: (sin, cos) of 2*pi*t/T, matching training (time_steps / T), but
+        # BLANKED to (0, 0) whenever the commanded twist is zero (idle). The idle clip is one pose
+        # held for the whole period, so the reference stands perfectly still -- but a live clock
+        # still reads as "swing your limbs" to a policy trained on periodic gaits, and that is what
+        # makes a stopped robot shuffle instead of standing statically. Training blanks it the same
+        # way (mjlab crawling_fwd/mdp/observations.py: motion_phase), so leaving it live here would
+        # put the policy OFF-DISTRIBUTION at exactly the moment we want it quiet.
+        # (0, 0) is off the unit circle -> unreachable during gait -> an unambiguous "no gait" flag.
+        # The clock itself keeps free-running (see control_callback); only the observation is
+        # blanked, so leaving idle resumes mid-cycle exactly as it did in training.
+        if np.any(twist):
+            ang = 2.0 * math.pi * (self.phase_step / self.motion_period_frames)
+            motion_phase = np.array([math.sin(ang), math.cos(ang)], dtype=np.float32)
+        else:
+            motion_phase = np.zeros(2, dtype=np.float32)
 
         # projected gravity from the pelvis IMU (roll/pitch; yaw-invariant)
         proj_grav = get_gravity_orientation(self.quat).astype(np.float32)
