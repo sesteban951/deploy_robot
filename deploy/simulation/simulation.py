@@ -7,6 +7,7 @@
 # standard imports
 import argparse
 import time
+from collections import deque
 
 # mujoco imports
 import mujoco
@@ -39,6 +40,13 @@ from utils.math_utils import quat_to_rpy
 SIM_HZ = 500.0    # [Hz] simulation rate
 RENDER_HZ = 50.0   # [Hz] viewer render rate
 
+# random base velocity pushes (enabled with --force)
+PUSH_INTERVAL = (1.0, 3.0)  # [s] min/max time between pushes
+PUSH_VEL_XY = 0.5           # [m/s] max |dv| per horizontal axis
+PUSH_VEL_Z = 0.0            # [m/s] max |dv| vertical
+PUSH_ANG_VEL = 0.0          # [rad/s] max |dw| per axis
+PUSH_SEED = None            # RNG seed (None = random)
+
 
 ############################################################################
 # SIMULATION NODE
@@ -49,7 +57,7 @@ class SimulationNode(Node):
     Asynchronous simulation node that runs the Mujoco simulation.
     """
 
-    def __init__(self, config_path: str, apply_noise: bool = False):
+    def __init__(self, config_path: str, apply_noise: bool = False, apply_force: bool = False, delay_ms: float = 0.0):
 
         super().__init__('simulation_node')
 
@@ -58,6 +66,16 @@ class SimulationNode(Node):
 
         # whether to apply per-sensor Gaussian noise
         self.apply_noise = apply_noise
+
+        # random push state
+        self.apply_force = apply_force
+        self.push_rng = np.random.default_rng(PUSH_SEED)
+        self.next_push_time = None
+        self.num_pushes = 0
+
+        # actuator delay: commands are held in a queue until they are delay_s old (sim time)
+        self.delay_s = delay_ms / 1000.0
+        self.command_queue = deque()
 
         # load params
         self.init_params()
@@ -93,6 +111,11 @@ class SimulationNode(Node):
         self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
 
+        if self.apply_force:
+            print(f"Random pushes: every U{list(PUSH_INTERVAL)}s, |v_xy|<={PUSH_VEL_XY} m/s, "
+                  f"|v_z|<={PUSH_VEL_Z} m/s, |w|<={PUSH_ANG_VEL} rad/s.")
+        if self.delay_s > 0.0:
+            print(f"Actuator delay: {delay_ms:.1f} ms.")
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
         print("    Press [Shift + Tab] to toggle the right UI.")
@@ -200,7 +223,15 @@ class SimulationNode(Node):
 
     # command callback: [q_des, dq_des, Kp, Kd, tau_ff] (nu * 5)
     def command_callback(self, msg):
-        data = np.array(msg.data)
+        self.command_queue.append((self.mj_data.time, np.array(msg.data)))
+
+    # apply the newest queued command that is at least delay_s old
+    def _apply_delayed_command(self):
+        data = None
+        while self.command_queue and self.command_queue[0][0] <= self.mj_data.time - self.delay_s:
+            data = self.command_queue.popleft()[1]
+        if data is None:
+            return
 
         # unpack the command (same order as hardware)
         self.command_received = True
@@ -261,6 +292,22 @@ class SimulationNode(Node):
             dim = self.mj_model.sensor_dim[i]
             self.mj_data.sensordata[adr:adr+dim] += np.random.normal(0.0, std, size=dim)
 
+    # add a random velocity kick to the floating base at random intervals (world-frame lin vel)
+    def _apply_push(self):
+        if self.next_push_time is None:
+            self.next_push_time = self.mj_data.time + self.push_rng.uniform(*PUSH_INTERVAL)
+            return
+        if self.mj_data.time < self.next_push_time:
+            return
+
+        dv = self.push_rng.uniform([-PUSH_VEL_XY, -PUSH_VEL_XY, -PUSH_VEL_Z], [PUSH_VEL_XY, PUSH_VEL_XY, PUSH_VEL_Z])
+        dw = self.push_rng.uniform(-PUSH_ANG_VEL, PUSH_ANG_VEL, size=3)
+        self.mj_data.qvel[0:3] += dv
+        self.mj_data.qvel[3:6] += dw
+        self.num_pushes += 1
+        print(f"[push {self.num_pushes}] t={self.mj_data.time:.2f}s dv={np.round(dv, 2)} dw={np.round(dw, 2)}")
+        self.next_push_time = self.mj_data.time + self.push_rng.uniform(*PUSH_INTERVAL)
+
     # compute torque using PD control + feedforward
     def compute_torque(self):
 
@@ -278,6 +325,13 @@ class SimulationNode(Node):
 
     # step the simulation
     def step_simulation(self):
+
+        # pull in any command whose delay has elapsed
+        self._apply_delayed_command()
+
+        # shove the robot once the controller is running
+        if self.apply_force and self.command_received:
+            self._apply_push()
 
         # compute the torque to apply
         if self.command_received == True:
@@ -368,10 +422,23 @@ def main(args=None):
         action='store_true',
         help='Enable per-sensor Gaussian noise injection. Noise is off by default.'
     )
+    # enable random pushes (settings at top of file)
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Enable random base velocity pushes. Off by default.'
+    )
+    # actuator delay
+    parser.add_argument(
+        '--delay',
+        type=float,
+        default=0.0,
+        help='Actuator command delay in ms (rounded to sim steps). Default: 0.'
+    )
     args = parser.parse_args()
 
     # create the simulation node
-    sim_node = SimulationNode(args.config, apply_noise=args.noise)
+    sim_node = SimulationNode(args.config, apply_noise=args.noise, apply_force=args.force, delay_ms=args.delay)
 
     # run normally
     try:
