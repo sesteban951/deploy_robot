@@ -118,13 +118,15 @@ class JoystickNode(Node):
             fsm_msg.data = fsm_state
             self.fsm_pub.publish(fsm_msg)
 
-            # convert the joystick state to a command message
-            #   vx = left stick fore/aft, vy = right stick lateral,
-            #   wz = left trigger (turn +) minus right trigger (turn -)
+            # convert the joystick state to a command message. MUST match joystick_ros.py:
+            # both publish the same deploy_robot/joystick topic and every controller reads
+            # slot 3 as wz, so a second convention here silently steers the wrong axis.
+            #   vx = left stick fore/aft, vy = left stick lateral,
+            #   wz = right stick lateral (left +)
             is_connected = 1.0
             vx_cmd = self.joystick_state.LS_Y
-            vy_cmd = self.joystick_state.RS_X
-            omega_cmd = self.joystick_state.LT - self.joystick_state.RT
+            vy_cmd = self.joystick_state.LS_X
+            omega_cmd = self.joystick_state.RS_X
 
         # publish the command
         cmd_msg = Float32MultiArray()

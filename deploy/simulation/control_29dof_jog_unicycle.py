@@ -50,8 +50,10 @@ class ControlNode(Node):
     idle (stand); otherwise its sign picks forward / backward and its live range maps onto the
     trained band -- forward vx 0.50..1.50, backward -0.50..-1.00 -- while the steer stick maps
     onto wz -0.50..0.50 AT THE SAME TIME (unicycle: the library is a (vx, wz) box, so the
-    sticks never compete and there is no XOR, hysteresis or dwell). Never a turn in place,
-    never vy, nothing in the gap 0 < |vx| < 0.5.
+    sticks never compete and there is no XOR, hysteresis or dwell). With the drive stick
+    PARKED and the steer stick live it pivots in place instead: vx = 0, |wz| 1.00..2.00, the
+    library's separate turn-in-place regime. Never vy, nothing in the gap 0 < |vx| < 0.5, and
+    nothing between the arcs' |wz| = 0.5 and the pivots' 1.0 (no clips there).
 
     No joystick -> default_twist (an autonomous jog, sim only; a hardware node must stand).
     """

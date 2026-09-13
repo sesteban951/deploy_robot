@@ -7,19 +7,23 @@ home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires
 # but the (sin, cos) obs is blanked on zero twist -- keep in sync with mjlab mdp/observations.py.
 motion_period_frames: 43
 
-default_twist:   [1.0, 0.0, 0.0]   # twist with no joystick (sim only; hardware stands)
+default_twist: [1.0, 0.0, 0.0]   # twist with no joystick (sim only; hardware stands)
 
 # joystick -> twist (utils/locomotion/jog_modes.py): UNICYCLE = drive and steer at the same time.
 # drive stick inside the deadband -> exactly zero twist, which the policy's idle stop keys off
 stick_deadband:  0.15
 
-# trained gait grid, not tuning knobs (mj-nlp examples/g1_mimic_periodic/library: run_fwd + run_bck
-# on a 0.1 grid). Each direction is a FULL (vx, wz) box, so a curve exists at every speed and the
-# sticks never compete (no XOR, unlike the walk library). There is no turn-in-place clip -- wz is
-# only ever commanded together with a live vx -- and no vy.
+# trained gait grid, not tuning knobs (mj-nlp examples/g1_mimic_periodic/library: run_fwd +
+# run_bck on a 0.1 grid, walk_turn_*_fast for the pivots). Each direction is a FULL (vx, wz) box
+# -- measured: a filled 17 x 11 grid -- so a curve exists at every speed and the sticks never
+# compete (no XOR, unlike the walk library). No vy is ever commanded.
 fwd_vx_range:   [ 0.50,  1.50]
 bwd_vx_range:   [-1.00, -0.50]
 curve_wz_range: [-0.50,  0.50]   # body yaw rate while moving, left (+): each stick side maps onto its half
+# In-place pivot MAGNITUDE band (sign comes from the stick); commanded only when the drive stick
+# is parked. Disjoint from curve_wz_range on purpose: the library has NO clip between the arcs'
+# 0.5 and the pivots' 1.0, so crossing the drive deadband jumps |wz| across that gap.
+pivot_wz_range: [ 1.00,  2.00]
 
 # mode_machine 11; == the policy's joint_stiffness / joint_damping metadata
 Kp: [99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
