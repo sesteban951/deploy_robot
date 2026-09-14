@@ -8,6 +8,7 @@
 
 # standard imports
 import argparse
+import json
 import numpy as np
 import time
 import threading
@@ -22,7 +23,12 @@ from std_msgs.msg import Float64, Float32MultiArray, String
 
 # directory imports
 import os
+import sys
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
+sys.path.append(ROOT_DIR)
+
+# custom imports
+from utils.experiment_utils import HARDWARE_INFO_TOPIC, experiment_info_qos
 
 # Unitree SDK imports
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
@@ -102,7 +108,7 @@ SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 ########################################################################
 
 class ControlNode(Node):
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, flip_flags: dict):
 
         super().__init__("hardware_node")
 
@@ -111,6 +117,18 @@ class ControlNode(Node):
 
         # load parameters
         self.load_params()
+
+        # sign flip flags (broadcast to the logger in Init)
+        self.flip_flags = flip_flags
+        for name, enabled in flip_flags.items():
+            if enabled:
+                print(f"WARNING: sign flip enabled: [{name}].")
+
+        # per-joint sign convention between the motor frame and the model frame.
+        # applied to readings (q, dq, ddq, tau_est) and commands (q, dq, tau), but not to gains.
+        self.joint_sign = np.ones(G1_NUM_MOTOR)
+        if flip_flags["flip_waist_pitch"]:
+            self.joint_sign[G1JointIndex.WaistPitch] = -1.0
 
         # IMU states
         self.pelvis_imu_rpy = None            # roll, pitch, yaw
@@ -250,6 +268,12 @@ class ControlNode(Node):
         self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 1)
         self.fsm_sub = self.create_subscription(String, "deploy_robot/fsm", self.fsm_callback, 1)
 
+        # latched hardware info: which sign flip flags this run used (recorded by the logger)
+        self.hardware_info_pub = self.create_publisher(String, HARDWARE_INFO_TOPIC, experiment_info_qos())
+        hardware_info_msg = String()
+        hardware_info_msg.data = json.dumps(self.flip_flags)
+        self.hardware_info_pub.publish(hardware_info_msg)
+
         # sensor publish timer
         self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)
 
@@ -379,10 +403,10 @@ class ControlNode(Node):
 
             # update joint states
             for i in range(G1_NUM_MOTOR):
-                self.q[i] = self.low_state.motor_state[i].q
-                self.dq[i] = self.low_state.motor_state[i].dq
-                self.ddq[i] = self.low_state.motor_state[i].ddq
-                self.tau_est[i] = self.low_state.motor_state[i].tau_est
+                self.q[i] = self.joint_sign[i] * self.low_state.motor_state[i].q
+                self.dq[i] = self.joint_sign[i] * self.low_state.motor_state[i].dq
+                self.ddq[i] = self.joint_sign[i] * self.low_state.motor_state[i].ddq
+                self.tau_est[i] = self.joint_sign[i] * self.low_state.motor_state[i].tau_est
                 self.motor_temp[i] = self.low_state.motor_state[i].temperature
 
 
@@ -463,7 +487,7 @@ class ControlNode(Node):
                 self.low_cmd.mode_machine = self.mode_machine_
                 self.low_cmd.motor_cmd[i].mode = 1
                 self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i]
+                self.low_cmd.motor_cmd[i].q = self.joint_sign[i] * ((1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i])
                 self.low_cmd.motor_cmd[i].dq = 0.0
                 self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
@@ -480,9 +504,9 @@ class ControlNode(Node):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
                 self.low_cmd.motor_cmd[i].mode = 1
-                self.low_cmd.motor_cmd[i].tau = tau_ff_cmd[i]
-                self.low_cmd.motor_cmd[i].q = q_cmd[i]
-                self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
+                self.low_cmd.motor_cmd[i].tau = self.joint_sign[i] * tau_ff_cmd[i]
+                self.low_cmd.motor_cmd[i].q = self.joint_sign[i] * q_cmd[i]
+                self.low_cmd.motor_cmd[i].dq = self.joint_sign[i] * dq_cmd[i]
                 self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
                 self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
 
@@ -518,6 +542,12 @@ def main(args=None):
         required=True,
         help='Path to the config yaml file for hardware. Example: "g1_29dof_hardware.yaml".'
     )
+    # joint sign flip argument
+    parser.add_argument(
+        '--flip-waist-pitch',
+        action='store_true',
+        help='Flip the sign of the waist pitch joint readings and commands.'
+    )
     args = parser.parse_args()
 
     print()
@@ -529,7 +559,10 @@ def main(args=None):
     ChannelFactoryInitialize(0, args.network)
 
     # instantiate the custom control class
-    ctrl_node = ControlNode(args.config)
+    flip_flags = {
+        "flip_waist_pitch": args.flip_waist_pitch,
+    }
+    ctrl_node = ControlNode(args.config, flip_flags)
     ctrl_node.Init()
 
     # spin ROS2 node in background thread

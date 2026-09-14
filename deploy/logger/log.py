@@ -25,7 +25,7 @@ sys.path.append(ROOT_DIR)
 
 # custom imports
 from utils.logger import Logger
-from utils.experiment_utils import EXPERIMENT_INFO_TOPIC, experiment_info_qos
+from utils.experiment_utils import EXPERIMENT_INFO_TOPIC, HARDWARE_INFO_TOPIC, experiment_info_qos
 
 
 ############################################################################
@@ -121,6 +121,11 @@ class LogNode(Node):
         self.experiment_sub = self.create_subscription(
             String, EXPERIMENT_INFO_TOPIC, self.experiment_info_callback, experiment_info_qos())
 
+        # hardware info (latched): which sign flip flags hardware.py was launched with
+        self._hardware_written = False
+        self.hardware_sub = self.create_subscription(
+            String, HARDWARE_INFO_TOPIC, self.hardware_info_callback, experiment_info_qos())
+
         # periodic log timer (snapshots latest messages into the loggers)
         self.log_timer = self.create_timer(log_period, self.log_callback)
 
@@ -208,6 +213,25 @@ class LogNode(Node):
             print(f"Recorded experiment info into log: config='{info.get('config')}', fields={list(info.keys())}")
         except Exception as e:
             print(f"WARNING: could not write experiment info to log: {e}")
+
+    # latched hardware info -> written once into the HDF5 file as root attributes
+    def hardware_info_callback(self, msg: String):
+        if self._hardware_written:
+            return
+        try:
+            info = json.loads(msg.data)
+        except Exception:
+            info = {}
+
+        try:
+            with h5py.File(self.output_path, "a") as f:
+                for key, value in info.items():
+                    f.attrs[key] = str(value)
+                f.attrs["hardware_info"] = msg.data
+            self._hardware_written = True
+            print(f"Recorded hardware info into log: {info}")
+        except Exception as e:
+            print(f"WARNING: could not write hardware info to log: {e}")
 
 
     #################################################################
