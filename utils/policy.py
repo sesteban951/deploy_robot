@@ -59,6 +59,13 @@ def load_policy_metadata(onnx_model):
 
     return metadata
 
+# print each metadata key-value pair of a policy (if it has metadata)
+def print_policy_metadata(policy):
+    if hasattr(policy, 'metadata'):
+        for key, value in policy.metadata.items():
+            print()
+            print(f"{key}: {value}")
+    print()
 
 # inference with an onnx policy
 def policy_inference_onnx(session, input, **extra_inputs):
@@ -145,14 +152,17 @@ class Policy:
 # TEST
 ############################################################################
 
-def main(args=None):
+if __name__ == "__main__":
 
+    import argparse
     import os
     ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
-    # specify the policy name
-    # policy_name = "g1_23dof_vel.onnx"
-    policy_name = "g1_29dof_mimic_squat.onnx"
+    # policy name argument (with or without the .onnx extension)
+    parser = argparse.ArgumentParser(description="Load a policy and print its properties.")
+    parser.add_argument('policy', type=str, help='Policy file name inside the policy folder. Example: "g1_29dof_mimic_squat".')
+    args = parser.parse_args()
+    policy_name = args.policy if args.policy.endswith(".onnx") else args.policy + ".onnx"
 
     # load the policy
     policy_path = ROOT_DIR + "/policy/" + policy_name
@@ -165,16 +175,10 @@ def main(args=None):
     print(f"    Outputs: {policy.outputs}")
 
     # print metadata if available
-    if hasattr(policy, 'metadata'):
-        for key, value in policy.metadata.items():
-            print(f"{key}: {value}")
+    print_policy_metadata(policy)
 
     # test inference with a zero input
     obs = np.zeros(policy.input_size, dtype=np.float32)
     action = policy.inference(obs)
-    print(f"    Test action shape: {action.shape}")
-    print(f"    Test action: {action}")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"Test action shape: {action.shape}")
+    print(f"Test action: {action}")
