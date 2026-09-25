@@ -86,14 +86,12 @@ class Mode:
 
 
 # low-level control frequency 
-# NOTE: leave as low as possible since it causes chatter
 LOW_LEVEL_CONTROL_DT = 0.01  # [sec]
 
 # ROS2 sensor publishing frequency
 ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
 
-# safety: max allowable pelvis roll/pitch before forcing damp (when you fall)
-ENABLE_MAX_TILT = False             # False means no safety check
+# max allowable pelvis roll/pitch before forcing damp (when you fall)
 SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 
 
@@ -102,7 +100,9 @@ SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 ########################################################################
 
 class ControlNode(Node):
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, 
+                       enable_max_tilt: bool, 
+                       enable_imu_guard: bool):
 
         super().__init__("hardware_node")
 
@@ -111,6 +111,14 @@ class ControlNode(Node):
 
         # load parameters
         self.load_params()
+
+        # safety features (on by default)
+        self.enable_max_tilt = enable_max_tilt
+        self.enable_imu_guard = enable_imu_guard
+        if not self.enable_max_tilt:
+            print("WARNING: max tilt safety check is DISABLED.")
+        if not self.enable_imu_guard:
+            print("WARNING: IMU dropout guard is DISABLED.")
 
         # IMU states
         self.pelvis_imu_rpy = None            # roll, pitch, yaw
@@ -121,6 +129,10 @@ class ControlNode(Node):
         self.torso_imu_quaternion = None
         self.torso_imu_gyroscope = None
         self.torso_imu_accelerometer = None
+
+        # IMU dropout counting
+        self.pelvis_imu_lost_count = 0
+        self.torso_imu_lost_count = 0
 
         # joint states
         self.q = np.zeros(G1_NUM_MOTOR)               # joint positions
@@ -369,13 +381,27 @@ class ControlNode(Node):
             self.mode_machine_ = self.low_state.mode_machine
             self.update_mode_machine_ = True
         
+        # IMU guard: a lost packet has a near-zero quaternion (and zeroed rpy, gyro, accel)
+        imu = self.low_state.imu_state
+        quat = np.array(imu.quaternion, dtype=np.float64)
+        quat_norm = np.linalg.norm(quat)
+        imu_lost = self.enable_imu_guard and quat_norm < 0.5
+        if imu_lost:
+            if self.pelvis_imu_lost_count == 0:
+                print("WARNING: pelvis IMU packet lost. Holding last good IMU values.")
+            self.pelvis_imu_lost_count += 1
+        elif self.pelvis_imu_lost_count > 0:
+            print(f"WARNING: pelvis IMU recovered after [{self.pelvis_imu_lost_count}] lost packets.")
+            self.pelvis_imu_lost_count = 0
+
         # update sensor states under lock
         with self.sensor_lock:
-            # update IMU states
-            self.pelvis_imu_rpy = self.low_state.imu_state.rpy
-            self.pelvis_imu_quaternion = self.low_state.imu_state.quaternion
-            self.pelvis_imu_gyroscope = self.low_state.imu_state.gyroscope
-            self.pelvis_imu_accelerometer = self.low_state.imu_state.accelerometer
+            # update IMU states (keep the last good values if this packet was lost)
+            if not imu_lost:
+                self.pelvis_imu_rpy = imu.rpy
+                self.pelvis_imu_quaternion = imu.quaternion
+                self.pelvis_imu_gyroscope = imu.gyroscope
+                self.pelvis_imu_accelerometer = imu.accelerometer
 
             # update joint states
             for i in range(G1_NUM_MOTOR):
@@ -388,6 +414,21 @@ class ControlNode(Node):
 
     # callback to receive torso IMU messages
     def TorsoIMUHandler(self, msg: IMUState_):
+
+        # IMU guard: a lost packet has a near-zero quaternion (and zeroed rpy, gyro, accel)
+        quat = np.array(msg.quaternion, dtype=np.float64)
+        quat_norm = np.linalg.norm(quat)
+        imu_lost = self.enable_imu_guard and quat_norm < 0.5
+        if imu_lost:
+            if self.torso_imu_lost_count == 0:
+                print("WARNING: torso IMU packet lost. Holding last good IMU values.")
+            self.torso_imu_lost_count += 1
+            return
+        if self.torso_imu_lost_count > 0:
+            print(f"WARNING: torso IMU recovered after [{self.torso_imu_lost_count}] lost packets.")
+            self.torso_imu_lost_count = 0
+
+        # update sensor states under lock
         with self.sensor_lock:
             self.torso_imu_rpy = msg.rpy
             self.torso_imu_quaternion = msg.quaternion
@@ -417,7 +458,7 @@ class ControlNode(Node):
         self.fsm_time = self.time_ - self.fsm_start_time
 
         # safety: force damp if pelvis tilts beyond specified threshold
-        if ENABLE_MAX_TILT and not self.safety_triggered:
+        if self.enable_max_tilt and not self.safety_triggered:
             with self.sensor_lock:
                 rpy = self.pelvis_imu_rpy
             if rpy is not None:
@@ -516,7 +557,20 @@ def main(args=None):
         '--config',
         type=str,
         required=True,
-        help='Path to the config yaml file for hardware. Example: "g1_29dof_hardware.yaml".'
+        help='Path to the config yaml file for hardware. Example: "g1_29dof_mimic.yaml".'
+    )
+    # safety flags (on by default, turn off with the --no- form)
+    parser.add_argument(
+        '--max-tilt',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Force damp when the pelvis tilts past the safety threshold.'
+    )
+    parser.add_argument(
+        '--imu-guard',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Hold the last good IMU values when an IMU packet is lost.'
     )
     args = parser.parse_args()
 
@@ -529,7 +583,9 @@ def main(args=None):
     ChannelFactoryInitialize(0, args.network)
 
     # instantiate the custom control class
-    ctrl_node = ControlNode(args.config)
+    ctrl_node = ControlNode(args.config, 
+                            enable_max_tilt=args.max_tilt, 
+                            enable_imu_guard=args.imu_guard)
     ctrl_node.Init()
 
     # spin ROS2 node in background thread
