@@ -26,11 +26,11 @@ if __name__ == "__main__":
 
     # parser for command line arguments
     parser = argparse.ArgumentParser(description="Replay a motion trajectory.")
-    parser.add_argument("motion", help="Path to the motion file.")
+    parser.add_argument("motion", help='Motion file name inside the motions folder. Example: "srb_squat".')
     args = parser.parse_args()
 
     # load the motion trajectory
-    motion_path = args.motion
+    motion_path = args.motion if args.motion.endswith(".npz") else args.motion + ".npz"
     motion_path_full = ROOT_DIR + "/motions/" + motion_path
 
     # load the npz motion trajectory
