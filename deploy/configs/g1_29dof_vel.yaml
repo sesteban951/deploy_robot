@@ -1,6 +1,4 @@
 xml_path: "g1_29dof_mode11_scene.xml"
-# policy_path: "g1_29dof_vel.onnx"
-# policy_path: "g1_29dof_vel_robust.onnx"
 policy_path: "g1_29dof_vel_robust_delay.onnx"
 
 # interpolate to default position duration

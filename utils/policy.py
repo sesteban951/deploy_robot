@@ -152,9 +152,6 @@ def main(args=None):
 
     # specify the policy name
     # policy_name = "g1_23dof_vel.onnx"
-    # policy_name = "g1_29dof_vel.onnx"
-    # policy_name = "g1_29dof_mimic_pelvis.onnx"
-    # policy_name = "g1_29dof_mimic_torso.onnx"
     policy_name = "g1_29dof_mimic_squat.onnx"
 
     # load the policy

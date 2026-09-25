@@ -47,10 +47,7 @@ After the `conda` environment is set up, install the Unitree SDK inside the cond
 Make sure you are in the `deploy` conda environment by using `conda activate deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
 
 ## Policy
-To download a policy from WandB into the `policy/` folder, you can for example run:
-```bash
-python policy/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
-```
+Download the trained `.onnx` policy from WandB and place it in the `policy/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/` to its filename.
 
 ---
 

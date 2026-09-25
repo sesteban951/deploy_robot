@@ -1,48 +1,6 @@
 xml_path: "g1_29dof_mode11_scene.xml"
-
-# policy_path: "g1_29dof_mimic_pelvis.onnx"
-# policy_path: "g1_29dof_mimic_torso.onnx"
-# motion_path: "walk1_subject1.npz"
-# policy_path: "g1_29dof_mimic_squat.onnx"
-# motion_path: "srb_squat.npz"
-# policy_path: "g1_29dof_mimic_jump.onnx"
-# motion_path: "srb_jump_up_spc.npz"
-# policy_path: "g1_29dof_mimic_jump-srb-ik.onnx"
-# motion_path: "srb_ik_jump.npz"
-# policy_path: "g1_29dof_mimic_jump-fwd-srb-ik.onnx"
-# motion_path: "srb_ik_jump_fwd.npz"
-# policy_path: "g1_29_dof_mimic_jump_forward_jason.onnx"
-# motion_path: "srb_jump_forward_jason.npz"
-# policy_path: "g1_29dof_mimic_crawling.onnx"
-# motion_path: "bone_seed_crawl.npz"
-# policy_path: "g1_29dof_mimic_180_twist_kino.onnx"
-# motion_path: "kino_180_twist_high.npz"
-
-# GAIT WALK
-# policy_path: "gait_walking.onnx"
-# motion_path: "gait_walking_29dof.npz"
-
-# GAIT CRAWL
-# policy_path: "gait_crawling_to.onnx"
-# motion_path: "gait_crawling_29dof.npz"
-
-# 180 TWIST JUMP
-# policy_path: "kd_to_180_twist_jump.onnx"
-# motion_path: "kd_to_twist_180_jump_29dof.npz"
-# policy_path: "kd_to_180_twist_jump_mysetup.onnx"
-# motion_path: "kd_to_twist_180_jump_29dof_long.npz"
-
-# 360 TWIST JUMP
-# policy_path: "g1_29dof_mimic_traj_360_twist.onnx"
-# motion_path: "traj_opt_kino_360_twist.npz"
-
-# ROLLOVER
-# policy_path: "to_sideroll_first_try.onnx"
-# motion_path: "v3_tracking_sideroll_crop0-544.npz"
-# policy_path: "to_sideroll_hold.onnx"
-# motion_path: "v3_tracking_sideroll_hold.npz"
-policy_path: "to_sideroll_mysetup.onnx"
-motion_path: "to_sideroll_29dof.npz"
+policy_path: "g1_29dof_mimic_squat.onnx"
+motion_path: "srb_squat.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
