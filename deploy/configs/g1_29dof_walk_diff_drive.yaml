@@ -1,5 +1,5 @@
 xml_path: "g1_29dof_mode11_scene.xml"
-policy_path: "walk_diff_drive_idle.onnx"
+policy_path: "walk_diff_drive.onnx"
 
 home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
 
