@@ -15,6 +15,9 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy, QoS
 # topic the control nodes broadcast on and the logger records from
 EXPERIMENT_INFO_TOPIC = "deploy_robot/experiment_info"
 
+# topic the hardware node broadcasts its command-line flags on (same latched QoS)
+HARDWARE_INFO_TOPIC = "deploy_robot/hardware_info"
+
 
 # latched QoS: a logger that subscribes AFTER the control node started still
 # receives the last experiment-info message.

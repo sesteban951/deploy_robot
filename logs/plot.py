@@ -6,12 +6,38 @@
 
 import argparse
 import glob
+import json
 import math
 import os
 import h5py
 import yaml
 import numpy as np
 import matplotlib.pyplot as plt
+
+
+# joint names in motor index order (matches models/g1_*dof.xml and the Unitree SDK)
+G1_29DOF_JOINT_NAMES = [
+    "L hip pitch", "L hip roll", "L hip yaw", "L knee", "L ankle pitch", "L ankle roll",
+    "R hip pitch", "R hip roll", "R hip yaw", "R knee", "R ankle pitch", "R ankle roll",
+    "waist yaw", "waist roll", "waist pitch",
+    "L shoulder pitch", "L shoulder roll", "L shoulder yaw", "L elbow",
+    "L wrist roll", "L wrist pitch", "L wrist yaw",
+    "R shoulder pitch", "R shoulder roll", "R shoulder yaw", "R elbow",
+    "R wrist roll", "R wrist pitch", "R wrist yaw",
+]
+G1_23DOF_JOINT_NAMES = [
+    "L hip pitch", "L hip roll", "L hip yaw", "L knee", "L ankle pitch", "L ankle roll",
+    "R hip pitch", "R hip roll", "R hip yaw", "R knee", "R ankle pitch", "R ankle roll",
+    "waist yaw",
+    "L shoulder pitch", "L shoulder roll", "L shoulder yaw", "L elbow", "L wrist roll",
+    "R shoulder pitch", "R shoulder roll", "R shoulder yaw", "R elbow", "R wrist roll",
+]
+
+
+# subplot title for joint i, e.g. "13: waist roll" (falls back to the index for unknown joint counts)
+def joint_title(i: int, N: int) -> str:
+    names = {29: G1_29DOF_JOINT_NAMES, 23: G1_23DOF_JOINT_NAMES}.get(N)
+    return f"{i}: {names[i]}" if names else f"joint {i}"
 
 
 # search both logs/simulation and logs/hardware for the most recently modified .h5 file
@@ -28,7 +54,7 @@ def find_latest_log() -> str:
 def _joint_grid(N: int, title: str, figsize=(14, 9), suptitle_extra: str = ""):
     cols = min(6, N)
     rows = math.ceil(N / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=figsize, sharex=True)
+    fig, axes = plt.subplots(rows, cols, figsize=figsize, sharex=True, layout="constrained")
     fig.suptitle(f"{title}\n{suptitle_extra}" if suptitle_extra else title)
     axes = axes.flatten() if N > 1 else [axes]
     # hide any unused axes on the last row
@@ -53,6 +79,12 @@ def print_experiment_info(meta: dict):
     for key in ("config", "policy_trained_at", "data_logged_at"):
         if key in meta:
             print(f"  {key:18s} {meta[key]}")
+
+    # hardware sign flip flags (only present for hardware logs recorded with hardware.py broadcasting them)
+    if "hardware_info" in meta:
+        print("")
+        for key, value in json.loads(str(meta["hardware_info"])).items():
+            print(f"  {key:18s} {value}")
 
     # config parameters: parse the yaml snapshot and print the resolved key->value
     # pairs (drops comments and commented-out alternatives). raw snapshot stays in the file.
@@ -91,6 +123,9 @@ def experiment_label(meta: dict) -> str:
     policy = _policy_from_snapshot(meta)
     if policy:                   bits.append(str(policy))
     if meta.get("data_logged_at"):    bits.append(f"logged {meta['data_logged_at']}")
+    if "hardware_info" in meta:
+        flipped = [k for k, v in json.loads(str(meta["hardware_info"])).items() if v]
+        bits.append(f"flipped: {', '.join(flipped)}" if flipped else "no flips")
     return "   |   ".join(bits)
 
 
@@ -151,7 +186,7 @@ def plot_log(file_path: str):
         if has_command:
             ax.plot(t, q_des[:, i], color="black", linewidth=0.75, label="q_des", zorder=1)
         ax.plot(t, q[:, i], color="tab:blue", linewidth=1.5, label="q", zorder=2)
-        ax.set_title(f"joint {i}")
+        ax.set_title(joint_title(i, N))
         ax.set_ylabel("[rad]")
         ax.grid(True)
     axes[0].legend(loc="upper right")
@@ -162,7 +197,7 @@ def plot_log(file_path: str):
         if has_command:
             ax.plot(t, dq_des[:, i], color="black", linewidth=0.75, label="dq_des", zorder=1)
         ax.plot(t, dq[:, i], color="tab:blue", linewidth=1.5, label="dq", zorder=2)
-        ax.set_title(f"joint {i}")
+        ax.set_title(joint_title(i, N))
         ax.set_ylabel("[rad/s]")
         ax.grid(True)
     axes[0].legend(loc="upper right")
@@ -171,7 +206,7 @@ def plot_log(file_path: str):
     _, axes = _joint_grid(N, f"tau_est ({N} joints)", suptitle_extra=exp_label)
     for i, ax in enumerate(axes):
         ax.plot(t, tau_est[:, i], color="tab:blue")
-        ax.set_title(f"joint {i}")
+        ax.set_title(joint_title(i, N))
         ax.set_ylabel("[Nm]")
         ax.grid(True)
 
@@ -226,7 +261,7 @@ def plot_log(file_path: str):
         for i, ax in enumerate(axes):
             ax.plot(t, s0[:, i], color="tab:orange", linewidth=1.0, label="sensor0")
             ax.plot(t, s1[:, i], color="tab:red",    linewidth=1.0, label="sensor1")
-            ax.set_title(f"joint {i}")
+            ax.set_title(joint_title(i, Nt))
             ax.set_ylabel("[degC]")
             ax.grid(True)
         axes[0].legend(loc="upper right")
