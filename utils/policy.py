@@ -5,6 +5,8 @@
 #
 ##
 
+import json
+
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -41,6 +43,14 @@ def load_policy_metadata(onnx_model):
     metadata = {}
     for prop in onnx_model.metadata_props:
         value = prop.value
+
+        # JSON values (mjlab gait-library exports: library_clips, twist_metric_weights, ...)
+        if value.lstrip().startswith(("[", "{")):
+            try:
+                metadata[prop.key] = json.loads(value)
+                continue
+            except ValueError:
+                pass
 
         # try parsing as floats first
         try:
@@ -135,16 +145,46 @@ class Policy:
         self.outputs = [{"name": out.name, "shape": out.shape} for out in self._onnx_session.get_outputs()]
         self.input_sizes = [inp.shape[-1] for inp in self._onnx_session.get_inputs()]
 
+        # recurrent state (rsl_rl RNN export: h_in/c_in -> h_out/c_out, GRU: h_in -> h_out).
+        # Every "<x>_in" input with a matching "<x>_out" output is carried across inference
+        # calls, so the network keeps its memory; reset() zeroes it (an episode start).
+        in_names = {inp["name"]: inp["shape"] for inp in self.inputs[1:]}
+        out_names = {out["name"] for out in self.outputs}
+        self._state_io = {n: n[:-3] + "_out" for n in in_names
+                          if n.endswith("_in") and n[:-3] + "_out" in out_names}
+        self._state_shapes = {n: [d if isinstance(d, int) and d > 0 else 1 for d in in_names[n]]
+                              for n in self._state_io}
+        self._output_names = [out["name"] for out in self.outputs]
+        self.is_recurrent = bool(self._state_io)
+        self.reset()
+
+
+    # zero the recurrent state (no-op for a feed-forward policy)
+    def reset(self):
+        self._state = {n: np.zeros(shape, dtype=np.float32) for n, shape in self._state_shapes.items()}
+
 
     # inference the policy given an input
     def inference(self, input, **extra_inputs):
-        return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
+        if not self.is_recurrent:
+            return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
+
+        # recurrent: feed the carried state, keep the new state for the next call
+        feed = {self.inputs[0]["name"]: input.reshape(1, -1).astype(np.float32), **self._state}
+        results = dict(zip(self._output_names, self._onnx_session.run(None, feed)))
+        for n_in, n_out in self._state_io.items():
+            self._state[n_in] = results[n_out]
+        return results[self._output_names[0]].squeeze()
 
 
-    # gait period T in frames: from metadata (stripped policies, see policy/strip_motion_library.py),
-    # else from the bundled joint_pos output's shape (unstripped mjlab export), else None
+    # gait period T in frames: from mjlab's per-clip library_clips (None if the clips mix
+    # periods -- see utils/locomotion/gait_library.py), else metadata written by
+    # policy/strip_motion_library.py, else the bundled joint_pos output's shape, else None
     @property
     def motion_period_frames(self):
+        if "library_clips" in self.metadata:
+            periods = {int(c[3]) for c in self.metadata["library_clips"]}
+            return periods.pop() if len(periods) == 1 else None
         if "motion_period_frames" in self.metadata:
             return int(self.get_param("motion_period_frames")[0])
         for out in self.outputs:

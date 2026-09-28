@@ -8,14 +8,21 @@
 # not depend on, records the clip length as `motion_period_frames` metadata, and checks
 # that the stripped actions are bit-identical to the original before overwriting.
 #
+# A RAGGED library (e.g. walk + jog) has no single clip length -- the bundled outputs are
+# padded to the longest clip -- so `motion_period_frames` is not written for it. Such a
+# policy needs mjlab's per-clip `library_clips` metadata instead, which newer exports carry
+# and older ones can be given with --attach (a JSON dict of metadata key -> string value).
+#
 # Usage:
 #   python policy/strip_motion_library.py                # every .onnx in policy/
 #   python policy/strip_motion_library.py crawl_omni.onnx
+#   python policy/strip_motion_library.py walkjog.onnx --attach library_meta.json
 #
 ##
 
 # standard imports
 import argparse
+import json
 import os
 
 # other imports
@@ -110,19 +117,34 @@ def run_actions(model_bytes, feeds):
 
 
 # strip one policy file in place; returns (old_bytes, new_bytes) or None if skipped
-def process(path):
+def process(path, attach=None):
     model = onnx.load(path)
     outputs = [o.name for o in model.graph.output]
+
+    # extra metadata (e.g. mjlab's library_clips for an export that predates it)
+    for key, value in (attach or {}).items():
+        set_metadata(model, key, value)
 
     if ACTION_OUTPUT not in outputs:
         print(f"[skip] {os.path.basename(path)}: no '{ACTION_OUTPUT}' output ({outputs})")
         return None
     if outputs == [ACTION_OUTPUT]:
-        print(f"[skip] {os.path.basename(path)}: already actions-only")
+        if attach:
+            onnx.save(model, path)
+            print(f"[meta] {os.path.basename(path)}: already actions-only; attached {sorted(attach)}")
+        else:
+            print(f"[skip] {os.path.basename(path)}: already actions-only")
         return None
 
     frames, clips = motion_library_shape(model)
     original_bytes = model.SerializeToString()
+
+    # a ragged library's bundled outputs are padded to its longest clip, so their frame count
+    # is NOT a period; the per-clip lengths live in library_clips
+    keys = {p.key: p.value for p in model.metadata_props}
+    if "library_clips" in keys:
+        periods = sorted({int(c[3]) for c in json.loads(keys["library_clips"])})
+        frames = periods[0] if len(periods) == 1 else None
 
     # random observations (and time steps, which must not matter) for the check
     rng = np.random.default_rng(0)
@@ -167,12 +189,20 @@ def process(path):
 def main():
     parser = argparse.ArgumentParser(description="Strip bundled motion libraries from ONNX policies.")
     parser.add_argument("policies", nargs="*", help="policy filenames in policy/ (default: all .onnx)")
+    parser.add_argument("--attach", help="JSON file of extra metadata (key -> string) to attach first")
     args = parser.parse_args()
+
+    attach = None
+    if args.attach:
+        with open(args.attach) as f:
+            attach = {k: v if isinstance(v, str) else json.dumps(v) if isinstance(v, (list, dict)) else str(v)
+                      for k, v in json.load(f).items()}
+        assert args.policies, "--attach needs explicit policy filenames"
 
     names = args.policies or sorted(f for f in os.listdir(POLICY_DIR) if f.endswith(".onnx"))
     total_old = total_new = 0
     for name in names:
-        result = process(os.path.join(POLICY_DIR, name))
+        result = process(os.path.join(POLICY_DIR, name), attach)
         if result is not None:
             total_old += result[0]
             total_new += result[1]

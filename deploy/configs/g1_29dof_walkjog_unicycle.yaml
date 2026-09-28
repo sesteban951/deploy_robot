@@ -1,0 +1,51 @@
+xml_path: "g1_29dof_mode11_scene.xml"
+policy_path: "2026-09-27_20-17-24_walkjog-v0.onnx"   # mjlab G1-WalkJog-Unicycle, run ql99m17i
+
+home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
+
+# NO motion_period_frames: this library mixes two strides (walk clips T = 70 frames = 1.4 s,
+# jog clips T = 43 frames = 0.86 s). The period is the SNAPPED clip's own, read from the
+# policy's library_clips metadata by utils/locomotion/gait_library.py.
+gait_names: {70: walk, 43: jog}   # period [frames] -> label, for printouts only
+
+default_twist: [0.75, 0.0, 0.0]   # twist with no joystick (sim only; hardware stands). 0.75 = walk
+
+# joystick -> twist (utils/locomotion/jog_modes.py): UNICYCLE = drive and steer at the same time.
+# drive stick inside the deadband -> exactly zero twist -> idle clip
+stick_deadband:  0.15
+
+# the merged library's span, measured in mjlab (walkjog_unicycle/config/g1/env_cfgs.py). Speed
+# selects the gait: below the cut a twist snaps to a walk clip, above it to a jog clip.
+#   forward   walk +0.50..+0.90  |  jog +1.00..+1.50      (cut at +0.95)
+#   backward  walk -0.70..-0.50  |  jog -1.00..-0.80      (cut at -0.7315)
+#   pivot     walk  0.50.. 1.45  |  jog  1.50.. 2.00      (cut at  1.4945, on |wz|)
+#   arc       both families sweep |wz| 0..0.50 at every speed
+# Each drive-stick range maps linearly onto its band, so the walk -> jog switch happens
+# partway through the stick travel (forward: ~55% stick).
+fwd_vx_range:   [ 0.50,  1.50]
+bwd_vx_range:   [-1.00, -0.50]
+curve_wz_range: [-0.50,  0.50]   # body yaw rate while moving, left (+): each stick side maps onto its half
+pivot_wz_range: [ 0.50,  2.00]   # in-place pivot MAGNITUDE (sign from the stick), drive stick parked
+
+# mode_machine 11; == the policy's joint_stiffness / joint_damping metadata
+Kp: [99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 28.501, 28.501,  # waist
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
+Kd: [6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 1.814, 1.814,  # waist
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+
+# == the policy's default_joint_pos: the standing idle shared by the walk and jog libraries
+# (same pose as g1_29dof_walk_unicycle.yaml)
+home_base_pos: [ 0.000000,  0.000000,  0.783030,  1.000000,  0.000000,  0.000000,  0.000000]
+home_joint_pos: [-0.128308,  0.104720,  0.183473,  0.261799, -0.119329, -0.043625,
+                 -0.128308, -0.104720, -0.183473,  0.261799, -0.119329,  0.043625,
+                  0.000000,  0.000000,  0.000000,
+                  0.000000,  0.329693, -0.739561,  1.073719, -0.032064, -0.003842,  0.053243,
+                  0.000000, -0.329693,  0.739561,  1.073719,  0.032064, -0.003842, -0.053243]
+
+control_dt: 0.02
