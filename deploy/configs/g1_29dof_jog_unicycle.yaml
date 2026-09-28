@@ -1,5 +1,6 @@
 xml_path: "g1_29dof_mode11_scene.xml"
-policy_path: "jog_unicycle.onnx"
+# policy_path: "jog_unicycle.onnx"
+policy_path: "jog_unicycle_retuned.onnx"
 
 home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
 

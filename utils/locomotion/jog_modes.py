@@ -13,9 +13,9 @@
 #   - pivot    : vx = 0,                      |wz| in [1.00, 2.00] rad/s
 #   - idle     : [0, 0, 0],   the standing pose
 # Every clip realizes its vx AND wz at once (an arc: the vx=1.0, wz=0.5 clip turns 0.43 rad
-# per stride), so drive and steer are commanded TOGETHER. This is the opposite of the walk
-# library (walk_modes.py), whose clips are straight XOR turn-in-place and whose sticks must
-# therefore compete: dominant stick, hysteresis, dwell. None of that exists here -- the two
+# per stride), so drive and steer are commanded TOGETHER. This is the opposite of the old
+# diff-drive walk library, whose clips were straight XOR turn-in-place and whose sticks had to
+# compete: dominant stick, hysteresis, dwell. None of that exists here -- the two
 # sticks never fight, every (vx, wz) inside a box is within 0.05 of a trained clip.
 # The library also has a second, DISJOINT regime: in-place PIVOTS (vx = 0, |wz| in [1.0, 2.0],
 # from the walk_turn_*_fast grids). Measured over the 210 clips: at nonzero vx the arcs never
@@ -35,17 +35,23 @@
 #                stick left -> nose swings left, tail right.
 # Forward <-> backward always passes through the deadband (a stop); within a band the twist
 # follows the sticks continuously, matching the continuous (vx, wz) box the sampler drew from.
-# The stick remap is the walk library's (walk_modes.remap_stick): a linear stick scale would
-# leave the stick below 0.33 dead and never reach the slow end of the backward band.
+# The stick remap (remap_stick below) maps the live part of the stick onto a band: a linear
+# stick scale would leave the stick below 0.33 dead and never reach the slow end of the
+# backward band.
 #
 ##
 
 import numpy as np
 
-from utils.locomotion.walk_modes import remap_stick
-
 
 MODES = ("idle", "forward", "backward", "pivot")
+
+
+# |stick| in [deadband, 1] -> [lo, hi] linearly (lo at the deadband edge, hi at full stick)
+def remap_stick(stick, deadband, lo, hi):
+    span = max(1.0 - deadband, 1e-6)
+    t = (min(abs(float(stick)), 1.0) - deadband) / span
+    return lo + (hi - lo) * float(np.clip(t, 0.0, 1.0))
 
 
 # pick the band the sticks ask for. The DRIVE stick has priority: while it is live we are

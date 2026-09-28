@@ -215,15 +215,18 @@ class ControlNode(Node):
             f"home_joint_pos differs from the policy's default_joint_pos by {gap:.4f} rad; " \
             f"they must be the same standing idle pose."
 
-        # the gains this node ships to the low level must be the ones the policy was trained
-        # with; a mode-5 / mode-11 mix-up is otherwise silent and only shows up as bad tracking
+        # the gains this node ships to the low level default to the ones the policy was trained
+        # with; a mode-5 / mode-11 mix-up is otherwise silent and only shows up as bad tracking.
+        # deliberate retuning (e.g. more waist damping) is allowed, but every changed joint is
+        # printed so a mismatch is never an accident
+        joint_names = self.policy.metadata.get('joint_names', [f"joint {i}" for i in range(self.act_size)])
         for _key, _meta in (("Kp", "joint_stiffness"), ("Kd", "joint_damping")):
             _trained = self.policy.get_param(_meta, None)
-            if _trained is not None:
-                _gap = float(np.abs(np.array(self.config[_key], dtype=np.float32) - np.array(_trained, dtype=np.float32)).max())
-                assert _gap < 1e-2, \
-                    f"{_key} differs from the policy's {_meta} by {_gap:.4f}; the yaml gains " \
-                    f"must be the trained ones."
+            if _trained is None:
+                continue
+            _yaml = np.array(self.config[_key], dtype=np.float32)
+            for i in np.where(np.abs(_yaml - _trained) > 1e-2)[0]:
+                print(f"WARNING: {_key}[{i}] ({joint_names[i]}) = {_yaml[i]:.3f} differs from the trained {_meta} = {_trained[i]:.3f}.")
 
         # the policy's gait period must match the yaml's clock
         motion_len = None

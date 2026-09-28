@@ -1,0 +1,62 @@
+xml_path: "g1_29dof_mode11_scene.xml"
+policy_path: "2026-09-26_16-08-59_walk_unicycle_history_v1.onnx"
+
+home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
+
+# T: frames per gait cycle (phase = t/T); 70 @ 50 Hz = 1.4 s, the walk stride (the same period as
+# the diff-drive walk; the jog's is 43). The clock free-runs, but the (sin, cos) obs is blanked on
+# zero twist -- keep in sync with mjlab mdp/observations.py.
+motion_period_frames: 70
+
+# H: observation history depth (frames, the current one included) on the actor's dynamics terms
+# (base_ang_vel, joint_pos, joint_vel, actions, projected_gravity); the commanded twist and the
+# phase clock stay at one frame. 5 @ 50 Hz = 100 ms. == mjlab tasks/walk_unicycle/config/
+# g1_history/env_cfgs.py HISTORY_LENGTH; the node cross-checks it against the policy's
+# observation_terms_history_length metadata, so a stale value fails loudly instead of silently.
+history_length: 5
+
+default_twist: [0.75, 0.0, 0.0]   # twist with no joystick (sim only; hardware stands)
+
+# joystick -> twist (utils/locomotion/jog_modes.py: the jog's shaper, imported unchanged the way
+# mjlab imports the jog's sampler): UNICYCLE = drive and steer at the same time.
+# drive stick inside the deadband -> exactly zero twist, which the policy's idle stop keys off
+stick_deadband:  0.15
+
+# trained gait grid, not tuning knobs (mjlab tasks/walk_unicycle/config/g1/env_cfgs.py, read off
+# the mj-nlp examples/g1_mimic_periodic walk_fwd / walk_bck / walk_turn_* grids). Each direction
+# is a FULL (vx, wz) box, so a curve exists at every speed and the sticks never compete (no XOR,
+# unlike the diff-drive walk). No vy is ever commanded.
+# HARDWARE CAP, inherited from g1_29dof_walk_unicycle.yaml (the plain policy ran away above ~0.6:
+# toe-first landings at or behind the pelvis, pelvis pitching forward; log 2026_09_27__21_13_40).
+# NOT yet re-measured on the history policy -- start here, widen toward 0.90 once it holds pitch.
+fwd_vx_range:   [ 0.50,  0.60]   # trained: [0.50, 0.90]
+bwd_vx_range:   [-0.80, -0.50]
+curve_wz_range: [-0.50,  0.50]   # body yaw rate while walking, left (+): each stick side maps onto its half
+# In-place pivot MAGNITUDE band (sign comes from the stick); commanded only when the drive stick
+# is parked. Unlike the jog there is NO gap: the pivots start at the arcs' 0.5, so a turn is
+# demonstrated at every rate from straight to the fastest pivot.
+pivot_wz_range: [ 0.50,  1.50]
+
+# mode_machine 11; == the policy's joint_stiffness / joint_damping metadata
+Kp: [99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 28.501, 28.501,  # waist
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
+Kd: [6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 1.814, 1.814,  # waist
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+
+# == the policy's default_joint_pos: the ALIGNED standing idle (mjlab trajectories/library/
+# walk_unicycle_library/qpos_idle.csv, left/right mirror-symmetric, waist zeroed), the zero-twist
+# stop clip bundled inside the policy. Base upright (identity quat), both feet at the same height.
+home_base_pos: [ 0.000000,  0.000000,  0.783030,  1.000000,  0.000000,  0.000000,  0.000000]
+home_joint_pos: [-0.128308,  0.104720,  0.183473,  0.261799, -0.119329, -0.043625,
+                 -0.128308, -0.104720, -0.183473,  0.261799, -0.119329,  0.043625,
+                  0.000000,  0.000000,  0.000000,
+                  0.000000,  0.329693, -0.739561,  1.073719, -0.032064, -0.003842,  0.053243,
+                  0.000000, -0.329693,  0.739561,  1.073719,  0.032064, -0.003842, -0.053243]
+
+control_dt: 0.02
