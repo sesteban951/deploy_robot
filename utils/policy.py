@@ -141,6 +141,18 @@ class Policy:
         return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
 
 
+    # gait period T in frames: from metadata (stripped policies, see policy/strip_motion_library.py),
+    # else from the bundled joint_pos output's shape (unstripped mjlab export), else None
+    @property
+    def motion_period_frames(self):
+        if "motion_period_frames" in self.metadata:
+            return int(self.get_param("motion_period_frames")[0])
+        for out in self.outputs:
+            if out["name"] == "joint_pos" and len(out["shape"]) == 3:
+                return int(out["shape"][1])
+        return None
+
+
     # fetch a deployment parameter embedded in the policy metadata
     def get_param(self, key, default=None):
         if key in self.metadata:

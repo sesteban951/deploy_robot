@@ -273,10 +273,7 @@ class ControlNode(Node):
                 print(f"WARNING: {_key}[{i}] ({joint_names[i]}) = {_yaml[i]:.3f} differs from the trained {_meta} = {_trained[i]:.3f}.")
 
         # the policy's gait period must match the yaml's clock
-        motion_len = None
-        for out in self.policy.outputs:
-            if out["name"] == "joint_pos" and len(out["shape"]) == 3:
-                motion_len = int(out["shape"][1])
+        motion_len = self.policy.motion_period_frames
         if motion_len is not None:
             assert motion_len == self.motion_period_frames, \
                 f"policy bundles a {motion_len}-frame motion but motion_period_frames = {self.motion_period_frames}."
