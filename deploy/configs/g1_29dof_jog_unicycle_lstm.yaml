@@ -1,0 +1,50 @@
+xml_path: "g1_29dof_mode11_scene.xml"
+policy_path: "2026-09-29_11-37-54_jog-lstm-v0-cont.onnx"   # mjlab G1-Jog-Unicycle-LSTM (98 -> LSTM(128) -> 256 -> 128 -> 29)
+
+home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
+
+# T: frames per gait cycle (phase = t/T); 43 @ 50 Hz = 0.86 s, the jog stride. The clock free-runs,
+# but the (sin, cos) obs is blanked on zero twist -- keep in sync with mjlab mdp/observations.py.
+motion_period_frames: 43
+
+default_twist: [1.0, 0.0, 0.0]   # twist with no joystick (sim only; hardware stands)
+
+# joystick -> twist (utils/locomotion/jog_modes.py): UNICYCLE = drive and steer at the same time.
+# drive stick inside the deadband -> exactly zero twist, which the policy's idle stop keys off
+stick_deadband:  0.15
+
+# trained gait grid, not tuning knobs (mj-nlp examples/g1_mimic_periodic/library: run_fwd +
+# run_bck on a 0.1 grid, walk_turn_*_fast for the pivots). Each direction is a FULL (vx, wz) box
+# -- measured: a filled 17 x 11 grid -- so a curve exists at every speed and the sticks never
+# compete (no XOR, unlike the walk library). No vy is ever commanded.
+fwd_vx_range:   [ 0.50,  1.50]
+bwd_vx_range:   [-1.00, -0.50]
+curve_wz_range: [-0.50,  0.50]   # body yaw rate while moving, left (+): each stick side maps onto its half
+# In-place pivot MAGNITUDE band (sign comes from the stick); commanded only when the drive stick
+# is parked. Disjoint from curve_wz_range on purpose: the library has NO clip between the arcs'
+# 0.5 and the pivots' 1.0, so crossing the drive deadband jumps |wz| across that gap.
+pivot_wz_range: [ 1.00,  2.00]
+
+# mode_machine 11; == the policy's joint_stiffness / joint_damping metadata
+Kp: [99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 28.501, 28.501,  # waist
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
+Kd: [6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 1.814, 1.814,  # waist
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+
+# == the policy's default_joint_pos: the ALIGNED standing idle (mjlab trajectories/library/
+# jog_unicycle_library/qpos_idle.csv, left/right mirror-symmetric, waist zeroed), the zero-twist
+# stop clip bundled inside the policy. Base upright (identity quat), both feet at the same height.
+home_base_pos: [ 0.000000,  0.000000,  0.783030,  1.000000,  0.000000,  0.000000,  0.000000]
+home_joint_pos: [-0.128308,  0.104720,  0.183473,  0.261799, -0.119329, -0.043625,
+                 -0.128308, -0.104720, -0.183473,  0.261799, -0.119329,  0.043625,
+                  0.000000,  0.000000,  0.000000,
+                  0.000000,  0.329693, -0.739561,  1.073719, -0.032064, -0.003842,  0.053243,
+                  0.000000, -0.329693,  0.739561,  1.073719,  0.032064, -0.003842, -0.053243]
+
+control_dt: 0.02
