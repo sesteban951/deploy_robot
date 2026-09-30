@@ -1,8 +1,25 @@
 #!/usr/bin/env bash
+#
+# Base launcher: opens a 4-pane tmux session in the repo root, activates the conda env in
+# every pane, and types one command per pane (without pressing Enter).
 set -e
 
 SESSION="deploy"
 ENV="deploy"
+
+# one command per pane: from the launcher that sourced this file, else empty panes
+if [ -z "${COMMANDS+x}" ]; then
+    COMMANDS=(
+      ""
+      ""
+      ""
+      ""
+    )
+fi
+if [ "${#COMMANDS[@]}" -ne 4 ]; then
+    echo "COMMANDS must have 4 entries (one per pane), got ${#COMMANDS[@]}" >&2
+    exit 1
+fi
 
 # repo root: DEPLOY_ROOT_DIR from the active env, else from the env's config vars
 # (set by `make install`), else two levels up from this script
@@ -18,20 +35,10 @@ if [ ! -d "$DIR" ]; then
     exit 1
 fi
 
-COMMANDS=(
-#   "python script1.py"
-#   "python script2.py"
-#   "ros2 topic echo /some_topic"
-#   "htop"
-  ""
-  ""
-  ""
-  ""
-)
-
 tmux has-session -t "$SESSION" 2>/dev/null && tmux kill-session -t "$SESSION"
 
 tmux new-session -d -s "$SESSION" -c "$DIR"
+tmux set-option -t "$SESSION" mouse on
 tmux split-window -h -t "$SESSION" -c "$DIR"
 tmux split-window -v -t "$SESSION:0.0" -c "$DIR"
 tmux split-window -v -t "$SESSION:0.1" -c "$DIR"
