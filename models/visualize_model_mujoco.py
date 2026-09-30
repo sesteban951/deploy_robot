@@ -25,15 +25,17 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
      "model", 
-     help="Name of the XML model file to load (must be in the 'models' directory)."
+     help="Name of the XML model file to load, with or without the .xml extension (must be in the 'models' directory)."
 )
 args = parser.parse_args()
 
 ###########################################################
-# MODEL INFO 
+# MODEL INFO
 ###########################################################
 
-xml_file = ROOT_DIR + "/models/" + args.model
+# accept the name with or without the .xml extension
+model_name = args.model if args.model.endswith(".xml") else args.model + ".xml"
+xml_file = ROOT_DIR + "/models/" + model_name
 
 # load and launch the model
 model = mujoco.MjModel.from_xml_path(xml_file)
