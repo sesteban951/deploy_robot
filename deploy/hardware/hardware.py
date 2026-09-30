@@ -594,9 +594,11 @@ def main(args=None):
         help='Hold the last good IMU values when an IMU packet is lost.'
     )
     # joint sign flip argument
+    # WARNING: on by default for now; pass --no-flip-waist-pitch to disable
     parser.add_argument(
         '--flip-waist-pitch',
-        action='store_true',
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help='Flip the sign of the waist pitch joint readings and commands.'
     )
     args = parser.parse_args()
