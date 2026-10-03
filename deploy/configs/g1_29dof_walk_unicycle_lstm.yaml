@@ -2,9 +2,9 @@
 xml_path: "g1_29dof_mode11_backpack_scene.xml"
 # policy_path: "walk_unicycle.onnx"
 # policy_path: "2026-09-26_14-20-09_walk_unicycle_aligned_v1.onnx"
-# policy_path: "2026-09-28_14-02-01_walk-lstm-v0.onnx"   # mjlab G1-Walk-Unicycle-LSTM, run 8aryd40t (model_4000, mid-training)
+policy_path: "2026-09-28_14-02-01_walk-lstm-v0.onnx"   # mjlab G1-Walk-Unicycle-LSTM, run 8aryd40t (model_4000, mid-training)
 # policy_path: "2026-09-29_00-13-38_walk-lstm-v0-cont.onnx"
-policy_path: "2026-09-29_21-52-06_walk_lstm_backpack_v1.onnx"
+#policy_path: "2026-09-29_21-52-06_walk_lstm_backpack_v1.onnx"
 
 home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
 
