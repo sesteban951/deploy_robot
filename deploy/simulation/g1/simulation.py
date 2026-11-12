@@ -38,6 +38,7 @@ from utils.math_utils import quat_to_rpy
 # Physics integrates at SIM_HZ; the viewer renders at RENDER_HZ (decoupled).
 SIM_HZ = 500.0    # [Hz] simulation rate
 RENDER_HZ = 50.0   # [Hz] viewer render rate
+CAM_MSG_SEC = 2.0  # [s] how long the camera-mode line stays up after a [C] press
 
 
 ############################################################################
@@ -96,6 +97,7 @@ class SimulationNode(Node):
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
         print("    Press [Shift + Tab] to toggle the right UI.")
+        print(f"    Press [C] to toggle camera tracking of the {self.track_body_name}.")
 
 
     #################################################################
@@ -163,10 +165,20 @@ class SimulationNode(Node):
         print(f"    nv: {self.nv}")
         print(f"    nu: {self.nu}")
 
+        # [C] camera tracking follows the floating-base body, keeping the user's orbit and zoom
+        free_joints = np.flatnonzero(self.mj_model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
+        self.track_body_id = int(self.mj_model.jnt_bodyid[free_joints[0]])
+        self.track_body_name = self.mj_model.body(self.track_body_id).name
+        self.cam_track = False
+        self._cam_dirty = False
+        self._contact_points = False
+        self._cam_msg_until = 0.0   # wall time until which the camera-mode line is shown
+
         # launch the viewer
         self.viewer = mujoco.viewer.launch_passive(
             self.mj_model,
             self.mj_data,
+            key_callback=self.key_callback,
             show_left_ui=False,  # disable left tab (use 'Tab' for toggling on/off)
             show_right_ui=False, # disable right tab (use 'Tab + Shift' for toggling on/off)
         )
@@ -197,6 +209,13 @@ class SimulationNode(Node):
     #################################################################
     # PUBLISHING AND CALLBACKS
     #################################################################
+
+    # viewer key press (runs on the viewer thread): only flag it, the sim loop applies it
+    def key_callback(self, keycode):
+        if keycode == 67:  # C: toggle camera tracking
+            self.cam_track = not self.cam_track
+            self._cam_dirty = True
+
 
     # command callback: [q_des, dq_des, Kp, Kd, tau_ff] (nu * 5)
     def command_callback(self, msg):
@@ -302,6 +321,21 @@ class SimulationNode(Node):
         # sync viewer at viewer_render_hz
         now = time.perf_counter()
         if self.viewer.is_running() and (now - self._last_viewer_sync) >= 1.0 / self.viewer_render_hz:
+            # apply a [C] toggle, and undo the viewer's own C shortcut (contact points)
+            contact_flag = mujoco.mjtVisFlag.mjVIS_CONTACTPOINT
+            if self._cam_dirty:
+                self._cam_dirty = False
+                self._cam_msg_until = now + CAM_MSG_SEC
+                with self.viewer.lock():
+                    self.viewer.opt.flags[contact_flag] = self._contact_points
+                    if self.cam_track:
+                        self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                        self.viewer.cam.trackbodyid = self.track_body_id
+                    else:
+                        self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+            else:
+                self._contact_points = bool(self.viewer.opt.flags[contact_flag])
+
             # update the viewer with the current simulation state
             self.viewer.sync()
 
@@ -313,6 +347,11 @@ class SimulationNode(Node):
             self._rtr_last_sim = self.mj_data.time
             self._rtr_last_wall = now
 
+            # camera-mode line, shown only for a moment after a [C] press
+            cam_line = ""
+            if now < self._cam_msg_until:
+                cam_line = f"\nCamera:      {'tracking ' + self.track_body_name if self.cam_track else 'free'}"
+
             self.viewer.set_texts((
                 self._viewer_font_scale,
                 mujoco.mjtGridPos.mjGRID_TOPLEFT,
@@ -320,7 +359,7 @@ class SimulationNode(Node):
                 f"Real time:   {real_elapsed:.2f}s\n"
                 f"RTR:         {rtr:.2f}\n"
                 f"Sim rate:    {SIM_HZ:.0f} Hz\n"
-                f"Render rate: {RENDER_HZ:.0f} Hz",
+                f"Render rate: {RENDER_HZ:.0f} Hz" + cam_line,
                 "",
             ))
 
