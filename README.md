@@ -53,7 +53,7 @@ sudo apt install tmux
 ```
 
 ## Policy
-Download the trained `.onnx` policy from WandB and place it in the `policy/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/<robot>/` to its filename.
+Download the trained `.onnx` policy from WandB and place it in the `policy/<robot>/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/<robot>/` to its filename.
 
 ---
 

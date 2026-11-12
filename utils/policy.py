@@ -177,9 +177,8 @@ class Policy:
         return results[self._output_names[0]].squeeze()
 
 
-    # gait period T in frames: from mjlab's per-clip library_clips (None if the clips mix
-    # periods -- see utils/locomotion/gait_library.py), else metadata written by
-    # policy/strip_motion_library.py, else the bundled joint_pos output's shape, else None
+    # gait period T in frames: from library_clips metadata (None if the clips mix periods), else
+    # motion_period_frames metadata, else the bundled joint_pos output's shape, else None
     @property
     def motion_period_frames(self):
         if "library_clips" in self.metadata:
@@ -207,17 +206,21 @@ class Policy:
 if __name__ == "__main__":
 
     import argparse
+    import glob
     import os
     ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
     # policy name argument (with or without the .onnx extension)
     parser = argparse.ArgumentParser(description="Load a policy and print its properties.")
-    parser.add_argument('policy', type=str, help='Policy file name inside the policy folder. Example: "g1_29dof_mimic_squat".')
+    parser.add_argument('policy', type=str, help='Policy file name inside any policy/ subfolder. Example: "g1_29dof_mimic_squat".')
     args = parser.parse_args()
     policy_name = args.policy if args.policy.endswith(".onnx") else args.policy + ".onnx"
 
     # load the policy
-    policy_path = ROOT_DIR + "/policy/" + policy_name
+    matches = sorted(glob.glob(os.path.join(ROOT_DIR, "policy", "**", policy_name), recursive=True))
+    if len(matches) != 1:
+        parser.error(f"expected exactly one '{policy_name}' under policy/, found: {matches or 'none'}")
+    policy_path = matches[0]
     policy = Policy(policy_path)
     print(f"Policy loaded from [{policy_path}]")
     print(f"    Type: {policy._policy_type}")

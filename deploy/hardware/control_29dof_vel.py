@@ -120,7 +120,7 @@ class ControlNode(Node):
 
         # import the policy
         policy_path = self.config['policy_path']
-        policy_path_full = ROOT_DIR + "/policy/" + policy_path
+        policy_path_full = ROOT_DIR + "/policy/g1/" + policy_path
         
         # load the policy
         self.policy = Policy(policy_path_full)
