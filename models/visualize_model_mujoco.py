@@ -6,6 +6,7 @@
 
 # standard imports
 import argparse
+import glob
 import numpy as np
 
 # mujoco imports
@@ -25,7 +26,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
      "model", 
-     help="Name of the XML model file to load, with or without the .xml extension (must be in the 'models' directory)."
+     help="Name of the XML model to load, with or without the .xml extension (e.g. go2 or g1_29dof_scene). Searched for in every subfolder of 'models'."
 )
 args = parser.parse_args()
 
@@ -35,7 +36,14 @@ args = parser.parse_args()
 
 # accept the name with or without the .xml extension
 model_name = args.model if args.model.endswith(".xml") else args.model + ".xml"
-xml_file = ROOT_DIR + "/models/" + model_name
+
+# search every subfolder of models/ for the file (a subfolder prefix like g1/ still works)
+models_dir = os.path.join(ROOT_DIR, "models")
+matches = sorted(glob.glob(os.path.join(models_dir, "**", model_name), recursive=True))
+if len(matches) != 1:
+    found = "\n  ".join(os.path.relpath(m, models_dir) for m in matches) or "none"
+    parser.error(f"expected exactly one '{model_name}' under {models_dir}, found:\n  {found}")
+xml_file = matches[0]
 
 # load and launch the model
 model = mujoco.MjModel.from_xml_path(xml_file)

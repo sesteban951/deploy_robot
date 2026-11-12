@@ -1,5 +1,5 @@
-# xml_path: "g1_29dof_mode11_scene.xml"
-xml_path: "g1_29dof_mode11_backpack_scene.xml"
+# xml_path: "g1/g1_29dof_mode11_scene.xml"
+xml_path: "g1/g1_29dof_mode11_backpack_scene.xml"
 # policy_path: "2026-09-29_11-37-54_jog-lstm-v0-cont.onnx"   # mjlab G1-Jog-Unicycle-LSTM (98 -> LSTM(128) -> 256 -> 128 -> 29)
 policy_path: "2026-09-29_21-52-50_jog_lstm_backpack_v1.onnx"
 

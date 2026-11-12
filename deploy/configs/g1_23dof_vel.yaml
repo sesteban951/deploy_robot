@@ -1,4 +1,4 @@
-xml_path: "g1_23dof_scene.xml"
+xml_path: "g1/g1_23dof_scene.xml"
 policy_path: "g1_23dof_vel.onnx"
 
 # interpolate to default position duration

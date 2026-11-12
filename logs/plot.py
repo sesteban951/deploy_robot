@@ -15,7 +15,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-# joint names in motor index order (matches models/g1_*dof.xml and the Unitree SDK)
+# joint names in motor index order (matches models/g1/g1_*dof.xml and the Unitree SDK)
 G1_29DOF_JOINT_NAMES = [
     "L hip pitch", "L hip roll", "L hip yaw", "L knee", "L ankle pitch", "L ankle roll",
     "R hip pitch", "R hip roll", "R hip yaw", "R knee", "R ankle pitch", "R ankle roll",

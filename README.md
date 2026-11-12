@@ -1,11 +1,11 @@
 # Deploy Robot in Simulation and on Hardware
 <p align="center"><img src="utils/img/menhir.png" width="50%"/></p>
 
-This repo is for deploying asynchronous sim and real robot code for the Unitree G1 robot. 
+This repo is for deploying asynchronous sim and real robot code for the Unitree G1 and Go2 robot. 
 
 A brief overview of the repo structure is as follows:
 - `deploy`: main deployment code for both sim and real robot. The `simulation` folder contains code for sim deployment, and the `hardware` folder contains code for real robot deployment.
-- `models`: contains the Mujoco XML files and mesh files for the robot.
+- `models`: contains the Mujoco XML files and mesh files, one subfolder per robot (`g1`, `go2`).
 - `motions`: contains motion files for the robot.
 - `policy`: contains the policies to use for controlling the robot.
 - `utils`: contains utility code.
