@@ -91,9 +91,10 @@ First ensure that you are connected to the robot via an ethernet cable. Then go 
 You can find the network interface name (e.g. `enp8s0`) via `ifconfig` command in a terminal. You will need it to run hardware deployment code.
 
 ### Sanity Check
-To make sure everything is working and you can communicate with the robot, you can run the example low level control script where the robot moves its arms and ankles. Run:
+To make sure everything is working and you can communicate with the robot, you can run the example low level control script for your robot. On the G1 it moves its arms and ankles; on the Go2 it stands the robot up and lies it back down. Run:
 ```bash
-python deploy/hardware/g1_low_level_example.py <network_interface_name>
+python deploy/hardware/g1/g1_low_level_example.py <network_interface_name>
+python deploy/hardware/go2/go2_low_level_example.py <network_interface_name>
 ```
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
@@ -106,11 +107,11 @@ python deploy/joystick/joystick_ros.py
 ```
 Terminal 2:
 ```bash
-python deploy/hardware/<control_script>.py --config <your-config-file>.yaml
+python deploy/hardware/<robot>/<control_script>.py --config <your-config-file>.yaml
 ```
 Terminal 3:
 ```bash
-python deploy/hardware/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
+python deploy/hardware/<robot>/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
 ```
 Terminal 4 (optional, to log data to `logs/hardware/`):
 ```bash
