@@ -8,13 +8,11 @@ dependencies:
   - scipy
   - matplotlib
   - pyyaml
-  - pytorch
   - pip
   - pip:
-    - "mujoco>=3.5.0"
+    - "mujoco>=3.17.0"
     - "warp-lang>=1.11.1"
     - onnx
     - onnxruntime
     - pygame
-    - wandb
     - h5py
