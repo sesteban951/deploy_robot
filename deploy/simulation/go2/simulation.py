@@ -7,6 +7,7 @@
 # standard imports
 import argparse
 import time
+from collections import deque
 
 # mujoco imports
 import mujoco
@@ -35,8 +36,7 @@ from utils.math_utils import quat_to_rpy
 # SIMULATION SETTINGS
 ############################################################################
 
-# Physics integrates at SIM_HZ; the viewer renders at RENDER_HZ (decoupled).
-SIM_HZ = 500.0    # [Hz] simulation rate
+# Physics integrates at --sim-hz; the viewer renders at RENDER_HZ (decoupled).
 RENDER_HZ = 50.0   # [Hz] viewer render rate
 CAM_MSG_SEC = 2.0  # [s] how long the camera-mode line stays up after a [C] press
 
@@ -50,7 +50,7 @@ class SimulationNode(Node):
     Asynchronous simulation node that runs the Mujoco simulation.
     """
 
-    def __init__(self, config_path: str, apply_noise: bool = False):
+    def __init__(self, config_path: str, apply_noise: bool = False, delay_ms: int = 0, sim_hz: int = 500):
 
         super().__init__('simulation_node')
 
@@ -59,6 +59,12 @@ class SimulationNode(Node):
 
         # whether to apply per-sensor Gaussian noise
         self.apply_noise = apply_noise
+
+        # how long a received command is held before it takes effect [ms]
+        self.delay_ms = delay_ms
+
+        # physics rate [Hz]
+        self.sim_hz = sim_hz
 
         # load params
         self.init_params()
@@ -132,14 +138,26 @@ class SimulationNode(Node):
         self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
         self.mj_data = mujoco.MjData(self.mj_model)
 
-        # simulate at the global SIM_HZ (overrides the model's <option timestep>)
-        self.mj_model.opt.timestep = 1.0 / SIM_HZ
+        # simulate at sim_hz (overrides the model's <option timestep>)
+        self.mj_model.opt.timestep = 1.0 / self.sim_hz
 
         # load model properties
         self.nq = self.mj_model.nq
         self.nv = self.mj_model.nv
         self.nu = self.mj_model.nu
         self.sim_dt = self.mj_model.opt.timestep
+
+        # command delay in whole sim steps (one step is the finest delay the sim can represent)
+        step_ms = 1e3 / self.sim_hz
+        delay_exact = self.delay_ms / step_ms
+        self.delay_steps = int(delay_exact + 0.5)
+        if abs(delay_exact - self.delay_steps) > 1e-6:
+            print(f"WARNING: --delay {self.delay_ms} ms is not a multiple of the {step_ms:g} ms sim step; "
+                  f"using {self.delay_steps * step_ms:g} ms.")
+        self._cmd_queue = deque()   # (step at which to apply, command data), oldest first
+        self._step_count = 0
+        delay_applied_ms = self.delay_steps * self.sim_dt * 1e3
+        self._delay_line = f"\nCmd delay:   {delay_applied_ms:.0f} ms" if self.delay_steps > 0 else ""
 
         # make sure the default joints are the correct size
         assert len(self.home_joints) == self.nu, (f"Default joint angles must be of size "
@@ -162,6 +180,7 @@ class SimulationNode(Node):
         print(f"    nq: {self.nq}")
         print(f"    nv: {self.nv}")
         print(f"    nu: {self.nu}")
+        print(f"    Command delay: {delay_applied_ms:.1f} ms ({self.delay_steps} sim steps).")
 
         # [C] camera tracking follows the floating-base body, keeping the user's orbit and zoom
         free_joints = np.flatnonzero(self.mj_model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
@@ -219,7 +238,15 @@ class SimulationNode(Node):
     def command_callback(self, msg):
         data = np.array(msg.data)
 
-        # unpack the command (same order as hardware)
+        # hold the command for delay_steps sim steps before it takes effect
+        if self.delay_steps > 0:
+            self._cmd_queue.append((self._step_count + self.delay_steps, data))
+            return
+        self.apply_command(data)
+
+
+    # unpack a command and make it the active one (same order as hardware)
+    def apply_command(self, data):
         self.command_received = True
         self.qpos_des = data[0*self.nu : 1*self.nu]
         self.qvel_des = data[1*self.nu : 2*self.nu]
@@ -285,6 +312,10 @@ class SimulationNode(Node):
     # step the simulation
     def step_simulation(self):
 
+        # release the delayed commands that are due (oldest first, so the newest due one wins)
+        while self._cmd_queue and self._cmd_queue[0][0] <= self._step_count:
+            self.apply_command(self._cmd_queue.popleft()[1])
+
         # compute the torque to apply
         if self.command_received == True:
             tau = self.compute_torque()
@@ -294,6 +325,7 @@ class SimulationNode(Node):
 
         # step the simulation
         mujoco.mj_step(self.mj_model, self.mj_data)
+        self._step_count += 1
 
         # inject sensor noise (newer mujoco dropped the sensornoise, so we
         # apply the per-sensor std devs from XML noise="..." attrs by hand)
@@ -345,8 +377,8 @@ class SimulationNode(Node):
                 f"Sim time:    {self.mj_data.time:.2f}s\n"
                 f"Real time:   {real_elapsed:.2f}s\n"
                 f"RTR:         {rtr:.2f}\n"
-                f"Sim rate:    {SIM_HZ:.0f} Hz\n"
-                f"Render rate: {RENDER_HZ:.0f} Hz" + cam_line,
+                f"Sim rate:    {self.sim_hz:.0f} Hz\n"
+                f"Render rate: {RENDER_HZ:.0f} Hz" + self._delay_line + cam_line,
                 "",
             ))
 
@@ -394,10 +426,28 @@ def main(args=None):
         action='store_true',
         help='Enable per-sensor Gaussian noise injection. Noise is off by default.'
     )
+    # delay every received command before applying it (off by default)
+    parser.add_argument(
+        '--delay',
+        type=int,
+        default=0,
+        help='Command delay in whole milliseconds (default 0). Example: "--delay 20".'
+    )
+    # physics rate
+    parser.add_argument(
+        '--sim-hz',
+        type=int,
+        default=500,
+        help='Simulation rate in Hz (default 500). Example: "--sim-hz 1000".'
+    )
     args = parser.parse_args()
+    if args.delay < 0:
+        parser.error("--delay must be zero or positive.")
+    if args.sim_hz <= 0:
+        parser.error("--sim-hz must be a positive integer.")
 
     # create the simulation node
-    sim_node = SimulationNode(args.config, apply_noise=args.noise)
+    sim_node = SimulationNode(args.config, apply_noise=args.noise, delay_ms=args.delay, sim_hz=args.sim_hz)
 
     # run normally
     try:
