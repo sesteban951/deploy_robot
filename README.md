@@ -46,6 +46,12 @@ make uninstall   # remove the deploy env (run `conda deactivate` first)
 After the `conda` environment is set up, install the Unitree SDK inside the conda environment.
 Make sure you are in the `deploy` conda environment by using `conda activate deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
 
+## tmux (optional)
+The launch shortcuts in `deploy/deploy/` open all the terminals for you in one `tmux` session. Install it if you want to use them:
+```bash
+sudo apt install tmux
+```
+
 ## Policy
 Download the trained `.onnx` policy from WandB and place it in the `policy/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/` to its filename.
 
