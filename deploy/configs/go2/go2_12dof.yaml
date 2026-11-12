@@ -1,0 +1,8 @@
+xml_path: "go2/go2_scene.xml"
+
+# home positions (sim spawns here), joint order: FL, FR, RL, RR, each hip, thigh, calf
+home_base_pos: [0, 0, 0.32, 1, 0, 0, 0]
+home_joint_pos: [-0.1, 0.9, -1.8,
+                  0.1, 0.9, -1.8,
+                 -0.1, 0.9, -1.8,
+                  0.1, 0.9, -1.8]
