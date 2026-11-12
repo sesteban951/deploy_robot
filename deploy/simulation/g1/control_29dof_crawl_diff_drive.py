@@ -1,6 +1,6 @@
 ##
 #
-# Control node for 29DoF MjLab velocity tracking robot.
+# Control node for 29DoF MjLab differential-drive crawling (G1-Crawling-DiffDrive).
 #
 ##
 
@@ -27,7 +27,6 @@ sys.path.append(ROOT_DIR)
 # custom imports
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
-from utils.experiment_utils import publish_experiment_info
 
 
 ############################################################################
@@ -36,7 +35,14 @@ from utils.experiment_utils import publish_experiment_info
 
 class ControlNode(Node):
     """
-    Asynchronous control node that runs the policy and sends actions to the simulation.
+    Asynchronous control node for the differential-drive crawling policy
+    (G1-Crawling-DiffDrive).
+
+    The actor sees proprioception, a free-running gait phase clock, a commanded
+    planar twist [vx, vy, wz], and projected gravity. No reference motion is loaded
+    at runtime. The command is pure differential-drive -- translate XOR rotate:
+    idle [0,0,0], straight [vx,0,0], or turn-in-place [0,0,wz]; never a mixed arc
+    and never lateral (vy). A zero twist is the trained idle/stop pose.
     """
 
     def __init__(self, config_path: str):
@@ -48,9 +54,6 @@ class ControlNode(Node):
 
         # load params
         self.init_policy()
-
-        # broadcast which experiment is running so the logger can record it
-        self.experiment_info_pub = publish_experiment_info(self, config_path, self.config, self.policy)
 
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
@@ -65,17 +68,21 @@ class ControlNode(Node):
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
         # sensor state
-        self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
-        self.omega = np.zeros(3)
+        self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # pelvis (w, x, y, z)
+        self.omega = np.zeros(3)                      # pelvis gyro (base_ang_vel)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.sim_time = 0.0
 
-        # initialize command
+        # joystick command [vx, vy, wz] + connection flag
         self.cmd = np.zeros(3)
+        self.joystick_connected = False
 
         # initialize the action
         self.action = np.zeros(self.act_size)
+
+        # free-running gait phase clock (integer frame index, wraps at T)
+        self.phase_step = 0
 
         print("Control node initialized.")
 
@@ -89,23 +96,20 @@ class ControlNode(Node):
         # open the config file and load it (accept the name with or without the .yaml extension)
         if not config_path.endswith(".yaml"):
             config_path += ".yaml"
-        config_path_full = ROOT_DIR + "/deploy/configs/" + config_path
+        config_path_full = ROOT_DIR + "/deploy/configs/g1/" + config_path
         with open(config_path_full, 'r') as f:
             config = yaml.safe_load(f)
 
         print(f"Loaded config from [{config_path_full}].")
 
         return config
-    
+
     # initialize the policy
     def init_policy(self):
 
         # default_joint_pos and action_scale are loaded from the policy metadata
         self.qpos_joints_default = self.config.get('default_joint_pos')
-
-        # scaling params
         self.action_scale = self.config.get('action_scale')
-        self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
 
         # PD gains
         self.Kp = np.array(self.config["Kp"], dtype=np.float32)
@@ -114,14 +118,18 @@ class ControlNode(Node):
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
 
-        # gait phase params
-        self.gait_period = self.config["gait_period"]
-        self.stand_cmd_threshold = self.config["stand_cmd_threshold"]
+        # crawl gait + diff-drive twist command params
+        self.motion_period_frames = int(self.config["motion_period_frames"])  # T
+        self.default_twist = np.array(self.config["default_twist"], dtype=np.float32)
+        self.twist_scale = np.array(self.config["twist_scale"], dtype=np.float32)
+        self.twist_clip_lo = np.array(self.config["twist_clip_lo"], dtype=np.float32)
+        self.twist_clip_hi = np.array(self.config["twist_clip_hi"], dtype=np.float32)
+        self.twist_deadband = np.array(self.config["twist_deadband"], dtype=np.float32)
 
         # import the policy
         policy_path = self.config['policy_path']
         policy_path_full = ROOT_DIR + "/policy/" + policy_path
-        
+
         # load the policy
         self.policy = Policy(policy_path_full)
 
@@ -144,24 +152,19 @@ class ControlNode(Node):
         print(f"    Input size: {self.obs_size}")
         print(f"    Output size: {self.act_size}")
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
+        print(f"    Gait period: {self.motion_period_frames} frames "
+              f"({self.motion_period_frames * self.ctrl_dt:.2f} s)")
 
 
     #################################################################
     # HELPERS
     #################################################################
 
-    # command from the command node
+    # joystick command: [is_connected, vx, vy, omega]
     def cmd_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        
-        # joystick
-        joystick_is_connected = (data[0] > 0.5)
-        vx_cmd = data[1]
-        vy_cmd = data[2]
-        omega_cmd = data[3]
-
-        # update the command with the scaling
-        self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
+        self.joystick_connected = (data[0] > 0.5)
+        self.cmd = np.array([data[1], data[2], data[3]], dtype=np.float32)
 
     # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def pelvis_imu_sensor_callback(self, msg):
@@ -180,37 +183,54 @@ class ControlNode(Node):
     def time_callback(self, msg):
         self.sim_time = msg.data
 
+    # commanded planar twist [vx, vy, wz] -- pure differential drive (translate XOR rotate)
+    def commanded_twist(self):
+        # autonomous forward crawl when no joystick is connected (for viewing)
+        if not self.joystick_connected:
+            return self.default_twist
+
+        # map the sticks: forward -> vx, turn -> wz (vy is unused for diff drive)
+        fwd  = self.cmd[0] * self.twist_scale[0]
+        turn = self.cmd[2] * self.twist_scale[2]
+        twist = np.zeros(3, dtype=np.float32)
+
+        # deadband: small sticks -> idle stop pose (also skips the sub-min-magnitude dead zone)
+        if abs(fwd) < self.twist_deadband[0] and abs(turn) < self.twist_deadband[2]:
+            return twist
+
+        # XOR by dominant axis: a pure turn OR a pure straight, never a mixed arc
+        if abs(turn) >= abs(fwd):
+            twist[2] = np.clip(turn, self.twist_clip_lo[2], self.twist_clip_hi[2])
+        else:
+            twist[0] = np.clip(fwd, self.twist_clip_lo[0], self.twist_clip_hi[0])
+        return twist.astype(np.float32)
+
     # build the observation vector for the policy
     def build_observation(self):
 
-        # base orientation state
-        gravity_orientation = get_gravity_orientation(self.quat)
-
-        # joint position and velocity errors
-        qj = (self.qpos_joints - self.qpos_joints_default)
+        # proprioception (joint pos relative to default, joint vel)
+        qj = self.qpos_joints - self.qpos_joints_default
         dqj = self.qvel_joints
-        
-        # gait phase clock (zeroed when standing)
-        phase = (self.sim_time % self.gait_period) / self.gait_period
-        two_pi = 2.0 * math.pi
-        gait_phase = np.array([
-            math.sin(two_pi * phase),
-            math.cos(two_pi * phase),
-        ], dtype=np.float32)
-        if np.linalg.norm(self.cmd) < self.stand_cmd_threshold:
-            gait_phase[:] = 0.0
 
-        # build the observation vector
-        # ['base_ang_vel', 'projected_gravity', 'command', 'phase', 'joint_pos', 'joint_vel', 'actions']
-        n = len(qj)
-        obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[0:3]              = self.omega
-        obs[3:6]              = gravity_orientation
-        obs[6:9]              = self.cmd * self.cmd_scale
-        obs[9:11]             = gait_phase
-        obs[11:11+n]          = qj
-        obs[11+n:11+2*n]      = dqj
-        obs[11+2*n:11+3*n]    = self.action
+        # commanded twist
+        twist = self.commanded_twist()
+
+        # gait phase clock: (sin, cos) of 2*pi*t/T, matching training (time_steps / T)
+        phase = self.phase_step / self.motion_period_frames
+        ang = 2.0 * math.pi * phase
+        motion_phase = np.array([math.sin(ang), math.cos(ang)], dtype=np.float32)
+
+        # projected gravity from the pelvis IMU (roll/pitch; yaw-invariant)
+        proj_grav = get_gravity_orientation(self.quat).astype(np.float32)
+
+        # concatenate in the trained order (from the policy's observation_names metadata):
+        # base_ang_vel(3), joint_pos(29), joint_vel(29), actions(29),
+        # commanded_twist(3), motion_phase(2), projected_gravity(3) = 98
+        obs = np.concatenate([
+            self.omega,
+            qj, dqj, self.action,
+            twist, motion_phase, proj_grav,
+        ]).astype(np.float32)
 
         return obs
 
@@ -220,8 +240,8 @@ class ControlNode(Node):
         # get the current observation
         obs = self.build_observation()
 
-        # target joint positions (PD control)
-        self.action = self.policy.inference(obs)
+        # target joint positions (PD control); time_step feeds the gait frame index
+        self.action = self.policy.inference(obs, time_step=self.phase_step)
 
         # build the command: [q_des, dq_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
@@ -232,6 +252,9 @@ class ControlNode(Node):
         cmd_msg = Float32MultiArray()
         cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
+
+        # advance the free-running gait clock
+        self.phase_step = (self.phase_step + 1) % self.motion_period_frames
 
 
 ############################################################################
@@ -245,25 +268,25 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Simulation Node using Mujoco.'
+        description='Asynchronous Control Node for the MjLab differential-drive crawling policy.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the Mujoco config yaml file. Example: "g1_29dof_vel.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof_crawl_diff_drive.yaml".'
     )
     args = parser.parse_args()
 
-    # create the simulation node
+    # create the control node
     ctrl_node = ControlNode(args.config)
 
     # execute the policy
     try:
         # spin the node
         rclpy.spin(ctrl_node)
-    
+
     except KeyboardInterrupt:
         pass
 

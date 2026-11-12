@@ -53,7 +53,7 @@ sudo apt install tmux
 ```
 
 ## Policy
-Download the trained `.onnx` policy from WandB and place it in the `policy/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/` to its filename.
+Download the trained `.onnx` policy from WandB and place it in the `policy/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/<robot>/` to its filename.
 
 ---
 
@@ -68,11 +68,11 @@ python deploy/joystick/joystick_ros.py
 ```
 Terminal 2:
 ```bash
-python deploy/simulation/<control_script>.py --config <your-config-file>.yaml
+python deploy/simulation/<robot>/<control_script>.py --config <your-config-file>.yaml
 ```
 Terminal 3:
 ```bash
-python deploy/simulation/simulation.py --config <your-config-file>.yaml
+python deploy/simulation/<robot>/simulation.py --config <your-config-file>.yaml
 ```
 Terminal 4 (optional, to log data to `logs/simulation/`):
 ```bash

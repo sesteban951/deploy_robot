@@ -1,12 +1,14 @@
 ##
 #
-# Control node for 29DoF MjLab UNICYCLE upright WALKING with an LSTM actor (G1-Walk-Unicycle-LSTM).
+# Control node for 29DoF MjLab UNICYCLE upright WALKING with an OBSERVATION HISTORY
+# (G1-Walk-Unicycle-History).
 #
 ##
 
 
 # standard imports
 import argparse
+from collections import deque
 
 # other imports
 import math
@@ -39,36 +41,36 @@ from utils.locomotion.jog_modes import JogTwistCommander
 
 class ControlNode(Node):
     """
-    Asynchronous control node for the unicycle upright walking policy with an LSTM actor
-    (G1-Walk-Unicycle-LSTM).
+    Asynchronous control node for the unicycle upright walking policy with an observation
+    history (G1-Walk-Unicycle-History).
 
-    The mjlab env is G1-Walk-Unicycle verbatim; only the actor differs: 98 -> LSTM(128) ->
-    256 -> 128 -> 29, fed ONE frame per step (no stacked history) and carrying its own
-    (h, c) state across the episode. The exported ONNX takes (obs, h_in, c_in) and returns
-    (actions, h_out, c_out); utils/policy.py feeds the carried state back each call. The
-    state starts at zero, as every training episode does, and is zeroed again when this node
-    starts -- a sim session is one episode.
+    Everything the plain walk node does (control_29dof_walk_unicycle.py): the same joystick
+    shaping through utils/locomotion/jog_modes.py, the same free-running gait clock blanked at
+    idle, the same zero-action = standing idle pose. The ONE difference is the observation: the
+    actor's dynamics terms are stacked over the last H control steps (H = 5 @ 50 Hz = 100 ms,
+    the current frame included) so the reference-free policy can read its speed off the stance
+    leg, tell which foot is planted and see the actuator delay (mjlab
+    tasks/walk_unicycle/config/g1_history/env_cfgs.py). Stacked: base_ang_vel, joint_pos,
+    joint_vel, actions, projected_gravity. NOT stacked (one frame, as before): the commanded
+    twist (piecewise constant) and the motion phase (a known ramp).
 
-    Otherwise the walking sibling of the jog controller, and the same observation contract as the walk /
-    jog / crawl library policies: proprioception (pelvis gyro, joint pos relative to the default =
-    standing idle pose, joint vel, last action), a gait phase clock (T = 70 frames = 1.4 s, the
-    walk stride) that is BLANKED to (0, 0) while the commanded twist is zero, the commanded planar
-    twist [vx, vy, wz], and projected gravity from the pelvis IMU. No reference motion is loaded
-    at runtime; a zero action is the standing idle pose (the zero-twist stop clip bundled inside
-    the policy).
-
-    The joystick is shaped by utils/locomotion/jog_modes.py: drive stick in the deadband ->
-    idle (stand); otherwise its sign picks forward / backward and its live range maps onto the
-    trained band -- forward vx 0.50..0.90, backward -0.50..-0.80 -- while the steer stick maps
-    onto wz -0.50..0.50 AT THE SAME TIME (unicycle: the library is a (vx, wz) box, so the
-    sticks never compete and there is no XOR, hysteresis or dwell). With the drive stick
-    PARKED and the steer stick live it pivots in place instead: vx = 0, |wz| 0.50..1.50, the
-    library's turn-in-place regime. Unlike the jog the two yaw bands MEET at 0.5, so a turn is
-    demonstrated at every rate from straight to the fastest pivot. Never vy, and nothing in the
-    gap 0 < |vx| < 0.5 (no clips there).
+    The layout is the one mjlab's ObservationManager produces with flatten_history_dim=True:
+    TERM-MAJOR, and inside each stacked term the H frames run OLDEST -> NEWEST (CircularBuffer
+    .buffer is chronological, reshaped row-major), so e.g. joint_pos occupies 5 x 29 = 145 slots
+    as [q(t-4), q(t-3), q(t-2), q(t-1), q(t)]. The window advances exactly once per control tick
+    (mjlab appends once per env step) and, on the first tick, every slot is BACKFILLED with the
+    first frame -- what mjlab does on the first append after an episode reset -- so the policy
+    never sees a zero-padded or half-filled window.
 
     No joystick -> default_twist (an autonomous walk, sim only; a hardware node must stand).
     """
+
+    # the actor terms mjlab stacks (HISTORY_TERMS in the env cfg); the others stay at one frame
+    HISTORY_TERMS = ("base_ang_vel", "joint_pos", "joint_vel", "actions", "projected_gravity")
+
+    # the trained term order (the policy's observation_names metadata)
+    OBS_TERMS = ("base_ang_vel", "joint_pos", "joint_vel", "actions",
+                 "commanded_twist", "motion_phase", "projected_gravity")
 
     def __init__(self, config_path: str):
 
@@ -117,6 +119,11 @@ class ControlNode(Node):
         # derived from it is blanked at idle (see build_observation).
         self.phase_step = 0
 
+        # observation history: one window per stacked term holding its last H frames, oldest ->
+        # newest (mjlab CircularBuffer). Empty until the first control tick, which backfills every
+        # slot with the first frame exactly as mjlab does on an episode reset.
+        self.history = {name: deque(maxlen=self.history_length) for name in self.HISTORY_TERMS}
+
         print("Control node initialized.")
 
 
@@ -129,7 +136,7 @@ class ControlNode(Node):
         # open the config file and load it (accept the name with or without the .yaml extension)
         if not config_path.endswith(".yaml"):
             config_path += ".yaml"
-        config_path_full = ROOT_DIR + "/deploy/configs/" + config_path
+        config_path_full = ROOT_DIR + "/deploy/configs/g1/" + config_path
         with open(config_path_full, 'r') as f:
             config = yaml.safe_load(f)
 
@@ -156,17 +163,17 @@ class ControlNode(Node):
         self.default_twist = np.array(self.config["default_twist"], dtype=np.float32)
         self.commander = JogTwistCommander(self.config)
 
+        # observation history depth H (frames, the current one included); cross-checked against
+        # the policy metadata below
+        self.history_length = int(self.config["history_length"])
+        assert self.history_length >= 1, f"history_length must be >= 1, got {self.history_length}."
+
         # import the policy
         policy_path = self.config['policy_path']
         policy_path_full = ROOT_DIR + "/policy/" + policy_path
 
         # load the policy
         self.policy = Policy(policy_path_full)
-
-        # this node is for the recurrent actor; a feed-forward export means the wrong config
-        assert self.policy.is_recurrent, \
-            f"{policy_path} has no recurrent state inputs (h_in/c_in); use control_29dof_walk_unicycle.py for MLP policies."
-        self.policy.reset()   # zero (h, c): an episode start, as in training
 
         # alias for convenience
         self.obs_size = self.policy.input_size
@@ -182,11 +189,30 @@ class ControlNode(Node):
         for _k in ('default_joint_pos', 'action_scale'):
             print(f"    {_k}: from {'policy metadata' if _k in self.policy.metadata else 'yaml config'}")
 
-        # the observation this node builds must be the one the policy was trained on:
-        # base_ang_vel(3) + joint_pos(n) + joint_vel(n) + actions(n) + twist(3) + phase(2) + gravity(3)
-        expected_obs = 3 + 3 * self.act_size + 3 + 2 + 3
+        # the observation this node builds must be the one the policy was trained on. Term-major,
+        # every stacked term H frames deep (flattened oldest -> newest), twist and phase one frame:
+        # base_ang_vel(3H) + joint_pos(nH) + joint_vel(nH) + actions(nH) + twist(3) + phase(2) + gravity(3H)
+        H = self.history_length
+        expected_obs = 3 * H + 3 * self.act_size * H + 3 + 2 + 3 * H
         assert self.obs_size == expected_obs, \
-            f"policy expects a {self.obs_size}-wide observation, this node builds {expected_obs}."
+            f"policy expects a {self.obs_size}-wide observation, this node builds {expected_obs} " \
+            f"(history_length = {H})."
+
+        # the policy metadata records the term order and how deep each term was stacked: the
+        # order must be the one hard-wired here and every depth must be H on the stacked terms and
+        # 0 (one frame) on the rest. A wrong depth on one term can still add up to the right total
+        # width (e.g. stacking the twist instead of the gyro), so the size check alone is not enough.
+        obs_names = self.policy.metadata.get('observation_names')
+        hist_lens = self.policy.metadata.get('observation_terms_history_length')
+        if obs_names is not None:
+            assert list(obs_names) == list(self.OBS_TERMS), \
+                f"policy observation order {list(obs_names)} != this node's {list(self.OBS_TERMS)}."
+        if hist_lens is not None:
+            for name, h in zip(self.OBS_TERMS, np.atleast_1d(hist_lens)):
+                want = H if name in self.HISTORY_TERMS else 0
+                assert int(h) == want, \
+                    f"policy stacks '{name}' over {int(h)} frames, this node uses {want} " \
+                    f"(history_length = {H}; 0 = one frame)."
 
         # the yaml's home pose must be the policy's default pose: the sim spawns / hardware
         # ramps to home_joint_pos, and a zero action holds default_joint_pos -- they must agree
@@ -206,10 +232,11 @@ class ControlNode(Node):
         print(f"    Policy type: {self.policy._policy_type}")
         print(f"    Input size: {self.obs_size}")
         print(f"    Output size: {self.act_size}")
-        print(f"    Recurrent state: " + ", ".join(f"{n} {s}" for n, s in self.policy._state_shapes.items()))
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
         print(f"    Gait period: {self.motion_period_frames} frames "
               f"({self.motion_period_frames * self.ctrl_dt:.2f} s)")
+        print(f"    Observation history: {H} frames ({H * self.ctrl_dt * 1e3:.0f} ms) on "
+              f"{list(self.HISTORY_TERMS)}; one frame on the rest")
         print(f"    Joystick: {self.commander.describe()}")
         print(f"    No joystick -> autonomous twist {self.default_twist.tolist()} (sim only)")
 
@@ -252,7 +279,8 @@ class ControlNode(Node):
         self.mode, twist = self.commander.update(fwd_stick=self.cmd[0], turn_stick=self.cmd[2])
         return twist
 
-    # build the observation vector for the policy
+    # build the observation vector for the policy. Call it ONCE per control tick: it advances the
+    # history window (mjlab appends once per env step).
     def build_observation(self):
 
         # proprioception (joint pos relative to default, joint vel)
@@ -281,13 +309,37 @@ class ControlNode(Node):
         # projected gravity from the pelvis IMU (roll/pitch; yaw-invariant)
         proj_grav = get_gravity_orientation(self.quat).astype(np.float32)
 
-        # concatenate in the trained order (from the policy's observation_names metadata):
-        # base_ang_vel(3), joint_pos(29), joint_vel(29), actions(29),
-        # commanded_twist(3), motion_phase(2), projected_gravity(3) = 98
+        # push this tick's frame of every stacked term into its window. self.action is still the
+        # PREVIOUS tick's action here (inference runs after this), so the 'actions' window is
+        # [a(t-H), ..., a(t-1)], as in training. The first tick backfills every slot with the first
+        # frame -- mjlab CircularBuffer's first append after a reset -- so there is never a
+        # zero-padded window. Snapshot each frame: the sensor callbacks replace the arrays.
+        frames = {
+            "base_ang_vel": self.omega,
+            "joint_pos": qj,
+            "joint_vel": dqj,
+            "actions": self.action,
+            "projected_gravity": proj_grav,
+        }
+        for name, frame in frames.items():
+            frame = np.array(frame, dtype=np.float32)
+            window = self.history[name]
+            if len(window) == 0:
+                window.extend(frame.copy() for _ in range(self.history_length))
+            else:
+                window.append(frame)
+
+        # each stacked term flattened oldest -> newest ((H, dim) row-major), then the terms in the
+        # trained order (from the policy's observation_names metadata), H = 5, n = 29:
+        # base_ang_vel(15), joint_pos(145), joint_vel(145), actions(145),
+        # commanded_twist(3), motion_phase(2), projected_gravity(15) = 470
         obs = np.concatenate([
-            self.omega,
-            qj, dqj, self.action,
-            twist, motion_phase, proj_grav,
+            np.concatenate(self.history["base_ang_vel"]),
+            np.concatenate(self.history["joint_pos"]),
+            np.concatenate(self.history["joint_vel"]),
+            np.concatenate(self.history["actions"]),
+            twist, motion_phase,
+            np.concatenate(self.history["projected_gravity"]),
         ]).astype(np.float32)
 
         return obs, twist
@@ -295,7 +347,7 @@ class ControlNode(Node):
     # control published at the control frequency
     def control_callback(self):
 
-        # get the current observation
+        # get the current observation (advances the history window)
         obs, twist = self.build_observation()
 
         # announce mode changes (idle / forward / backward / pivot) with the twist
@@ -331,14 +383,14 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Control Node for the MjLab unicycle walking LSTM policy.'
+        description='Asynchronous Control Node for the MjLab unicycle walking policy with an observation history.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the config yaml file. Example: "g1_29dof_walk_unicycle_lstm.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof_walk_unicycle_history.yaml".'
     )
     args = parser.parse_args()
 

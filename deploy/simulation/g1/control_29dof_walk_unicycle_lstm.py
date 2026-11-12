@@ -1,6 +1,6 @@
 ##
 #
-# Control node for 29DoF MjLab UNICYCLE upright JOGGING (G1-Jog-Unicycle).
+# Control node for 29DoF MjLab UNICYCLE upright WALKING with an LSTM actor (G1-Walk-Unicycle-LSTM).
 #
 ##
 
@@ -28,6 +28,8 @@ sys.path.append(ROOT_DIR)
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
 from utils.experiment_utils import publish_experiment_info
+# the jog's joystick shaper, imported unchanged (as mjlab imports the jog's sampler): nothing in
+# it is gait-specific, the walk only changes the bands in the yaml
 from utils.locomotion.jog_modes import JogTwistCommander
 
 
@@ -37,25 +39,35 @@ from utils.locomotion.jog_modes import JogTwistCommander
 
 class ControlNode(Node):
     """
-    Asynchronous control node for the unicycle upright jogging policy (G1-Jog-Unicycle).
+    Asynchronous control node for the unicycle upright walking policy with an LSTM actor
+    (G1-Walk-Unicycle-LSTM).
 
-    Same observation contract as the walk / crawl library policies: proprioception (pelvis
-    gyro, joint pos relative to the default = standing idle pose, joint vel, last action), a
-    gait phase clock (T = 43 frames = 0.86 s, the jog stride) that is BLANKED to (0, 0) while
-    the commanded twist is zero, the commanded planar twist [vx, vy, wz], and projected
-    gravity from the pelvis IMU. No reference motion is loaded at runtime; a zero action is
-    the standing idle pose (the zero-twist stop clip bundled inside the policy).
+    The mjlab env is G1-Walk-Unicycle verbatim; only the actor differs: 98 -> LSTM(128) ->
+    256 -> 128 -> 29, fed ONE frame per step (no stacked history) and carrying its own
+    (h, c) state across the episode. The exported ONNX takes (obs, h_in, c_in) and returns
+    (actions, h_out, c_out); utils/policy.py feeds the carried state back each call. The
+    state starts at zero, as every training episode does, and is zeroed again when this node
+    starts -- a sim session is one episode.
+
+    Otherwise the walking sibling of the jog controller, and the same observation contract as the walk /
+    jog / crawl library policies: proprioception (pelvis gyro, joint pos relative to the default =
+    standing idle pose, joint vel, last action), a gait phase clock (T = 70 frames = 1.4 s, the
+    walk stride) that is BLANKED to (0, 0) while the commanded twist is zero, the commanded planar
+    twist [vx, vy, wz], and projected gravity from the pelvis IMU. No reference motion is loaded
+    at runtime; a zero action is the standing idle pose (the zero-twist stop clip bundled inside
+    the policy).
 
     The joystick is shaped by utils/locomotion/jog_modes.py: drive stick in the deadband ->
     idle (stand); otherwise its sign picks forward / backward and its live range maps onto the
-    trained band -- forward vx 0.50..1.50, backward -0.50..-1.00 -- while the steer stick maps
+    trained band -- forward vx 0.50..0.90, backward -0.50..-0.80 -- while the steer stick maps
     onto wz -0.50..0.50 AT THE SAME TIME (unicycle: the library is a (vx, wz) box, so the
     sticks never compete and there is no XOR, hysteresis or dwell). With the drive stick
-    PARKED and the steer stick live it pivots in place instead: vx = 0, |wz| 1.00..2.00, the
-    library's separate turn-in-place regime. Never vy, nothing in the gap 0 < |vx| < 0.5, and
-    nothing between the arcs' |wz| = 0.5 and the pivots' 1.0 (no clips there).
+    PARKED and the steer stick live it pivots in place instead: vx = 0, |wz| 0.50..1.50, the
+    library's turn-in-place regime. Unlike the jog the two yaw bands MEET at 0.5, so a turn is
+    demonstrated at every rate from straight to the fastest pivot. Never vy, and nothing in the
+    gap 0 < |vx| < 0.5 (no clips there).
 
-    No joystick -> default_twist (an autonomous jog, sim only; a hardware node must stand).
+    No joystick -> default_twist (an autonomous walk, sim only; a hardware node must stand).
     """
 
     def __init__(self, config_path: str):
@@ -94,7 +106,7 @@ class ControlNode(Node):
         self.cmd = np.zeros(3)
         self.joystick_connected = False
 
-        # active mode (idle / forward / backward) for logging
+        # active mode (idle / forward / backward / pivot) for logging
         self.mode = "idle"
         self._last_mode = None
 
@@ -117,7 +129,7 @@ class ControlNode(Node):
         # open the config file and load it (accept the name with or without the .yaml extension)
         if not config_path.endswith(".yaml"):
             config_path += ".yaml"
-        config_path_full = ROOT_DIR + "/deploy/configs/" + config_path
+        config_path_full = ROOT_DIR + "/deploy/configs/g1/" + config_path
         with open(config_path_full, 'r') as f:
             config = yaml.safe_load(f)
 
@@ -139,7 +151,7 @@ class ControlNode(Node):
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
 
-        # jog gait clock + joystick shaping (utils/locomotion/jog_modes.py)
+        # walk gait clock + joystick shaping (utils/locomotion/jog_modes.py)
         self.motion_period_frames = int(self.config["motion_period_frames"])  # T
         self.default_twist = np.array(self.config["default_twist"], dtype=np.float32)
         self.commander = JogTwistCommander(self.config)
@@ -150,6 +162,11 @@ class ControlNode(Node):
 
         # load the policy
         self.policy = Policy(policy_path_full)
+
+        # this node is for the recurrent actor; a feed-forward export means the wrong config
+        assert self.policy.is_recurrent, \
+            f"{policy_path} has no recurrent state inputs (h_in/c_in); use control_29dof_walk_unicycle.py for MLP policies."
+        self.policy.reset()   # zero (h, c): an episode start, as in training
 
         # alias for convenience
         self.obs_size = self.policy.input_size
@@ -189,6 +206,7 @@ class ControlNode(Node):
         print(f"    Policy type: {self.policy._policy_type}")
         print(f"    Input size: {self.obs_size}")
         print(f"    Output size: {self.act_size}")
+        print(f"    Recurrent state: " + ", ".join(f"{n} {s}" for n, s in self.policy._state_shapes.items()))
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
         print(f"    Gait period: {self.motion_period_frames} frames "
               f"({self.motion_period_frames * self.ctrl_dt:.2f} s)")
@@ -226,7 +244,7 @@ class ControlNode(Node):
     # commanded planar twist [vx, vy, wz]: left stick Y = drive (forward/back), right stick X =
     # steer (left +), both at once. The lateral stick (vy) is ignored: the library has no vy.
     def commanded_twist(self):
-        # autonomous jog when no joystick is connected (for viewing in sim)
+        # autonomous walk when no joystick is connected (for viewing in sim)
         if not self.joystick_connected:
             self.mode = "forward" if self.default_twist[0] > 0 else "idle"
             return self.default_twist
@@ -280,7 +298,7 @@ class ControlNode(Node):
         # get the current observation
         obs, twist = self.build_observation()
 
-        # announce mode changes (idle / forward / backward) with the twist
+        # announce mode changes (idle / forward / backward / pivot) with the twist
         if self.mode != self._last_mode:
             print(f"[mode] {self._last_mode} -> {self.mode}  twist vx {twist[0]:+.2f} wz {twist[2]:+.2f}")
             self._last_mode = self.mode
@@ -313,14 +331,14 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Asynchronous Control Node for the MjLab unicycle jogging policy.'
+        description='Asynchronous Control Node for the MjLab unicycle walking LSTM policy.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the config yaml file. Example: "g1_29dof_jog_unicycle.yaml".'
+        help='Path to the config yaml file. Example: "g1_29dof_walk_unicycle_lstm.yaml".'
     )
     args = parser.parse_args()
 

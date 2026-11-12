@@ -6,6 +6,7 @@
 
 # standard imports
 import json
+import glob
 import os
 
 # ROS imports
@@ -39,11 +40,11 @@ def build_experiment_info(config_name, config, policy=None):
     # verbatim copy of the config yaml -> the run stays reproducible even if the
     # yaml file is later edited. fall back to the parsed dict if the file is gone.
     root = os.getenv("DEPLOY_ROOT_DIR", "")
-    cfg_file = os.path.join(root, "deploy", "configs", name + ".yaml")
+    cfg_files = glob.glob(os.path.join(root, "deploy", "configs", "*", name + ".yaml"))
     try:
-        with open(cfg_file, "r") as f:
+        with open(cfg_files[0], "r") as f:
             info["config_yaml"] = f.read()
-    except OSError:
+    except (OSError, IndexError):
         if config is not None:
             info["config_yaml"] = json.dumps(config, indent=2)
 

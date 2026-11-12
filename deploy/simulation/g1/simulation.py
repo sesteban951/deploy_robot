@@ -1,6 +1,6 @@
 ##
 #
-# Simulation node using Mujoco to simulate the robot.
+# Simulation node using Mujoco to simulate the G1 robot.
 #
 ##
 
@@ -107,7 +107,7 @@ class SimulationNode(Node):
         # open the config file and load it (accept the name with or without the .yaml extension)
         if not config_path.endswith(".yaml"):
             config_path += ".yaml"
-        config_path_full = ROOT_DIR + "/deploy/configs/" + config_path
+        config_path_full = ROOT_DIR + "/deploy/configs/g1/" + config_path
         with open(config_path_full, 'r') as f:
             config = yaml.safe_load(f)
 
