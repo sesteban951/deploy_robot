@@ -14,8 +14,7 @@
 # switches n, and the frame index is remapped to the same PHASE of the new cycle, exactly as
 # mjlab's _phase_remap does in training, so the gait changes stride without a phase jump.
 #
-# Everything comes from the policy's own metadata (mjlab exports it; policy/
-# strip_motion_library.py --attach adds it to older exports):
+# Everything comes from the policy's own metadata (mjlab exports it):
 #   library_clips         [[vx, vy, wz, n_frames], ...] in mjlab's loader (filename) order
 #   twist_metric_weights  [wx, wy, wz] for the weighted-L2 nearest-clip snap
 #
@@ -39,8 +38,7 @@ class GaitLibraryClock:
     def __init__(self, policy):
         for key in ("library_clips", "twist_metric_weights"):
             assert key in policy.metadata, \
-                f"policy has no '{key}' metadata; re-export it from mjlab or attach it with " \
-                f"policy/strip_motion_library.py --attach"
+                f"policy has no '{key}' metadata; re-export it from mjlab"
 
         clips = np.asarray(policy.metadata["library_clips"], dtype=np.float64)
         assert clips.ndim == 2 and clips.shape[1] == 4, \
