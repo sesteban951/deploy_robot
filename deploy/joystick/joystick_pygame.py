@@ -106,9 +106,14 @@ class JoystickNode(Node):
         if self.joystick is None:
             # default to zero command
             is_connected  = 0.0
-            vx_cmd = 0.0
-            vy_cmd = 0.0
-            omega_cmd = 0.0
+            LS_Y = 0.0
+            LS_X = 0.0
+            RS_X = 0.0
+            RS_Y = 0.0
+            RB = 0.0
+            U_DPAD = 0.0
+            D_DPAD = 0.0
+            Y = 0.0
 
         # publish the command
         else:
@@ -118,19 +123,22 @@ class JoystickNode(Node):
             fsm_msg.data = fsm_state
             self.fsm_pub.publish(fsm_msg)
 
-            # convert the joystick state to a command message. MUST match joystick_ros.py:
-            # both publish the same deploy_robot/joystick topic and every controller reads
-            # slot 3 as wz, so a second convention here silently steers the wrong axis.
-            #   vx = left stick fore/aft, vy = left stick lateral,
-            #   wz = right stick lateral (left +)
+            # convert the joystick state to a command message
             is_connected = 1.0
-            vx_cmd = self.joystick_state.LS_Y
-            vy_cmd = self.joystick_state.LS_X
-            omega_cmd = self.joystick_state.RS_X
+            LS_Y = self.joystick_state.LS_Y
+            LS_X = self.joystick_state.LS_X
+            RS_X = self.joystick_state.RS_X
+            RS_Y = self.joystick_state.RS_Y
+            RB = float(self.joystick_state.RB)
+            U_DPAD = self.joystick_state.U_DPAD
+            D_DPAD = self.joystick_state.D_DPAD
+            Y = float(self.joystick_state.Y)
 
-        # publish the command
+        # publish the command:
+        #   [connected, LS_Y (vx), LS_X (vy), RS_X (wz), RS_Y, RB, U_DPAD, D_DPAD, Y]
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = [is_connected, vx_cmd, vy_cmd, omega_cmd]
+        cmd_msg.data = [is_connected, LS_Y, LS_X, RS_X,
+                        RS_Y, RB, U_DPAD, D_DPAD, Y]
 
         self.command_pub.publish(cmd_msg)
 
