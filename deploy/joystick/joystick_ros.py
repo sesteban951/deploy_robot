@@ -142,7 +142,7 @@ class JoystickNode(Node):
             self.is_connected = 0.0
             self.joystick_state = JoystickState()
             cmd_msg = Float32MultiArray()
-            cmd_msg.data = [0.0, 0.0, 0.0, 0.0]
+            cmd_msg.data = [0.0] * 9  # same width as a connected message
             self.command_pub.publish(cmd_msg)
             return
 
@@ -159,13 +159,21 @@ class JoystickNode(Node):
         self.fsm_pub.publish(fsm_msg)
 
         # convert the joystick state to a command message
-        vx_cmd = self.joystick_state.LS_Y
-        vy_cmd = self.joystick_state.LS_X
-        omega_cmd = self.joystick_state.RS_X
+        LS_Y = self.joystick_state.LS_Y
+        LS_X = self.joystick_state.LS_X
+        RS_X = self.joystick_state.RS_X
+        RS_Y = self.joystick_state.RS_Y
+        RB = float(self.joystick_state.RB)
+        U_DPAD = self.joystick_state.U_DPAD
+        D_DPAD = self.joystick_state.D_DPAD
+        Y = float(self.joystick_state.Y)
 
-        # publish the command
+        # publish the command:
+        #   [connected, LS_Y (vx), LS_X (vy), RS_X (wz), RS_Y, RB, U_DPAD, D_DPAD, Y]
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = [self.is_connected, vx_cmd, vy_cmd, omega_cmd]
+        cmd_msg.data = [self.is_connected, 
+                        LS_Y, LS_X, RS_X, RS_Y, 
+                        RB, U_DPAD, D_DPAD, Y]
 
         self.command_pub.publish(cmd_msg)
 
