@@ -6,6 +6,7 @@
 
 # standard imports
 import argparse
+import glob
 import time
 import numpy as np
 
@@ -26,12 +27,17 @@ if __name__ == "__main__":
 
     # parser for command line arguments
     parser = argparse.ArgumentParser(description="Replay a motion trajectory.")
-    parser.add_argument("motion", help='Motion file name inside the motions folder. Example: "srb_squat".')
+    parser.add_argument("motion", help='Motion file inside the motions folder. Example: "g1/srb_squat" or "srb_squat".')
     args = parser.parse_args()
 
-    # load the motion trajectory
+    # find the motion trajectory, either as a path or by name in the robot subfolders
     motion_path = args.motion if args.motion.endswith(".npz") else args.motion + ".npz"
     motion_path_full = ROOT_DIR + "/motions/" + motion_path
+    if not os.path.isfile(motion_path_full):
+        matches = sorted(glob.glob(ROOT_DIR + "/motions/*/" + os.path.basename(motion_path)))
+        if len(matches) != 1:
+            raise FileNotFoundError(f"Expected one motion named [{motion_path}] in motions/, found {len(matches)}: {matches}")
+        motion_path_full = matches[0]
 
     # load the npz motion trajectory
     motion_traj = np.load(motion_path_full)
@@ -65,14 +71,19 @@ if __name__ == "__main__":
     total_time = times[-1]
     print(f"Total motion time: {total_time:.2f} seconds.")
 
-    # auto-select the G1 mujoco model based on the motion's joint count
+    # auto-select the mujoco model based on the motion's joint count
     n_joints = qpos.shape[1]
-    if n_joints == 23:
+    if n_joints == 12:
+        xml_path = ROOT_DIR + "/models/go2/go2_scene.xml"
+        cam_distance = 1.5
+    elif n_joints == 23:
         xml_path = ROOT_DIR + "/models/g1/g1_23dof_scene.xml"
+        cam_distance = 3.0
     elif n_joints == 29:
         xml_path = ROOT_DIR + "/models/g1/g1_29dof_mode11_scene.xml"
+        cam_distance = 3.0
     else:
-        raise ValueError(f"Unsupported joint count {n_joints}; expected 23 or 29.")
+        raise ValueError(f"Unsupported joint count {n_joints}; expected 12 (go2), 23 or 29 (g1).")
     print(f"Using model: [{xml_path}].")
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_data = mujoco.MjData(mj_model)
@@ -94,7 +105,7 @@ if __name__ == "__main__":
     # camera settings
     viewer.cam.azimuth = 135
     viewer.cam.elevation = -20
-    viewer.cam.distance = 3.0
+    viewer.cam.distance = cam_distance
     viewer.cam.lookat[:] = body_pos_w[0, 0, :]
 
     # run the visualization
