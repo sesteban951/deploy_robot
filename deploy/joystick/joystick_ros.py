@@ -37,7 +37,7 @@ class JoystickNode(Node):
     Use joystick to publish commands to the simulation and control nodes.
     """
 
-    def __init__(self, config_path: str = None, source: str = "joy_node"):
+    def __init__(self, source: str = "joy_node", alpha: float = 0.20, use_filter: bool = True):
 
         super().__init__('joystick_node')
 
@@ -58,8 +58,13 @@ class JoystickNode(Node):
         joystick_dt = 0.02
         self.command_timer = self.create_timer(joystick_dt, self.publish_command)
 
-        print("Command node initialized.")
+        # first-order low-pass filter on the sticks: y += alpha * (x - y) every publish
+        self.alpha = alpha
+        self.use_filter = use_filter
+        self.sticks = [0.0, 0.0, 0.0, 0.0]   # filtered LS_Y, LS_X, RS_X, RS_Y
+        print(f"Stick filter: {'alpha ' + str(alpha) if use_filter else 'off'}")
 
+        print("Command node initialized.")
 
     # initialize the joystick
     def init_joystick(self):
@@ -141,6 +146,7 @@ class JoystickNode(Node):
                 print("Joystick disconnected.")
             self.is_connected = 0.0
             self.joystick_state = JoystickState()
+            self.sticks = [0.0, 0.0, 0.0, 0.0]  # restart the filter from 0
             cmd_msg = Float32MultiArray()
             cmd_msg.data = [0.0] * 9  # same width as a connected message
             self.command_pub.publish(cmd_msg)
@@ -158,11 +164,13 @@ class JoystickNode(Node):
         fsm_msg.data = fsm_state
         self.fsm_pub.publish(fsm_msg)
 
-        # convert the joystick state to a command message
-        LS_Y = self.joystick_state.LS_Y
-        LS_X = self.joystick_state.LS_X
-        RS_X = self.joystick_state.RS_X
-        RS_Y = self.joystick_state.RS_Y
+        # convert the joystick state to a command message (sticks low-pass filtered)
+        raw = [self.joystick_state.LS_Y, self.joystick_state.LS_X, self.joystick_state.RS_X, self.joystick_state.RS_Y]
+        if self.use_filter:
+            self.sticks = [y + self.alpha * (x - y) for x, y in zip(raw, self.sticks)]
+        else:
+            self.sticks = raw
+        LS_Y, LS_X, RS_X, RS_Y = self.sticks
         RB = float(self.joystick_state.RB)
         U_DPAD = self.joystick_state.U_DPAD
         D_DPAD = self.joystick_state.D_DPAD
@@ -217,18 +225,24 @@ class JoystickNode(Node):
 def main():
 
     # parse args
-    parser = argparse.ArgumentParser(description="Joystick command node.")
+    parser = argparse.ArgumentParser(description="Joystick command node with an optional stick low-pass filter.")
     parser.add_argument("--source", choices=["joy_node", "xinput_usb"], default="joy_node",
                         help="joystick driver: ROS2 joy_node (default) or the userspace XInput USB reader "
                              "(for XInput pads the kernel driver can't read, e.g. 8BitDo on the Jetson Orin)")
+    parser.add_argument('--alpha', type=float, default=0.20,
+                        help='low-pass filter alpha in (0, 1] per 20 ms publish; 1 = no smoothing (default 0.20)')
+    parser.add_argument('--no-filter', action='store_true',
+                        help='bypass the low-pass filter completely and publish the raw sticks')
     args = parser.parse_args()
+    if not 0.0 < args.alpha <= 1.0:
+        parser.error(f"--alpha must be in (0, 1], got {args.alpha}.")
 
     # init ROS2
     rclpy.init()
 
     # create joystick node (Ctrl+C while waiting for the joystick exits cleanly)
     try:
-        joystick_node = JoystickNode(source=args.source)
+        joystick_node = JoystickNode(source=args.source, alpha=args.alpha, use_filter=not args.no_filter)
     except KeyboardInterrupt:
         if rclpy.ok():
             rclpy.shutdown()
