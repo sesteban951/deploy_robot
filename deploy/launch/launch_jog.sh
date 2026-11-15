@@ -6,4 +6,4 @@ COMMANDS=(
   "python deploy/hardware/g1/hardware.py --config g1_29dof_jog_unicycle_lstm --network enp86s0 "
 )
 
-source "$(dirname "${BASH_SOURCE[0]}")/deploy.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/launch.sh"

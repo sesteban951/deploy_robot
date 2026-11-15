@@ -6,4 +6,4 @@ COMMANDS=(
   "python deploy/hardware/g1/hardware.py --config g1_29dof_crawl_diff_drive --network enp86s0 --no-max-tilt "
 )
 
-source "$(dirname "${BASH_SOURCE[0]}")/deploy.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/launch.sh"
