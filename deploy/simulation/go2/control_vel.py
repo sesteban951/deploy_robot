@@ -105,7 +105,7 @@ class ControlNode(Node):
 
         # scaling params
         self.action_scale = self.config.get('action_scale')
-        self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
+        self.cmd_range = np.array(self.config["cmd_range"], dtype=np.float32)  # (3, 2): [min, max]
 
         # PD gains
         self.Kp = np.array(self.config["Kp"], dtype=np.float32)
@@ -163,8 +163,9 @@ class ControlNode(Node):
         vy_cmd = data[2]
         omega_cmd = data[3]
 
-        # update the command with the scaling
-        self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
+        # map the stick [-1, 1] onto the command range: +1 -> max, -1 -> min
+        stick = np.clip(np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32), -1.0, 1.0)
+        self.cmd = np.where(stick >= 0.0, stick * self.cmd_range[:, 1], -stick * self.cmd_range[:, 0])
 
     # base IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def imu_sensor_callback(self, msg):
@@ -209,7 +210,7 @@ class ControlNode(Node):
         obs = np.zeros(self.obs_size, dtype=np.float32)
         obs[0:3]              = self.omega
         obs[3:6]              = gravity_orientation
-        obs[6:9]              = self.cmd * self.cmd_scale
+        obs[6:9]              = self.cmd
         obs[9:11]             = gait_phase
         obs[11:11+n]          = qj
         obs[11+n:11+2*n]      = dqj

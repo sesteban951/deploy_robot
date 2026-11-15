@@ -1,5 +1,5 @@
 xml_path: "go2/go2_scene.xml"
-policy_path: "2026-11-11_00-22-53_go2_v0_vel_tracking.onnx"
+policy_path: "2026-11-15_00-26-36_go2_vel_sweep_vx15.onnx"
 
 # hardware stand up / lie down
 #   'home' (A):  move to home_joint_pos in home_pos_duration and hold it
@@ -31,4 +31,7 @@ gait_period: 0.6
 
 stand_cmd_threshold: 0.1   # set to 0.0 for constant moving feet
 
-cmd_scale: [1.0, 0.5, 1.0]
+# stick [-1, 1] -> command range per axis [vx, vy, wz]: +1 -> max, -1 -> min
+cmd_range: [[-1.0, 1.2],
+            [-1.0, 1.0],
+            [-1.0, 1.0]]
