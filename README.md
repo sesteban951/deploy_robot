@@ -47,7 +47,7 @@ After the `conda` environment is set up, install the Unitree SDK inside the cond
 Make sure you are in the `deploy` conda environment by using `conda activate deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
 
 ## tmux (optional)
-The launch shortcuts in `deploy/deploy/` open all the terminals for you in one `tmux` session. Install it if you want to use them:
+The launch shortcuts in `deploy/launch/` (e.g. `launch_walk.sh`) open all the terminals for you in one `tmux` session. Install it if you want to use them:
 ```bash
 sudo apt install tmux
 ```
