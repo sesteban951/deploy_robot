@@ -1,5 +1,5 @@
 xml_path: "go2/go2_scene.xml"
-policy_path: "2026-11-11_00-22-53_go2_v0_vel_tracking.onnx"
+policy_path: "2026-11-15_00-26-36_go2_vel_sweep_vx15.onnx"
 
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
