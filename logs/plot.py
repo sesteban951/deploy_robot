@@ -34,9 +34,12 @@ G1_23DOF_JOINT_NAMES = [
 ]
 
 
+GO2_JOINT_NAMES = [f"{leg} {j}" for leg in ("FL", "FR", "RL", "RR") for j in ("hip", "thigh", "calf")]
+
+
 # subplot title for joint i, e.g. "13: waist roll" (falls back to the index for unknown joint counts)
 def joint_title(i: int, N: int) -> str:
-    names = {29: G1_29DOF_JOINT_NAMES, 23: G1_23DOF_JOINT_NAMES}.get(N)
+    names = {29: G1_29DOF_JOINT_NAMES, 23: G1_23DOF_JOINT_NAMES, 12: GO2_JOINT_NAMES}.get(N)
     return f"{i}: {names[i]}" if names else f"joint {i}"
 
 
@@ -176,9 +179,8 @@ def plot_log(file_path: str):
     else:
         print("[SKIP] 'command' not in log, skipping command figures.")
 
-    # IMU layout: [rpy(3), quat(4), gyro(3), acc(3)]
-    pelvis = data["pelvis_imu"]
-    torso  = data["torso_imu"]
+    # IMU layout: [rpy(3), quat(4), gyro(3), acc(3)]; G1 has pelvis + torso, Go2 a single base imu
+    imus = [(name.replace("_imu", ""), data[name]) for name in ("pelvis_imu", "torso_imu", "imu") if name in data]
 
     # joint positions, one subplot per joint (q blue on top, q_des solid black behind)
     _, axes = _joint_grid(N, f"joint positions ({N} joints)", suptitle_extra=exp_label)
@@ -210,11 +212,11 @@ def plot_log(file_path: str):
         ax.set_ylabel("[Nm]")
         ax.grid(True)
 
-    # IMUs (rows = rpy/quat/gyro/acc, columns = pelvis/torso)
-    fig, axes = plt.subplots(4, 2, figsize=(12, 9), sharex=True)
+    # IMUs (rows = rpy/quat/gyro/acc, one column per IMU)
+    fig, axes = plt.subplots(4, max(len(imus), 1), figsize=(6 * max(len(imus), 1), 9), sharex=True, squeeze=False)
     if exp_label:
         fig.suptitle(exp_label)
-    for col, (name, imu) in enumerate([("pelvis", pelvis), ("torso", torso)]):
+    for col, (name, imu) in enumerate(imus):
         axes[0, col].plot(t, imu[:, 0:3],   label=["roll", "pitch", "yaw"])
         axes[0, col].set_title(f"{name} IMU")
         axes[0, col].legend(loc="upper right")

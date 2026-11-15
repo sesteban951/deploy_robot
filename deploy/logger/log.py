@@ -35,21 +35,29 @@ from utils.experiment_utils import EXPERIMENT_INFO_TOPIC, HARDWARE_INFO_TOPIC, e
 # start logging only while in one of these FSM states (hardware mode only)
 TARGET_FSM_STATES = ("control", "track")
 
-# datasets that MUST have a publisher; logger hard-fails if any are missing at discovery
-REQUIRED_DATASETS = ["joint_state", "pelvis_imu", "torso_imu", "time"]
+# per-robot datasets:
+#   required: MUST have a publisher; logging waits until all of them are up
+#   optional: logged only if a publisher exists at discovery time (e.g. no joystick connected, no temps in sim)
+ROBOT_DATASETS = {
+    "g1": {
+        "required": ["joint_state", "pelvis_imu", "torso_imu", "time"],
+        "optional": ["command", "joystick", "motor_temp"],
+    },
+    "go2": {
+        "required": ["joint_state", "imu", "time"],
+        "optional": ["command", "joystick", "motor_temp", "foot_force", "power"],
+    },
+}
 
-# datasets logged only if a publisher exists at discovery time (e.g. no joystick connected, no temps in sim)
-OPTIONAL_DATASETS = ["command", "joystick", "motor_temp"]
-
-# all candidate datasets (topic discovery picks the active subset)
-DATASET_NAMES = REQUIRED_DATASETS + OPTIONAL_DATASETS
-
-# dataset name -> topic name (time is mode-dependent, resolved via MODE_CONFIG)
+# dataset name -> topic name, all Float32MultiArray (time is mode-dependent, resolved via MODE_CONFIG)
 DATASET_TOPICS = {
     "joint_state": "deploy_robot/joint_state",
     "motor_temp":  "deploy_robot/motor_temperature",
     "pelvis_imu":  "deploy_robot/pelvis_imu_state",
     "torso_imu":   "deploy_robot/torso_imu_state",
+    "imu":         "deploy_robot/imu_state",
+    "foot_force":  "deploy_robot/foot_force",
+    "power":       "deploy_robot/power",
     "command":     "deploy_robot/command",
     "joystick":    "deploy_robot/joystick",
 }
@@ -79,12 +87,15 @@ class LogNode(Node):
     them to an HDF5 file via utils.logger.Logger.
     """
 
-    def __init__(self, mode: str, filename: str, log_freq: float, dump_period: float):
+    def __init__(self, mode: str, robot: str, filename: str, log_freq: float, dump_period: float):
 
         super().__init__('log_node')
 
         self.mode = mode
         self.cfg = MODE_CONFIG[mode]
+        self.robot = robot
+        self.required = ROBOT_DATASETS[robot]["required"]
+        self.optional = ROBOT_DATASETS[robot]["optional"]
         log_period = 1.0 / log_freq
 
         # current FSM state (only used in hardware mode)
@@ -103,14 +114,14 @@ class LogNode(Node):
         self._last_discovery_attempt = 0.0
         self._last_missing_key: tuple = ()
 
-        # ROS subscribers
-        self.joint_sub      = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state',      self.joint_callback,       5)
-        self.motor_temp_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/motor_temperature', self.motor_temp_callback, 5)
-        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback,  5)
-        self.torso_imu_sub  = self.create_subscription(Float32MultiArray, 'deploy_robot/torso_imu_state',  self.torso_imu_callback,   5)
-        self.command_sub    = self.create_subscription(Float32MultiArray, 'deploy_robot/command',          self.command_callback,     5)
-        self.joystick_sub   = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick',         self.joystick_callback,    5)
-        self.time_sub       = self.create_subscription(Float64,           self.cfg["time_topic"],          self.time_callback,        5)
+        # ROS subscribers: one per Float32MultiArray dataset of this robot, plus the time topic
+        self._subs = []
+        for name in self.required + self.optional:
+            if name == "time":
+                continue
+            self._subs.append(self.create_subscription(
+                Float32MultiArray, DATASET_TOPICS[name], self._make_callback(name), 5))
+        self.time_sub = self.create_subscription(Float64, self.cfg["time_topic"], self.time_callback, 5)
 
         # FSM subscription only in hardware mode
         if self.cfg["use_fsm"]:
@@ -134,6 +145,7 @@ class LogNode(Node):
 
         print(f"Log node initialized.")
         print(f"    Mode:          {mode}")
+        print(f"    Robot:         {robot}")
         print(f"    Output file:   {self.output_path}")
         print(f"    Log frequency: {log_freq} Hz ({log_period} s)")
         print(f"    Dump period:   {dump_period} s")
@@ -161,23 +173,11 @@ class LogNode(Node):
         if dataset_name not in self._loggers:
             self._loggers[dataset_name] = Logger(self.output_path, data.shape[0], dataset_name=dataset_name)
 
-    def joint_callback(self, msg: Float32MultiArray):
-        self._handle_msg("joint_state", np.array(msg.data, dtype=np.float32))
-
-    def pelvis_imu_callback(self, msg: Float32MultiArray):
-        self._handle_msg("pelvis_imu", np.array(msg.data, dtype=np.float32))
-
-    def torso_imu_callback(self, msg: Float32MultiArray):
-        self._handle_msg("torso_imu", np.array(msg.data, dtype=np.float32))
-
-    def motor_temp_callback(self, msg: Float32MultiArray):
-        self._handle_msg("motor_temp", np.array(msg.data, dtype=np.float32))
-
-    def command_callback(self, msg: Float32MultiArray):
-        self._handle_msg("command", np.array(msg.data, dtype=np.float32))
-
-    def joystick_callback(self, msg: Float32MultiArray):
-        self._handle_msg("joystick", np.array(msg.data, dtype=np.float32))
+    # callback that caches a Float32MultiArray message under the given dataset name
+    def _make_callback(self, dataset_name: str):
+        def callback(msg: Float32MultiArray):
+            self._handle_msg(dataset_name, np.array(msg.data, dtype=np.float32))
+        return callback
 
     def time_callback(self, msg: Float64):
         self._handle_msg("time", np.array([msg.data], dtype=np.float32))
@@ -249,7 +249,7 @@ class LogNode(Node):
 
         missing_required = [
             (name, topic_for[name])
-            for name in REQUIRED_DATASETS
+            for name in self.required
             if self.count_publishers(topic_for[name]) == 0
         ]
 
@@ -263,8 +263,8 @@ class LogNode(Node):
             return
 
         print("Topic discovery: all required topics ready.")
-        active = list(REQUIRED_DATASETS)
-        for name in OPTIONAL_DATASETS:
+        active = list(self.required)
+        for name in self.optional:
             topic = topic_for[name]
             n_pubs = self.count_publishers(topic)
             if n_pubs > 0:
@@ -336,6 +336,13 @@ def main(args=None):
         help='Deployment mode: "sim" (simulation) or "hw" (hardware).'
     )
     parser.add_argument(
+        '--robot',
+        type=str,
+        default="g1",
+        choices=list(ROBOT_DATASETS.keys()),
+        help='Robot, selects which topics are logged. Default: "g1".'
+    )
+    parser.add_argument(
         '--filename',
         type=str,
         default=None,
@@ -362,7 +369,7 @@ def main(args=None):
         filename = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
 
     # create the log node
-    log_node = LogNode(args.mode, filename, args.hz, args.dump_period)
+    log_node = LogNode(args.mode, args.robot, filename, args.hz, args.dump_period)
 
     try:
         # spin the node
