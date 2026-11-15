@@ -94,7 +94,7 @@ You can find the network interface name (e.g. `enp8s0`) via `ifconfig` command i
 To make sure everything is working and you can communicate with the robot, you can run the example low level control script for your robot. On the G1 it moves its arms and ankles; on the Go2 it stands the robot up and lies it back down. Run:
 ```bash
 python deploy/hardware/g1/g1_low_level_example.py <network_interface_name>
-python deploy/hardware/go2/go2_low_level_example.py <network_interface_name>
+python deploy/hardware/go2/go2_stand_example.py <network_interface_name>
 ```
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
