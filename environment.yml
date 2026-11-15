@@ -1,18 +1,19 @@
-# hardware deploy env
+# hardware-only deploy env for the Jetson Orin (Ubuntu 20.04, JetPack 5, ROS2 Foxy)
+#   - python 3.8 to match ROS2 Foxy's rclpy (built for the system python 3.8)
+#   - no simulation deps (mujoco, warp)
+#   - unitree_sdk2py is installed by `make install` (see Makefile)
 name: deploy
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
-  - numpy
+  - python=3.8
+  - numpy<1.25
   - scipy
   - matplotlib
   - pyyaml
+  - h5py
   - pip
   - pip:
-    - "mujoco>=3.17.0"
-    - "warp-lang>=1.11.1"
     - onnx
     - onnxruntime
     - pygame
-    - h5py
