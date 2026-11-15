@@ -4,7 +4,7 @@ policy_path: "2026-11-13_23-50-00_go2_pose_v0.onnx"
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
 
-# PD gains per joint, joint order: FL, FR, RL, RR, each hip, thigh, calf
+# PD gains per joint
 Kp: [20.0, 20.0, 40.0,
      20.0, 20.0, 40.0,
      20.0, 20.0, 40.0,
@@ -14,7 +14,7 @@ Kd: [1.0, 1.0, 2.0,
      1.0, 1.0, 2.0,
      1.0, 1.0, 2.0]
 
-# home positions (sim spawns here; hardware ramps to here during the 'home' FSM state)
+# home positions
 home_base_pos: [0, 0, 0.32, 1, 0, 0, 0]
 home_joint_pos: [-0.1, 0.9, -1.8,
                   0.1, 0.9, -1.8,
