@@ -75,9 +75,6 @@ LOOP_STATS_PERIOD = 5.0                          # [sec]
 LOOP_MIN_RATE = 0.9 / LOW_LEVEL_CONTROL_DT       # [Hz]
 LOOP_MAX_GAP = 3.0 * LOW_LEVEL_CONTROL_DT        # [sec]
 
-# ROS2 sensor publishing frequency
-ROS_SENSOR_PUBLISH_DT = 0.005  # [sec]
-
 # damping gain for safety stops, and once the robot is lying down in [damp]
 DAMP_KD = 2.0  # [Nm s / rad]
 
@@ -179,6 +176,7 @@ class ControlNode(Node):
         self.fsm_lock = threading.Lock()       # protects FSM state
         self.sensor_lock = threading.Lock()    # protects sensor state arrays
         self.cmd_lock = threading.Lock()       # protects command arrays
+        self.write_lock = threading.Lock()     # serializes building + writing low_cmd (control loop vs command_callback)
 
         # finite state machine state
         self.fsm_state = "init"
@@ -327,8 +325,8 @@ class ControlNode(Node):
                                              "cmd_timeout": self.enable_cmd_timeout})
         self.hardware_info_pub.publish(hardware_info_msg)
 
-        # sensor publish timer
-        self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)
+        # sensor data is published from the control loop, right after each robot state read
+        # (a separate ROS timer would add 0-5 ms of unsynchronized wait)
 
         print("ROS2 publishers and subscribers initialized successfully.")
 
@@ -386,6 +384,23 @@ class ControlNode(Node):
             self.Kd_cmd[:] = data[3*nu : 4*nu]
             self.tau_ff_cmd[:] = data[4*nu : 5*nu]
             self.last_cmd_time = time.time()
+
+        # apply the new command now instead of waiting up to one control tick (0-5 ms).
+        # Only in control/track as seen by the control loop, and never after a safety stop.
+        with self.write_lock:
+            if (self.prev_fsm_state in ("control", "track") and not self.safety_triggered
+                    and not self.exit_requested):
+                self.write_policy_cmd()
+
+
+    # write the latest policy command to the robot (caller holds write_lock)
+    def write_policy_cmd(self):
+        with self.cmd_lock:
+            for i in range(GO2_NUM_MOTOR):
+                self.set_motor_cmd(i, self.q_cmd[i], self.dq_cmd[i], self.Kp_cmd[i],
+                                   self.Kd_cmd[i], self.tau_ff_cmd[i])
+        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+        self.lowcmd_publisher_.Write(self.low_cmd)
 
 
     # publish sensor data to ROS2 topics
@@ -581,75 +596,82 @@ class ControlNode(Node):
         # update fsm time
         self.fsm_time = self.time_ - self.fsm_start_time
 
-        # safety: force damp if the base tilts beyond specified threshold
-        if self.enable_max_tilt and not self.safety_triggered:
-            with self.sensor_lock:
-                rpy = self.imu_rpy
-            if rpy is not None:
-                roll, pitch = abs(rpy[0]), abs(rpy[1])
-                if roll > SAFETY_MAX_TILT or pitch > SAFETY_MAX_TILT:
-                    self.trigger_safety(f"roll={np.degrees(roll):.2f} pitch={np.degrees(pitch):.2f}")
+        # publish the fresh robot state right away (fsm_time / hardware_time go out last; the
+        # policy node runs on fsm_time arrival, so it sees this tick's joint and IMU state)
+        self.publish_sensor_data()
 
-        # read the policy command under lock
-        with self.cmd_lock:
-            q_cmd = self.q_cmd.copy()
-            dq_cmd = self.dq_cmd.copy()
-            Kp_cmd = self.Kp_cmd.copy()
-            Kd_cmd = self.Kd_cmd.copy()
-            tau_ff_cmd = self.tau_ff_cmd.copy()
-            last_cmd_time = self.last_cmd_time
+        # build and write the command (shared with command_callback, which writes new policy
+        # commands immediately)
+        with self.write_lock:
+            # safety: force damp if the base tilts beyond specified threshold
+            if self.enable_max_tilt and not self.safety_triggered:
+                with self.sensor_lock:
+                    rpy = self.imu_rpy
+                if rpy is not None:
+                    roll, pitch = abs(rpy[0]), abs(rpy[1])
+                    if roll > SAFETY_MAX_TILT or pitch > SAFETY_MAX_TILT:
+                        self.trigger_safety(f"roll={np.degrees(roll):.2f} pitch={np.degrees(pitch):.2f}")
 
-        # safety: force damp if the policy stops sending commands while in control
-        is_control = fsm_state in ("control", "track")
-        if self.enable_cmd_timeout and is_control and not self.safety_triggered:
-            if last_cmd_time is None:
-                self.trigger_safety("entered control without any policy command (is the controller running?)")
-            elif time.time() - last_cmd_time > SAFETY_CMD_TIMEOUT:
-                self.trigger_safety(f"no policy command for {time.time() - last_cmd_time:.3f} s")
+            # read the policy command under lock
+            with self.cmd_lock:
+                q_cmd = self.q_cmd.copy()
+                dq_cmd = self.dq_cmd.copy()
+                Kp_cmd = self.Kp_cmd.copy()
+                Kd_cmd = self.Kd_cmd.copy()
+                tau_ff_cmd = self.tau_ff_cmd.copy()
+                last_cmd_time = self.last_cmd_time
 
-        # [safety stop]: pure velocity damping, no position tracking (latched until restart)
-        if self.safety_triggered:
-            for i in range(GO2_NUM_MOTOR):
-                self.set_motor_cmd(i, 0.0, 0.0, 0.0, DAMP_KD, 0.0)
+            # safety: force damp if the policy stops sending commands while in control
+            is_control = fsm_state in ("control", "track")
+            if self.enable_cmd_timeout and is_control and not self.safety_triggered:
+                if last_cmd_time is None:
+                    self.trigger_safety("entered control without any policy command (is the controller running?)")
+                elif time.time() - last_cmd_time > SAFETY_CMD_TIMEOUT:
+                    self.trigger_safety(f"no policy command for {time.time() - last_cmd_time:.3f} s")
 
-        # [init]: zero out all commands (motors passive)
-        elif fsm_state == "init":
-            for i in range(GO2_NUM_MOTOR):
-                self.set_motor_cmd(i, POS_STOP_F, VEL_STOP_F, 0.0, 0.0, 0.0)
+            # [safety stop]: pure velocity damping, no position tracking (latched until restart)
+            if self.safety_triggered:
+                for i in range(GO2_NUM_MOTOR):
+                    self.set_motor_cmd(i, 0.0, 0.0, 0.0, DAMP_KD, 0.0)
 
-        # [damp]: lie down with the stiff pose gains, then ramp the stiffness down to pure damping
-        # (no clamping to the XML limits: lying-down calves sit beyond them, ~-2.8 rad)
-        elif fsm_state == "damp":
-            ratio = smoothstep(self.fsm_time / LIE_POS_DURATION)
-            # 1 while moving, then ramps to 0 over LIE_GAIN_RAMP_DOWN once lying
-            stiffness = 1.0 - np.clip((self.fsm_time - LIE_POS_DURATION) / LIE_GAIN_RAMP_DOWN, 0.0, 1.0)
-            if self.hold_lie:
-                stiffness = 1.0
-            kd = stiffness * POSE_KD + (1.0 - stiffness) * DAMP_KD
-            for i in range(GO2_NUM_MOTOR):
-                q_des = (1.0 - ratio) * self.fsm_start_q[i] + ratio * LIE_JOINT_POS[i]
-                self.set_motor_cmd(i, q_des, 0.0, stiffness * POSE_KP, kd, 0.0)
+            # [init]: zero out all commands (motors passive)
+            elif fsm_state == "init":
+                for i in range(GO2_NUM_MOTOR):
+                    self.set_motor_cmd(i, POS_STOP_F, VEL_STOP_F, 0.0, 0.0, 0.0)
 
-        # [home]: stand up with the stiff pose gains and hold the standing pose
-        elif fsm_state == "home":
-            ratio = smoothstep(self.fsm_time / self.home_pos_duration)
-            for i in range(GO2_NUM_MOTOR):
-                q_des = (1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i]
-                self.set_motor_cmd(i, q_des, 0.0, POSE_KP, POSE_KD, 0.0)
+            # [damp]: lie down with the stiff pose gains, then ramp the stiffness down to pure damping
+            # (no clamping to the XML limits: lying-down calves sit beyond them, ~-2.8 rad)
+            elif fsm_state == "damp":
+                ratio = smoothstep(self.fsm_time / LIE_POS_DURATION)
+                # 1 while moving, then ramps to 0 over LIE_GAIN_RAMP_DOWN once lying
+                stiffness = 1.0 - np.clip((self.fsm_time - LIE_POS_DURATION) / LIE_GAIN_RAMP_DOWN, 0.0, 1.0)
+                if self.hold_lie:
+                    stiffness = 1.0
+                kd = stiffness * POSE_KD + (1.0 - stiffness) * DAMP_KD
+                for i in range(GO2_NUM_MOTOR):
+                    q_des = (1.0 - ratio) * self.fsm_start_q[i] + ratio * LIE_JOINT_POS[i]
+                    self.set_motor_cmd(i, q_des, 0.0, stiffness * POSE_KP, kd, 0.0)
 
-        # [control / track]: latest command from the policy node
-        elif is_control:
-            for i in range(GO2_NUM_MOTOR):
-                self.set_motor_cmd(i, q_cmd[i], dq_cmd[i], Kp_cmd[i], Kd_cmd[i], tau_ff_cmd[i])
+            # [home]: stand up with the stiff pose gains and hold the standing pose
+            elif fsm_state == "home":
+                ratio = smoothstep(self.fsm_time / self.home_pos_duration)
+                for i in range(GO2_NUM_MOTOR):
+                    q_des = (1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i]
+                    self.set_motor_cmd(i, q_des, 0.0, POSE_KP, POSE_KD, 0.0)
 
-        # unknown state: pure damping
-        else:
-            for i in range(GO2_NUM_MOTOR):
-                self.set_motor_cmd(i, 0.0, 0.0, 0.0, DAMP_KD, 0.0)
+            # [control / track]: latest command from the policy node
+            elif is_control:
+                for i in range(GO2_NUM_MOTOR):
+                    self.set_motor_cmd(i, q_cmd[i], dq_cmd[i], Kp_cmd[i], Kd_cmd[i], tau_ff_cmd[i])
 
-        # check sum commands for safety and then publish
-        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
-        self.lowcmd_publisher_.Write(self.low_cmd)
+            # unknown state: pure damping
+            else:
+                for i in range(GO2_NUM_MOTOR):
+                    self.set_motor_cmd(i, 0.0, 0.0, 0.0, DAMP_KD, 0.0)
+
+            # check sum commands for safety and then publish
+            self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+            self.lowcmd_publisher_.Write(self.low_cmd)
 
 
 ############################################################################

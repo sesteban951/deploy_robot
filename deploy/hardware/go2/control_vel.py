@@ -57,14 +57,19 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # ROS subscribers
+        # ROS subscribers (sensor depth 1: always act on the freshest state)
+        # NOTE: keep fsm_time last. The policy steps inside time_callback, and the executor
+        # handles ready subscriptions in creation order, so this tick's IMU and joint state
+        # are taken first (hardware.py also publishes fsm_time last).
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
-        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/imu_state', self.imu_sensor_callback, 10)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
+        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/imu_state', self.imu_sensor_callback, 1)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
+        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 1)
 
-        # control timer to run the policy at a fixed frequency
-        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
+        # no free-running timer: the policy steps once per control_dt of the hardware clock,
+        # on the first fresh sensor tick of each step (see time_callback). A timer here would
+        # add 0-5 ms of unsynchronized wait on top of the sensor age.
+        self.last_step = None
 
         # sensor state
         self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
@@ -107,7 +112,7 @@ class ControlNode(Node):
 
         # scaling params
         self.action_scale = self.config.get('action_scale')
-        self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
+        self.cmd_range = np.array(self.config["cmd_range"], dtype=np.float32)  # (3, 2): [min, max]
 
         # PD gains
         self.Kp = np.array(self.config["Kp"], dtype=np.float32)
@@ -173,8 +178,9 @@ class ControlNode(Node):
         vy_cmd = data[2]
         omega_cmd = data[3]
 
-        # update the command with the scaling
-        self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
+        # map the stick [-1, 1] onto the command range: +1 -> max, -1 -> min
+        stick = np.clip(np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32), -1.0, 1.0)
+        self.cmd = np.where(stick >= 0.0, stick * self.cmd_range[:, 1], -stick * self.cmd_range[:, 0])
 
     # base IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def imu_sensor_callback(self, msg):
@@ -189,9 +195,17 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # time since entering the current FSM state
+    # time since entering the current FSM state; steps the policy at control_dt.
+    # Step index = floor(fsm_time / control_dt): exactly 1/control_dt steps per second of the
+    # hardware clock (no drift); a dropped sensor tick only delays that one step by 5 ms.
     def time_callback(self, msg):
+        prev_time = self.fsm_time
         self.fsm_time = msg.data
+        step = int(self.fsm_time // self.ctrl_dt)
+        # new step, or fsm_time restarted (FSM transition)
+        if self.last_step is None or step != self.last_step or self.fsm_time < prev_time:
+            self.last_step = step
+            self.control_callback()
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -219,7 +233,7 @@ class ControlNode(Node):
         obs = np.zeros(self.obs_size, dtype=np.float32)
         obs[0:3]              = self.omega
         obs[3:6]              = gravity_orientation
-        obs[6:9]              = self.cmd * self.cmd_scale
+        obs[6:9]              = self.cmd
         obs[9:11]             = gait_phase
         obs[11:11+n]          = qj
         obs[11+n:11+2*n]      = dqj
