@@ -142,7 +142,7 @@ class ControlNode(Node):
             print("WARNING: policy command timeout is DISABLED.")
 
         # [damp]: keep holding the lying pose stiffly instead of relaxing to pure damping
-        # (for handling the robot by its torso, e.g. check_sensors.py)
+        # (for handling the robot by its torso)
         self.hold_lie = hold_lie
         if self.hold_lie:
             print("NOTE: --hold-lie is on: 'damp' holds the lying pose stiffly (no relax to damping).")
