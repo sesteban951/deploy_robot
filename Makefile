@@ -9,20 +9,24 @@ UNITREE_SDK_DIR ?= $(HOME)/projects/unitree_sdk2_python
 CYCLONEDDS_HOME ?= $(HOME)/projects/cyclonedds/install
 # ROS2 distro sourced on `conda activate`
 ROS_SETUP ?= /opt/ros/foxy/setup.bash
+# ROS2 domain for our nodes. Must NOT be 0: the Go2's own DDS runs on domain 0, and
+# Foxy's Fast-DDS crashes (std::bad_alloc) when it discovers the robot's participants.
+# (The Unitree SDK always uses domain 0 on its own; it ignores ROS_DOMAIN_ID.)
+ROS_DOMAIN_ID ?= 1
 
 .PHONY: install update uninstall sdk hooks
 
 # create the conda env, set env vars, install the unitree SDK, and add the ROS activation hook
 install:
 	conda env create -f environment.yml
-	conda env config vars set -n $(ENV) DEPLOY_ROOT_DIR="$(CURDIR)" CYCLONEDDS_HOME="$(CYCLONEDDS_HOME)"
+	conda env config vars set -n $(ENV) DEPLOY_ROOT_DIR="$(CURDIR)" CYCLONEDDS_HOME="$(CYCLONEDDS_HOME)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)"
 	$(MAKE) sdk
 	$(MAKE) hooks
 
 # update the conda env from environment.yml and refresh the env vars
 update:
 	conda env update -f environment.yml --prune
-	conda env config vars set -n $(ENV) DEPLOY_ROOT_DIR="$(CURDIR)" CYCLONEDDS_HOME="$(CYCLONEDDS_HOME)"
+	conda env config vars set -n $(ENV) DEPLOY_ROOT_DIR="$(CURDIR)" CYCLONEDDS_HOME="$(CYCLONEDDS_HOME)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)"
 	$(MAKE) sdk
 
 # (re)install unitree_sdk2py; cyclonedds is rebuilt from source against $(CYCLONEDDS_HOME)
