@@ -1,5 +1,14 @@
 # G1 hardware notes
 
+> **⚠️ Two open timing issues, both fixed on the Go2 (`foxy` branch) but NOT on the G1. Fix both before
+> trusting G1 hardware results:**
+> 1. [`fsm_time` can run slower than real time](#️-open-issue-hardware_time--fsm_time-can-run-slower-than-real-time)
+>    (tick-counting clock). Go2 fix: `3edaad8`.
+> 2. [Control loop latency: up to 30 ms of avoidable delay](#️-open-issue-control-loop-latency-up-to-30-ms-of-avoidable-delay)
+>    (three unsynchronized timers). Go2 fix: `5265d6c`. **On the Go2 this visibly reduced swaying.**
+>
+> Fix #1 first: the #2 fix steps the policy off `fsm_time`, so it needs a correct clock.
+
 ## ⚠️ Open issue: `hardware_time` / `fsm_time` can run slower than real time
 
 **Status (2026-11-14):** We found and fixed this bug on the **Go2** (`foxy` branch, commit `3edaad8`).
@@ -208,3 +217,170 @@ If the G1 was drifting, everything timed off `fsm_time` gets **faster in real se
 - **The `vel` gait clock** runs at the trained `gait_period`.
 
 Anything that was tuned on hardware *while drifting* was tuned against the wrong clock. Re-check it.
+
+---
+
+## ⚠️ Open issue: control loop latency: up to 30 ms of avoidable delay
+
+**Status (2026-11-15):** Found and fixed on the **Go2** (`foxy` branch, commit `5265d6c`). On the Go2,
+the robot visibly swayed less afterwards. The **G1** `hardware.py` and every G1 hardware controller on
+this branch use the **same structure**, and the G1 loop is 2× slower (100 Hz vs 200 Hz), so the
+avoidable delay on the G1 is about **twice as large**. **Not measured or fixed on the G1 yet.**
+
+### Summary
+
+A sensor reading has to pass through three timers before the motors respond, and the timers are **not
+synchronized** with each other. At each one, the data waits a random 0 to 1 period for the next tick:
+
+```
+robot state ──► [hardware.py control loop, reads state]  (Unitree SDK RecurrentThread)
+            ──► [hardware.py ROS timer, publishes sensors]   ← wait 0–1 period (timer 1)
+            ──► ROS ──► [controller ROS timer, runs policy]   ← wait 0–1 sensor period (timer 2)
+            ──► ROS ──► [hardware.py control loop, writes LowCmd] ← wait 0–1 period (timer 3)
+            ──► motor
+```
+
+This hurts in two ways:
+- **Average delay:** each timer adds half a period on average.
+- **Jitter:** the three timer offsets drift against each other, so the total delay varies from step to
+  step. Delay randomization in training usually samples one fixed delay per episode, so a delay that
+  changes every step is out of distribution even when the average is inside the trained range.
+
+The transport and compute themselves are cheap. Measured on the Go2's Jetson Orin NX (Foxy, Python 3.8):
+
+| Step | Cost |
+|---|---|
+| One ROS2 hop between processes (`Float32MultiArray`, 60 floats) | about 0.6 ms (1.25 ms round trip, p99 2.1 ms) |
+| Building the `Float32MultiArray` | 0.05 ms |
+| ONNX policy inference (MLP, CPU) | 0.05 ms |
+
+Nearly all of the avoidable delay is timer waits.
+
+### What we saw on the Go2
+
+- **Symptom:** clear swaying and shaking while stepping, with the body roll rate peaking at about 8–15 Hz.
+  The policy's joint targets contained about 5× more 8–15 Hz motion than the joints actually made, which
+  points to the policy fighting a delayed loop.
+- **How we measured the delay:** we fit the measured motor torque to the PD law,
+  `tau_est ≈ Kp·(q_des(t − d) − q) − Kd·dq`, scanning the delay `d`. The torque-fit error has a sharp
+  minimum at the true delay. As a cross-check, cross-correlating `Δq_des` with `Δtau_est` peaks at the same
+  delay. This works on any existing log with `command` and `joint_state` (logger at 200 Hz, 5 ms
+  resolution).
+- **Before the fix:** command → motor torque response was **15 ms**, identical on all 12 joints and on two
+  runs with two different policies. Adding the observation side, the estimated sensor → motor delay was
+  about 20–25 ms, of which about 7.5 ms average (up to 15 ms) was timer waits.
+- **After the fix:** command → motor was **5–10 ms** (best fit 10 ms on two runs, cross-correlation peak
+  5–10 ms per joint). Bench test with a fake hardware node: sensor tick → command back at the hardware node
+  in **2.5 ms** median (3.2 ms max), with the policy still at **50.00 Hz**.
+- **On the robot**, with the same delay-randomized policy and similar driving, the 8–15 Hz roll-rate
+  shake while moving dropped from 0.133 to 0.112 rad/s RMS. The user reported the swaying was visibly much
+  better. (A delay-randomized policy had already cut it from 0.188; the two help each other.)
+
+### Where the G1 code has the same pattern
+
+All references are to `dev` as of `1c7e9bd`.
+
+| Timer | Where | G1 period | Avoidable wait (avg / worst) |
+|---|---|---|---|
+| 1. Sensor publishing on its own ROS timer, not synchronized with the control loop | `hardware.py`: `self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)` | 10 ms | 5 / 10 ms |
+| 2. Policy on a free-running `create_timer(ctrl_dt)`, not synchronized with sensor arrival | every `control_29dof_*.py`: `self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)` | sensors every 10 ms | 5 / 10 ms |
+| 3. New command waits for the next control tick before it's written | `hardware.py`: `command_callback` only stores the command; `LowCmdWrite` writes it on the next 100 Hz tick | 10 ms | 5 / 10 ms |
+| **Total** | | | **about 15 ms avg, up to 30 ms** |
+
+The Go2 had the same three timers at 5 ms periods, so it had about 7.5 ms average and up to 15 ms. Also:
+- The G1 controllers subscribe to sensors with queue depth 10. If a controller falls behind, it works
+  through stale messages in order. Depth 1 means it always acts on the newest.
+- Order inside a tick: the G1 loop decodes and processes state before building and writing `LowCmd` for 29
+  motors in a Python `for` loop. It's worth timing a tick on the G1 computer.
+
+### The fix (as done on the Go2, commit `5265d6c` on `foxy`)
+
+The fix keeps the policy at exactly 50 Hz and keeps one action per 20 ms. It only removes the waits.
+
+**1. Publish sensors from the control loop, right after reading the state.** Delete `pub_timer` and call
+`publish_sensor_data()` inside `LowCmdWrite()`, after the state read and the FSM / `fsm_time` update, and
+before building the command. Keep `fsm_time` as the **last** publish (it already is on the G1:
+`hardware_time`, then `fsm_time`). The policy triggers on it, so the joint and IMU messages from the same
+tick must already be out.
+
+```python
+# LowCmdWrite(), Go2 version
+self.read_low_state()
+...                                   # FSM transition, self.fsm_time = self.time_ - self.fsm_start_time
+self.publish_sensor_data()            # fresh state out now; fsm_time is published last
+with self.write_lock:
+    ...                               # safety checks, build LowCmd for the current FSM state, CRC, Write
+```
+
+On the G1 the state arrives through SDK callbacks (`LowStateHandler`, `TorsoIMUHandler`), not by polling.
+Publishing from the loop still removes the publish-timer wait. The state is then up to one callback period
+old (`rt/lowstate` is about 500 Hz, so ≤ 2 ms).
+
+**2. Step the policy when `fsm_time` arrives, not on a free timer.** In each controller, remove
+`create_timer(ctrl_dt, ...)` and step from `time_callback`:
+
+```python
+# __init__: subscriptions -- keep fsm_time LAST. rclpy's executor handles ready subscriptions in
+# creation order, so this tick's IMU and joint messages are taken before the policy steps.
+# Sensor queue depth 1.
+self.last_step = None
+
+def time_callback(self, msg):
+    prev_time = self.fsm_time
+    self.fsm_time = msg.data
+    step = int(self.fsm_time // self.ctrl_dt)
+    # new 20 ms step, or fsm_time restarted (FSM transition)
+    if self.last_step is None or step != self.last_step or self.fsm_time < prev_time:
+        self.last_step = step
+        self.control_callback()
+```
+
+- **Rate:** exactly `1/ctrl_dt` steps per second of the hardware clock, with no drift. A dropped sensor
+  tick delays only that one step by one tick.
+- **Needs the clock fix:** with a tick-counting `fsm_time`, the policy rate would inherit the drift.
+- **G1 `phase_step` controllers** (`walk/jog_unicycle*`, `crawl_*`): this also fixes the related rcl-timer
+  issue in the first section, because steps are now tied to the hardware clock. If a step can be skipped
+  (inference longer than `ctrl_dt`), advance `phase_step` by `step - last_step` instead of +1.
+- **`control_29dof_mimic.py`** already indexes frames by `int(fsm_time / ctrl_dt)`. This change lines the
+  policy steps up with those frame boundaries.
+- **Safety side effect:** if `hardware.py` stops publishing, the policy stops, and the command timeout
+  (if enabled) puts the robot into damp. Before, the controller kept stepping on stale data.
+
+**3. Write new commands immediately.** At the end of `command_callback`, after storing the command:
+
+```python
+with self.write_lock:
+    if (self.prev_fsm_state in ("control", "track") and not self.safety_triggered
+            and not self.exit_requested):
+        self.write_policy_cmd()     # set motor_cmd from q/dq/Kp/Kd/tau_ff, CRC, Write
+```
+
+Put the whole build-CRC-Write section of `LowCmdWrite()` under the same `write_lock`. The callback (ROS
+thread) and the loop (SDK thread) share one `low_cmd` object.
+
+G1-specific details for `write_policy_cmd()`:
+- It must apply `self.joint_sign[i]` to `q`, `dq` and `tau`, exactly as `LowCmdWrite` does.
+- It must set `mode_pr` and `mode_machine`, exactly as `LowCmdWrite` does.
+- Use `prev_fsm_state` (the loop's view, set after it handles a transition), not `fsm_state` from the
+  joystick. Then a command can't be written in `control` before the loop has entered `control`.
+- The extra write costs one CRC and DDS write per policy step (50 Hz). That's negligible next to the 100 Hz
+  loop.
+
+### What to expect on the G1
+
+- **Policy rate:** still 50 Hz on average. With a real hardware loop, the interval between steps now
+  varies by ±1 sensor tick. We saw 15–25 ms on the Go2 (5 ms ticks), so expect about 10–30 ms on the G1
+  (10 ms ticks). The average stays exactly 20 ms. If that's a problem, publish sensors at a finer rate than
+  the policy, or move the policy into the hardware loop.
+- **Delay:** expect about 15 ms less on average and much less jitter. Measure before and after with the
+  torque-fit method above. On the G1 use `Kp`/`Kd` from the config, `command[:, :29]` as `q_des`, and
+  `joint_state` = `[q, dq, ddq, tau_est]`. The logged state and command are both in the model frame
+  (`hardware.py` applies `joint_sign` on the way in and out), so they can be fitted directly.
+- **Policies trained with a minimum delay:** if a policy was trained with delay randomization whose
+  *minimum* is above the new real delay, the robot is now outside that range. Check the training config.
+
+### Further option (not done on the Go2)
+
+Run the policy inside `hardware.py`'s control loop, every `ctrl_dt / LOW_LEVEL_CONTROL_DT` ticks. This
+removes both ROS hops and all three timer waits, so the delay is the robot round trip only, with no jitter.
+The cost is losing the separate controller node that mirrors the sim setup.
