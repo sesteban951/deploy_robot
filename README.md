@@ -80,6 +80,10 @@ python deploy/logger/log.py --mode sim
 ```
 
 ## Hardware
+> [!NOTE]
+> Hardware deployment on this branch is for the **G1** only. The Go2 hardware code (hardware node, controllers,
+> stand example, Orin/Foxy setup) is developed on the `foxy` branch.
+
 ### Turning the robot on
 Press the power button twice and hold on the second press. You should see the robot's eyes light up and hear fan sounds from the motors. After a while of setup, the robot will say "zero torque mode".
 
@@ -91,10 +95,9 @@ First ensure that you are connected to the robot via an ethernet cable. Then go 
 You can find the network interface name (e.g. `enp8s0`) via `ifconfig` command in a terminal. You will need it to run hardware deployment code.
 
 ### Sanity Check
-To make sure everything is working and you can communicate with the robot, you can run the example low level control script for your robot. On the G1 it moves its arms and ankles; on the Go2 it stands the robot up and lies it back down. Run:
+To make sure everything is working and you can communicate with the robot, you can run the example low level control script, which moves the G1's arms and ankles. Run:
 ```bash
 python deploy/hardware/g1/g1_low_level_example.py <network_interface_name>
-python deploy/hardware/go2/go2_low_level_example.py <network_interface_name>
 ```
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
@@ -107,11 +110,11 @@ python deploy/joystick/joystick_ros.py
 ```
 Terminal 2:
 ```bash
-python deploy/hardware/<robot>/<control_script>.py --config <your-config-file>.yaml
+python deploy/hardware/g1/<control_script>.py --config <your-config-file>.yaml
 ```
 Terminal 3:
 ```bash
-python deploy/hardware/<robot>/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
+python deploy/hardware/g1/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
 ```
 Terminal 4 (optional, to log data to `logs/hardware/`):
 ```bash
