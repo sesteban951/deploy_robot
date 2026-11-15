@@ -5,7 +5,7 @@ policy_path: "2026-11-11_00-22-53_go2_v0_vel_tracking.onnx"
 #   'home' (A):  move to home_joint_pos in home_pos_duration and hold it
 #   'damp' (LB): move to the lying pose, then relax to pure damping
 # lying pose, lie-down time and the stiff pose gains are globals in deploy/hardware/go2/hardware.py
-home_pos_duration: 1.0  # [sec]
+home_pos_duration: 3.0  # [sec]
 
 # PD gains per joint, joint order: FL, FR, RL, RR, each hip, thigh, calf
 Kp: [20.0, 20.0, 40.0,

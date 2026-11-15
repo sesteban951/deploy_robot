@@ -29,7 +29,7 @@ sys.path.append(ROOT_DIR)
 from utils.experiment_utils import HARDWARE_INFO_TOPIC, experiment_info_qos
 
 # Unitree SDK imports
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactory, ChannelFactoryInitialize
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
@@ -37,6 +37,9 @@ from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.go2.sport.sport_client import SportClient
+from cyclonedds.qos import Qos, Policy
+from cyclonedds.sub import DataReader
+from cyclonedds.topic import Topic
 
 # Unitree's Go2 constants (LegID, LOWLEVEL, PosStopF, VelStopF), next to this script
 import unitree_legged_const as go2_const
@@ -62,8 +65,15 @@ PMSM_MODE = 0x01                 # servo (PMSM) mode (not in unitree_legged_cons
 POS_STOP_F = go2_const.PosStopF  # "no position target" (used with kp = 0)
 VEL_STOP_F = go2_const.VelStopF  # "no velocity target" (used with kd = 0)
 
-# low-level control frequency
-LOW_LEVEL_CONTROL_DT = 0.002  # [sec]
+# low-level control frequency. 200 Hz, not Unitree's 500 Hz: in Python each tick costs ~1.4 ms
+# (decode LowState 0.65 ms, encode LowCmd 0.43 ms, CRC 0.24 ms on the Orin), so 500 Hz overran
+# and ran at ~150 Hz with 20-30 ms gaps. The motor drivers run the PD loop themselves.
+LOW_LEVEL_CONTROL_DT = 0.005  # [sec]
+
+# warn if the control loop falls behind: checked over this window, against these limits
+LOOP_STATS_PERIOD = 5.0                          # [sec]
+LOOP_MIN_RATE = 0.9 / LOW_LEVEL_CONTROL_DT       # [Hz]
+LOOP_MAX_GAP = 3.0 * LOW_LEVEL_CONTROL_DT        # [sec]
 
 # ROS2 sensor publishing frequency
 ROS_SENSOR_PUBLISH_DT = 0.005  # [sec]
@@ -83,10 +93,10 @@ POSE_KP = 60.0  # [Nm / rad]
 POSE_KD = 5.0   # [Nm s / rad]
 
 # [damp]: time to move from the current pose to LIE_JOINT_POS
-LIE_POS_DURATION = 0.5  # [sec]
+LIE_POS_DURATION = 1.5  # [sec]
 
 # [damp]: after reaching the lying pose, ramp the stiffness down to pure damping over this time
-LIE_GAIN_RAMP_DOWN = 0.5  # [sec]
+LIE_GAIN_RAMP_DOWN = 1.5  # [sec]
 
 # max allowable base roll/pitch before forcing damp (when you fall)
 SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
@@ -109,7 +119,8 @@ class ControlNode(Node):
     def __init__(self, config_path: str,
                        enable_max_tilt: bool,
                        enable_imu_guard: bool,
-                       enable_cmd_timeout: bool):
+                       enable_cmd_timeout: bool,
+                       hold_lie: bool = False):
 
         super().__init__("hardware_node")
 
@@ -129,6 +140,12 @@ class ControlNode(Node):
             print("WARNING: IMU dropout guard is DISABLED.")
         if not self.enable_cmd_timeout:
             print("WARNING: policy command timeout is DISABLED.")
+
+        # [damp]: keep holding the lying pose stiffly instead of relaxing to pure damping
+        # (for handling the robot by its torso, e.g. check_sensors.py)
+        self.hold_lie = hold_lie
+        if self.hold_lie:
+            print("NOTE: --hold-lie is on: 'damp' holds the lying pose stiffly (no relax to damping).")
 
         # IMU states
         self.imu_rpy = None            # roll, pitch, yaw
@@ -175,7 +192,14 @@ class ControlNode(Node):
         self.exit_requested = False  # set on Ctrl+C: lie down before exiting
 
         # SDK state
-        self.time_ = 0.0
+        self.time_ = 0.0          # [sec] wall-clock time since the control loop started
+        self.time_start = None    # time.monotonic() at the first control loop tick
+
+        # control loop rate monitoring
+        self.loop_ticks = 0
+        self.loop_max_gap = 0.0
+        self.loop_prev = None
+        self.loop_stats_start = None
         self.low_cmd = unitree_go_msg_dds__LowCmd_()
         self.low_state = None
         self.crc = CRC()
@@ -273,8 +297,11 @@ class ControlNode(Node):
         self.lowcmd_publisher_.Init()
 
         # create subscriber
-        self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
-        self.lowstate_subscriber.Init(self.LowStateHandler, 10)
+        # robot state is read in the control loop (latest sample only) instead of in a callback:
+        # a callback decodes every message at 500 Hz, which starves the control loop of the GIL
+        participant = ChannelFactory()._ChannelFactory__participant
+        self.lowstate_reader = DataReader(participant, Topic(participant, "rt/lowstate", LowState_),
+                                          Qos(Policy.History.KeepLast(1)))
 
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
@@ -316,7 +343,8 @@ class ControlNode(Node):
         # wait until we receive the first low state message
         print("Waiting for the first low state message...")
         while self.low_state is None:
-            time.sleep(0.1)
+            self.read_low_state()
+            time.sleep(0.01)
 
         # start the low-level control thread
         self.lowCmdWriteThreadPtr.Start()
@@ -418,7 +446,14 @@ class ControlNode(Node):
     # SDK HARDWARE
     #################################################################
 
-    # callback to receive low state messages
+    # take the latest low state sample, if a new one arrived (non-blocking)
+    def read_low_state(self):
+        samples = self.lowstate_reader.take(N=1)
+        if samples:
+            self.LowStateHandler(samples[0])
+
+
+    # process a low state message
     def LowStateHandler(self, msg: LowState_):
         self.low_state = msg
 
@@ -493,11 +528,39 @@ class ControlNode(Node):
         self.safety_triggered = True
 
 
+    # warn (at most every LOOP_STATS_PERIOD) if the control loop runs slow or has long gaps
+    def monitor_loop_rate(self, now: float):
+        self.loop_ticks += 1
+        self.loop_max_gap = max(self.loop_max_gap, now - self.loop_prev)
+        self.loop_prev = now
+        elapsed = now - self.loop_stats_start
+        if elapsed < LOOP_STATS_PERIOD:
+            return
+        rate = self.loop_ticks / elapsed
+        if rate < LOOP_MIN_RATE or self.loop_max_gap > LOOP_MAX_GAP:
+            print(f"WARNING: control loop at {rate:.0f} Hz (target {1.0 / LOW_LEVEL_CONTROL_DT:.0f} Hz), "
+                  f"longest gap {self.loop_max_gap * 1e3:.1f} ms over the last {elapsed:.0f} s.")
+        self.loop_ticks = 0
+        self.loop_max_gap = 0.0
+        self.loop_stats_start = now
+
+
     # main control loop to send low-level commands
     def LowCmdWrite(self):
 
-        # update hardware time
-        self.time_ += LOW_LEVEL_CONTROL_DT
+        # update hardware time from the wall clock. The SDK's timer drops ticks the loop misses
+        # (e.g. waiting on the GIL), so counting ticks would make time (and the policy's gait
+        # clock, which is built from fsm_time) run slow.
+        now = time.monotonic()
+        if self.time_start is None:
+            self.time_start = now
+            self.loop_stats_start = now
+            self.loop_prev = now
+        self.time_ = now - self.time_start
+        self.monitor_loop_rate(now)
+
+        # read the latest robot state
+        self.read_low_state()
 
         # read FSM state under lock
         with self.fsm_lock:
@@ -560,6 +623,8 @@ class ControlNode(Node):
             ratio = smoothstep(self.fsm_time / LIE_POS_DURATION)
             # 1 while moving, then ramps to 0 over LIE_GAIN_RAMP_DOWN once lying
             stiffness = 1.0 - np.clip((self.fsm_time - LIE_POS_DURATION) / LIE_GAIN_RAMP_DOWN, 0.0, 1.0)
+            if self.hold_lie:
+                stiffness = 1.0
             kd = stiffness * POSE_KD + (1.0 - stiffness) * DAMP_KD
             for i in range(GO2_NUM_MOTOR):
                 q_des = (1.0 - ratio) * self.fsm_start_q[i] + ratio * LIE_JOINT_POS[i]
@@ -630,6 +695,8 @@ def main(args=None):
                   'Hold the last good IMU values when an IMU packet is lost.')
     add_bool_flag(parser, 'cmd-timeout', True,
                   'Force damp when the policy stops sending commands while in control.')
+    add_bool_flag(parser, 'hold-lie', False,
+                  "In 'damp', keep holding the lying pose stiffly instead of relaxing to pure damping.")
     args = parser.parse_args()
 
     print()
@@ -645,7 +712,8 @@ def main(args=None):
     ctrl_node = ControlNode(args.config,
                             enable_max_tilt=args.max_tilt,
                             enable_imu_guard=args.imu_guard,
-                            enable_cmd_timeout=args.cmd_timeout)
+                            enable_cmd_timeout=args.cmd_timeout,
+                            hold_lie=args.hold_lie)
     ctrl_node.Init()
 
     # spin ROS2 node in background thread
