@@ -1,13 +1,12 @@
 xml_path: "go2/go2_scene.xml"
-policy_path: "2026-11-13_23-28-36_go2_hopturn_v0.onnx"
+policy_path: "2026-11-14_15-22-24_go2_hopturn_v1.onnx"
 motion_path: "go2/go2_stmr_hopturn.npz"
 
 # interpolate to default position duration and frame 0 in mimic
 home_pos_duration: 3.0  # [sec]
 frame_pos_duration: 3.0  # [sec]
 
-# PD gains per joint, joint order: FL, FR, RL, RR, each hip, thigh, calf
-# (SuperMimic motors: one gain for every joint, from the policy metadata)
+# PD gains per joint
 Kp: [25.0, 25.0, 25.0,
      25.0, 25.0, 25.0,
      25.0, 25.0, 25.0,
@@ -17,8 +16,7 @@ Kd: [0.5, 0.5, 0.5,
      0.5, 0.5, 0.5,
      0.5, 0.5, 0.5]
 
-# home positions (sim spawns here; hardware ramps to here during the 'home' FSM state)
-# hips at 0: the mimic policy's default pose, unlike the velocity policies' +/-0.1
+# home positions
 home_base_pos: [0, 0, 0.30, 1, 0, 0, 0]
 home_joint_pos: [0.0, 0.9, -1.8,
                  0.0, 0.9, -1.8,
