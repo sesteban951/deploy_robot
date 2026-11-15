@@ -35,6 +35,11 @@ from utils.math_utils import (
     heading_about_z_world,
 )
 
+# PD gains while the policy is OFF and a frame is held ('control' before 'track', after the clip);
+# the policy's gains sag the stand. Same as POSE_KP / POSE_KD in the foxy branch's go2 hardware.py.
+HOLD_KP = 60.0  # [Nm / rad]
+HOLD_KD = 5.0   # [Nm s / rad]
+
 
 ############################################################################
 # CONTROLLER NODE
@@ -128,10 +133,6 @@ class ControlNode(Node):
         # scaling params
         self.action_scale = self.config.get('action_scale')
 
-        # PD gains
-        self.Kp = np.array(self.config["Kp"], dtype=np.float32)
-        self.Kd = np.array(self.config["Kd"], dtype=np.float32)
-
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
 
@@ -158,6 +159,27 @@ class ControlNode(Node):
             f"action_scale has {len(self.action_scale)} values, expected {self.act_size}."
         for _k in ('default_joint_pos', 'action_scale'):
             print(f"    {_k}: from {'policy metadata' if _k in self.policy.metadata else 'yaml config'}")
+
+        # PD gains while the policy runs: from the yaml, so they can be fine-tuned
+        self.Kp = np.array(self.config["Kp"], dtype=np.float32)
+        self.Kd = np.array(self.config["Kd"], dtype=np.float32)
+        assert len(self.Kp) == self.act_size and len(self.Kd) == self.act_size, \
+            f"yaml Kp / Kd have {len(self.Kp)} / {len(self.Kd)} values, expected {self.act_size}."
+
+        # flag any gain that differs from what the policy was trained with (its metadata)
+        for name, used, key in (("Kp", self.Kp, "joint_stiffness"), ("Kd", self.Kd, "joint_damping")):
+            trained = self.policy.get_param(key)
+            if trained is None:
+                print(f"    {name}: yaml (policy has no '{key}' metadata to compare against)")
+            elif np.allclose(used, trained, atol=1e-3):
+                print(f"    {name}: yaml, matches the trained gains {np.unique(trained).tolist()}")
+            else:
+                diff = [f"{i}: {t:g} -> {u:g}" for i, (t, u) in enumerate(zip(trained, used)) if abs(t - u) > 1e-3]
+                print(f"    NOTE {name}: yaml differs from the trained gains at joint " + ", ".join(diff))
+
+        # stiffer gains for holding a frame with the policy off
+        self.hold_Kp = np.full(self.act_size, HOLD_KP, dtype=np.float32)
+        self.hold_Kd = np.full(self.act_size, HOLD_KD, dtype=np.float32)
 
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Policy type: {self.policy._policy_type}")
@@ -347,7 +369,8 @@ class ControlNode(Node):
         holding_first = self.use_fsm and self.track_start_time is None
         holding_last = self.use_fsm and self.track_start_time is not None and \
             (self.sim_time - self.track_start_time) / self.ctrl_dt >= self.motion_num_frames
-        if holding_first or holding_last:
+        holding = holding_first or holding_last
+        if holding:
             qpos_des = self.motion_joint_pos[0 if holding_first else -1]
         else:
             # get the current observation
@@ -363,7 +386,8 @@ class ControlNode(Node):
 
         # publish the command
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
+        Kp, Kd = (self.hold_Kp, self.hold_Kd) if holding else (self.Kp, self.Kd)
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, Kp, Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
 
