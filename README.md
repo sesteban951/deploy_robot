@@ -118,7 +118,8 @@ python deploy/hardware/g1/hardware.py --config <your-config-file>.yaml --network
 ```
 Terminal 4 (optional, to log data to `logs/hardware/`):
 ```bash
-python deploy/logger/log.py --mode hw
+python deploy/logger/log.py --mode hw               # G1
+python deploy/logger/log.py --mode hw --robot go2   # Go2
 ```
 where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
