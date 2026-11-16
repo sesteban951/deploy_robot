@@ -1,8 +1,17 @@
 ##
 #
-# Control node for Go2 MjLab velocity tracking robot (hardware).
-# Same as deploy/simulation/go2/control_vel.py, but the gait phase clock is the
-# hardware node's fsm_time (restarts at 0 when entering a new FSM state).
+# Control node for the Go2 MjLab velocity + body pose policy
+# (Go2-Velocity-Pose-Custom): twist commands plus base height, roll and pitch.
+#
+# Joystick:
+#   left stick         vx (fore/aft), vy (lateral)
+#   right stick X      wz (yaw)
+#   hold RB            right stick Y -> pitch (forward = nose down),
+#                      right stick X -> roll (right = right side down), yaw zeroed
+#   D-pad up / down    raise / lower the height (held; also while walking)
+#   Y                  reset the height to nominal
+# Roll and pitch only apply while standing, and low heights only at slow speeds:
+# utils/locomotion/body_pose.py applies the rules the policy was trained under.
 #
 ##
 
@@ -30,6 +39,7 @@ sys.path.append(ROOT_DIR)
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
 from utils.experiment_utils import publish_experiment_info
+from utils.locomotion.body_pose import effective_body_pose
 
 
 ############################################################################
@@ -57,29 +67,29 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # ROS subscribers (sensor depth 1: always act on the freshest state)
-        # NOTE: keep fsm_time last. The policy steps inside time_callback, and the executor
-        # handles ready subscriptions in creation order, so this tick's IMU and joint state
-        # are taken first (hardware.py also publishes fsm_time last).
+        # ROS subscribers
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
-        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/imu_state', self.imu_sensor_callback, 1)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
-        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 1)
+        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/imu_state', self.imu_sensor_callback, 10)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
+        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
 
-        # no free-running timer: the policy steps once per control_dt of the hardware clock,
-        # on the first fresh sensor tick of each step (see time_callback). A timer here would
-        # add 0-5 ms of unsynchronized wait on top of the sensor age.
-        self.last_step = None
+        # control timer to run the policy at a fixed frequency
+        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
         # sensor state
         self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
         self.omega = np.zeros(3)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
-        self.fsm_time = 0.0
+        self.sim_time = 0.0
 
-        # initialize command
+        # initialize command: twist and body pose (raw targets, then the effective pose)
         self.cmd = np.zeros(3)
+        self.pose_raw = np.array([self.pose_params["nominal_height"], 0.0, 0.0], dtype=np.float32)
+        self.pose_cmd = self.pose_raw.copy()
+        self.U_DPAD = 0.0
+        self.D_DPAD = 0.0
+        self.Y = 0.0
 
         # initialize the action
         self.action = np.zeros(self.act_size)
@@ -125,6 +135,10 @@ class ControlNode(Node):
         self.gait_period = self.config["gait_period"]
         self.stand_cmd_threshold = self.config["stand_cmd_threshold"]
 
+        # body pose params (must match the training config)
+        self.pose_params = self.config["body_pose"]
+        self.height_rate = self.config["height_rate"]
+
         # import the policy
         policy_path = self.config['policy_path']
         policy_path_full = ROOT_DIR + "/policy/go2/" + policy_path
@@ -149,14 +163,6 @@ class ControlNode(Node):
         for _k in ('default_joint_pos', 'action_scale'):
             print(f"    {_k}: from {'policy metadata' if _k in self.policy.metadata else 'yaml config'}")
 
-        # the yaml's home pose must be the policy's default pose: hardware.py stands up to
-        # home_joint_pos in 'home', and a zero action holds default_joint_pos -- they must agree
-        home = np.array(self.config["home_joint_pos"], dtype=np.float32)
-        gap = float(np.abs(home - np.array(self.qpos_joints_default, dtype=np.float32)).max())
-        assert gap < 2e-3, \
-            f"home_joint_pos differs from the policy's default_joint_pos by {gap:.4f} rad; " \
-            f"they must be the same standing idle pose."
-
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Policy type: {self.policy._policy_type}")
         print(f"    Input size: {self.obs_size}")
@@ -168,19 +174,42 @@ class ControlNode(Node):
     # HELPERS
     #################################################################
 
-    # command from the command node
+    # command from the joystick node:
+    #   [connected, LS_Y (vx), LS_X (vy), RS_X (wz), RS_Y, RB, U_DPAD, D_DPAD, Y]
     def cmd_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        
+
         # joystick
         joystick_is_connected = (data[0] > 0.5)
         vx_cmd = data[1]
         vy_cmd = data[2]
         omega_cmd = data[3]
 
+        # body pose inputs (absent from an older joystick publisher: keep the pose neutral)
+        pose_inputs = data[4:9] if len(data) >= 9 else np.zeros(5, dtype=np.float32)
+        RS_Y, RB, self.U_DPAD, self.D_DPAD, self.Y = pose_inputs
+
+        # hold RB: the right stick sets the attitude, and yaw is zeroed so the robot stands
+        if RB > 0.5:
+            self.pose_raw[1] = -np.clip(omega_cmd, -1.0, 1.0) * self.pose_params["roll_range"][1]
+            self.pose_raw[2] = np.clip(RS_Y, -1.0, 1.0) * self.pose_params["pitch_range"][1]
+            omega_cmd = 0.0
+        else:
+            self.pose_raw[1:] = 0.0
+
         # map the stick [-1, 1] onto the command range: +1 -> max, -1 -> min
         stick = np.clip(np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32), -1.0, 1.0)
         self.cmd = np.where(stick >= 0.0, stick * self.cmd_range[:, 1], -stick * self.cmd_range[:, 0])
+
+    # height ramp from the D-pad (Y resets to nominal), integrated at the control rate
+    def update_height(self):
+        if self.Y > 0.5:
+            self.pose_raw[0] = self.pose_params["nominal_height"]
+        else:
+            direction = float(self.U_DPAD > 0.5) - float(self.D_DPAD > 0.5)
+            self.pose_raw[0] += self.height_rate * self.ctrl_dt * direction
+        lo, hi = self.pose_params["height_range"]
+        self.pose_raw[0] = np.clip(self.pose_raw[0], lo, hi)
 
     # base IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def imu_sensor_callback(self, msg):
@@ -195,17 +224,9 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # time since entering the current FSM state; steps the policy at control_dt.
-    # Step index = floor(fsm_time / control_dt): exactly 1/control_dt steps per second of the
-    # hardware clock (no drift); a dropped sensor tick only delays that one step by 5 ms.
+    # hardware time
     def time_callback(self, msg):
-        prev_time = self.fsm_time
-        self.fsm_time = msg.data
-        step = int(self.fsm_time // self.ctrl_dt)
-        # new step, or fsm_time restarted (FSM transition)
-        if self.last_step is None or step != self.last_step or self.fsm_time < prev_time:
-            self.last_step = step
-            self.control_callback()
+        self.sim_time = msg.data
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -218,7 +239,7 @@ class ControlNode(Node):
         dqj = self.qvel_joints
         
         # gait phase clock (zeroed when standing)
-        phase = (self.fsm_time % self.gait_period) / self.gait_period
+        phase = (self.sim_time % self.gait_period) / self.gait_period
         two_pi = 2.0 * math.pi
         gait_phase = np.array([
             math.sin(two_pi * phase),
@@ -228,21 +249,26 @@ class ControlNode(Node):
             gait_phase[:] = 0.0
 
         # build the observation vector
-        # ['base_ang_vel', 'projected_gravity', 'command', 'phase', 'joint_pos', 'joint_vel', 'actions']
+        # ['base_ang_vel', 'projected_gravity', 'command', 'body_pose', 'phase', 'joint_pos', 'joint_vel', 'actions']
         n = len(qj)
         obs = np.zeros(self.obs_size, dtype=np.float32)
         obs[0:3]              = self.omega
         obs[3:6]              = gravity_orientation
         obs[6:9]              = self.cmd
-        obs[9:11]             = gait_phase
-        obs[11:11+n]          = qj
-        obs[11+n:11+2*n]      = dqj
-        obs[11+2*n:11+3*n]    = self.action
+        obs[9:12]             = self.pose_cmd
+        obs[12:14]            = gait_phase
+        obs[14:14+n]          = qj
+        obs[14+n:14+2*n]      = dqj
+        obs[14+2*n:14+3*n]    = self.action
 
         return obs
 
     # control published at the control frequency
     def control_callback(self):
+
+        # body pose: ramp the height, then apply the training-time feasibility rules
+        self.update_height()
+        self.pose_cmd = effective_body_pose(self.pose_raw, self.cmd, self.pose_params)
 
         # get the current observation
         obs = self.build_observation()
@@ -272,14 +298,14 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Go2 velocity tracking control node (hardware).'
+        description='Asynchronous Simulation Node using Mujoco.'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
         required=True,
-        help='Path to the Mujoco config yaml file. Example: "go2_vel.yaml".'
+        help='Path to the Mujoco config yaml file. Example: "go2_pose.yaml".'
     )
     args = parser.parse_args()
 

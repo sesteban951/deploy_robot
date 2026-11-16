@@ -117,7 +117,8 @@ class ControlNode(Node):
                        enable_max_tilt: bool,
                        enable_imu_guard: bool,
                        enable_cmd_timeout: bool,
-                       hold_lie: bool = False):
+                       hold_lie: bool = False,
+                       print_timing: bool = False):
 
         super().__init__("hardware_node")
 
@@ -141,6 +142,9 @@ class ControlNode(Node):
         # [damp]: keep holding the lying pose stiffly instead of relaxing to pure damping
         # (for handling the robot by its torso)
         self.hold_lie = hold_lie
+
+        # print a timing summary of the control loop every LOOP_STATS_PERIOD
+        self.print_timing = print_timing
         if self.hold_lie:
             print("NOTE: --hold-lie is on: 'damp' holds the lying pose stiffly (no relax to damping).")
 
@@ -191,7 +195,15 @@ class ControlNode(Node):
 
         # SDK state
         self.time_ = 0.0          # [sec] wall-clock time since the control loop started
-        self.time_start = None    # time.monotonic() at the first control loop tick
+        self.time_start = None    # time.monotonic() origin of hardware_time (set in Init, shared
+                                  # with the controller through hardware_info for latency stamps)
+        self.state_stamp = 0.0    # [sec] hardware_time at which the latest robot state was read
+
+        # per-tick timing (published on deploy_robot/loop_timing, summarized with --print-timing)
+        self.tick_seq = 0
+        self.cb_write_ms = 0.0     # duration of the last immediate write in command_callback
+        self.cb_writes = 0         # immediate writes since the last tick
+        self.timing_acc = []       # rows of this stats window, for the printed summary
 
         # control loop rate monitoring
         self.loop_ticks = 0
@@ -311,6 +323,7 @@ class ControlNode(Node):
         self.motor_temp_pub = self.create_publisher(Float32MultiArray, "deploy_robot/motor_temperature", 1)
         self.foot_force_pub = self.create_publisher(Float32MultiArray, "deploy_robot/foot_force", 1)
         self.power_pub = self.create_publisher(Float32MultiArray, "deploy_robot/power", 1)
+        self.loop_timing_pub = self.create_publisher(Float32MultiArray, "deploy_robot/loop_timing", 1)
 
         # ROS2 subscribers
         self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 1)
@@ -318,8 +331,12 @@ class ControlNode(Node):
 
         # latched hardware info: which flags this run used (recorded by the logger)
         self.hardware_info_pub = self.create_publisher(String, HARDWARE_INFO_TOPIC, experiment_info_qos())
+        # hardware_time origin: time.monotonic() is system-wide, so the controller can convert its own
+        # clock into hardware_time and measure how old each sensor message is
+        self.time_start = time.monotonic()
         hardware_info_msg = String()
         hardware_info_msg.data = json.dumps({"robot": "go2",
+                                             "time_origin_monotonic": self.time_start,
                                              "max_tilt": self.enable_max_tilt,
                                              "imu_guard": self.enable_imu_guard,
                                              "cmd_timeout": self.enable_cmd_timeout})
@@ -390,7 +407,10 @@ class ControlNode(Node):
         with self.write_lock:
             if (self.prev_fsm_state in ("control", "track") and not self.safety_triggered
                     and not self.exit_requested):
+                t0 = time.monotonic()
                 self.write_policy_cmd()
+                self.cb_write_ms = (time.monotonic() - t0) * 1e3
+                self.cb_writes += 1
 
 
     # write the latest policy command to the robot (caller holds write_lock)
@@ -419,13 +439,18 @@ class ControlNode(Node):
             foot_force = self.foot_force.copy()
             power = self.power.copy()
 
-        # imu_state: [rpy(3), quaternion(4), gyroscope(3), accelerometer(3)] = 13 floats
-        imu_msg = Float32MultiArray()
-        imu_msg.data = np.concatenate([imu_rpy, imu_quat, imu_gyro, imu_accel]).tolist()
+        # read time of this state [hardware_time sec], appended to imu_state and joint_state so the
+        # controller can measure the observation age (readers slice the leading fields, so this is
+        # backward compatible)
+        stamp = self.state_stamp
 
-        # joint_state (model order): [q(12), dq(12), ddq(12), tau_est(12)] = 48 floats
+        # imu_state: [rpy(3), quaternion(4), gyroscope(3), accelerometer(3), stamp(1)] = 14 floats
+        imu_msg = Float32MultiArray()
+        imu_msg.data = np.concatenate([imu_rpy, imu_quat, imu_gyro, imu_accel, [stamp]]).tolist()
+
+        # joint_state (model order): [q(12), dq(12), ddq(12), tau_est(12), stamp(1)] = 49 floats
         joint_msg = Float32MultiArray()
-        joint_msg.data = np.concatenate([q, dq, ddq, tau_est]).tolist()
+        joint_msg.data = np.concatenate([q, dq, ddq, tau_est, [stamp]]).tolist()
 
         # motor_temperature (model order) [degC] = 12 floats
         motor_temp_msg = Float32MultiArray()
@@ -466,6 +491,10 @@ class ControlNode(Node):
         samples = self.lowstate_reader.take(N=1)
         if samples:
             self.LowStateHandler(samples[0])
+            if self.time_start is not None:
+                self.state_stamp = time.monotonic() - self.time_start
+            return True
+        return False
 
 
     # process a low state message
@@ -555,6 +584,16 @@ class ControlNode(Node):
         if rate < LOOP_MIN_RATE or self.loop_max_gap > LOOP_MAX_GAP:
             print(f"WARNING: control loop at {rate:.0f} Hz (target {1.0 / LOW_LEVEL_CONTROL_DT:.0f} Hz), "
                   f"longest gap {self.loop_max_gap * 1e3:.1f} ms over the last {elapsed:.0f} s.")
+        if self.print_timing and self.timing_acc:
+            a = np.array(self.timing_acc)   # columns as in loop_timing, see LowCmdWrite
+            print(f"[timing] loop {rate:.0f} Hz, max gap {self.loop_max_gap * 1e3:.1f} ms | ms mean/max: "
+                  f"read {a[:, 2].mean():.2f}/{a[:, 2].max():.2f}  "
+                  f"publish {a[:, 3].mean():.2f}/{a[:, 3].max():.2f}  "
+                  f"cmd {a[:, 4].mean():.2f}/{a[:, 4].max():.2f}  "
+                  f"tick {a[:, 5].mean():.2f}/{a[:, 5].max():.2f} | "
+                  f"no new state {100.0 * (1.0 - a[:, 6].mean()):.0f}% of ticks | "
+                  f"cb writes {int(a[:, 8].sum())}, last {self.cb_write_ms:.2f} ms")
+        self.timing_acc = []
         self.loop_ticks = 0
         self.loop_max_gap = 0.0
         self.loop_stats_start = now
@@ -567,15 +606,16 @@ class ControlNode(Node):
         # (e.g. waiting on the GIL), so counting ticks would make time (and the policy's gait
         # clock, which is built from fsm_time) run slow.
         now = time.monotonic()
-        if self.time_start is None:
-            self.time_start = now
+        if self.loop_stats_start is None:
             self.loop_stats_start = now
             self.loop_prev = now
+        tick_interval = now - self.loop_prev
         self.time_ = now - self.time_start
         self.monitor_loop_rate(now)
 
         # read the latest robot state
-        self.read_low_state()
+        new_state = self.read_low_state()
+        t_read = time.monotonic()
 
         # read FSM state under lock
         with self.fsm_lock:
@@ -599,6 +639,7 @@ class ControlNode(Node):
         # publish the fresh robot state right away (fsm_time / hardware_time go out last; the
         # policy node runs on fsm_time arrival, so it sees this tick's joint and IMU state)
         self.publish_sensor_data()
+        t_pub = time.monotonic()
 
         # build and write the command (shared with command_callback, which writes new policy
         # commands immediately)
@@ -672,6 +713,20 @@ class ControlNode(Node):
             # check sum commands for safety and then publish
             self.low_cmd.crc = self.crc.Crc(self.low_cmd)
             self.lowcmd_publisher_.Write(self.low_cmd)
+        t_cmd = time.monotonic()
+
+        # loop_timing: [seq, tick interval, read, publish, cmd (incl. waiting for write_lock),
+        #               tick total, new state (0/1), last callback write, callback writes since
+        #               the last tick]   -- durations in ms
+        self.tick_seq += 1
+        row = [float(self.tick_seq), tick_interval * 1e3, (t_read - now) * 1e3, (t_pub - t_read) * 1e3,
+               (t_cmd - t_pub) * 1e3, (t_cmd - now) * 1e3, float(new_state), self.cb_write_ms,
+               float(self.cb_writes)]
+        self.cb_writes = 0
+        self.timing_acc.append(row)
+        timing_msg = Float32MultiArray()
+        timing_msg.data = row
+        self.loop_timing_pub.publish(timing_msg)
 
 
 ############################################################################
@@ -708,7 +763,7 @@ def main(args=None):
         '--config',
         type=str,
         required=True,
-        help='Path to the config yaml file for hardware. Example: "go2_vel.yaml".'
+        help='Path to the config yaml file for hardware. Example: "go2_pose.yaml".'
     )
     # safety flags (on by default, turn off with the --no- form)
     add_bool_flag(parser, 'max-tilt', True,
@@ -717,6 +772,8 @@ def main(args=None):
                   'Hold the last good IMU values when an IMU packet is lost.')
     add_bool_flag(parser, 'cmd-timeout', True,
                   'Force damp when the policy stops sending commands while in control.')
+    add_bool_flag(parser, 'print-timing', False,
+                  'Print a control loop timing summary every few seconds.')
     add_bool_flag(parser, 'hold-lie', False,
                   "In 'damp', keep holding the lying pose stiffly instead of relaxing to pure damping.")
     args = parser.parse_args()
@@ -735,7 +792,8 @@ def main(args=None):
                             enable_max_tilt=args.max_tilt,
                             enable_imu_guard=args.imu_guard,
                             enable_cmd_timeout=args.cmd_timeout,
-                            hold_lie=args.hold_lie)
+                            hold_lie=args.hold_lie,
+                            print_timing=args.print_timing)
     ctrl_node.Init()
 
     # spin ROS2 node in background thread

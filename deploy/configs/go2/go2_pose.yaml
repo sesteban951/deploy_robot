@@ -1,0 +1,56 @@
+xml_path: "go2/go2_scene.xml"
+policy_path: "2026-11-15_05-42-35_go2_pose_sweep_vx15_s7.onnx"
+
+# interpolate to default position duration
+home_pos_duration: 3.0  # [sec]
+
+# PD gains per joint
+Kp: [20.0, 20.0, 40.0,
+     20.0, 20.0, 40.0,
+     20.0, 20.0, 40.0,
+     20.0, 20.0, 40.0]
+Kd: [1.0, 1.0, 2.0,
+     1.0, 1.0, 2.0,
+     1.0, 1.0, 2.0,
+     1.0, 1.0, 2.0]
+
+# home positions
+home_base_pos: [0, 0, 0.32, 1, 0, 0, 0]
+home_joint_pos: [-0.1, 0.9, -1.8,
+                  0.1, 0.9, -1.8,
+                 -0.1, 0.9, -1.8,
+                  0.1, 0.9, -1.8]
+
+control_dt: 0.02
+
+gait_period: 0.6
+
+stand_cmd_threshold: 0.1   # set to 0.0 for constant moving feet
+
+# twist range per axis [min, max]: full stick +1 maps to max, -1 to min.
+# vx, vy [m/s], wz [rad/s]. Trained on vx up to 1.5.
+cmd_range: [[-1.0, 1.4],
+            [-1.0, 1.0],
+            [-1.0, 1.0]]
+
+# body pose joystick controls
+#   hold RB: right stick Y -> pitch (forward = nose down), right stick X -> roll
+#            (right = right side down); yaw is zeroed so the robot counts as standing
+#   D-pad up / down: raise / lower the height (held, also while walking)
+#   Y: reset the height to nominal
+height_rate: 0.15        # [m/s] height ramp while the D-pad is held
+
+# body pose rules: MUST match the Go2-Velocity-Pose-Custom training config
+# (mjlab velocity_custom/config/go2_custom/env_cfgs.py, BodyPoseCommandCfg)
+body_pose:
+  nominal_height: 0.295
+  height_range: [0.15, 0.37]
+  roll_range: [-0.35, 0.35]
+  pitch_range: [-0.4, 0.4]
+  standing_threshold: 0.1
+  walking_height_range: [0.15, 0.34]
+  crouch_speed_range: [0.6, 2.0]
+  fast_min_height: 0.24
+  leg_height_limits: [0.13, 0.40]
+  foot_half_length: 0.193
+  foot_half_width: 0.115

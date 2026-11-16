@@ -45,7 +45,8 @@ ROBOT_DATASETS = {
     },
     "go2": {
         "required": ["joint_state", "imu", "time"],
-        "optional": ["command", "joystick", "motor_temp", "foot_force", "power"],
+        "optional": ["command", "joystick", "motor_temp", "foot_force", "power",
+                     "loop_timing", "policy_timing"],
     },
 }
 
@@ -60,6 +61,8 @@ DATASET_TOPICS = {
     "power":       "deploy_robot/power",
     "command":     "deploy_robot/command",
     "joystick":    "deploy_robot/joystick",
+    "loop_timing":   "deploy_robot/loop_timing",     # go2 hardware.py, see LowCmdWrite
+    "policy_timing": "deploy_robot/policy_timing",   # go2 hardware controllers, see utils/policy_timing.py
 }
 
 # per-mode config: everything that differs between sim and hardware
