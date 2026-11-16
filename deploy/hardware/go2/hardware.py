@@ -41,8 +41,11 @@ from cyclonedds.qos import Qos, Policy
 from cyclonedds.sub import DataReader
 from cyclonedds.topic import Topic
 
-# Unitree's Go2 constants (LegID, LOWLEVEL, PosStopF, VelStopF), next to this script
+# Unitree's Go2 constants
 import unitree_legged_const as go2_const
+# LiDAR on / off switch (rt/utlidar/switch)
+from lidar_switch import SWITCH_TOPIC as LIDAR_SWITCH_TOPIC, send as send_lidar_switch
+from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
 
 ########################################################################
@@ -118,7 +121,8 @@ class ControlNode(Node):
                        enable_imu_guard: bool,
                        enable_cmd_timeout: bool,
                        hold_lie: bool = False,
-                       print_timing: bool = False):
+                       print_timing: bool = False,
+                       lidar_on: bool = False):
 
         super().__init__("hardware_node")
 
@@ -127,6 +131,9 @@ class ControlNode(Node):
 
         # load parameters
         self.load_params()
+
+        # LiDAR: off unless asked for (it stays in that state after exit; a robot reboot turns it on)
+        self.lidar_on = lidar_on
 
         # safety features (on by default)
         self.enable_max_tilt = enable_max_tilt
@@ -313,6 +320,12 @@ class ControlNode(Node):
         self.lowstate_reader = DataReader(participant, Topic(participant, "rt/lowstate", LowState_),
                                           Qos(Policy.History.KeepLast(1)))
 
+        # LiDAR switch: set here, before the control loop starts (the sends sleep)
+        lidar_switch_pub = ChannelPublisher(LIDAR_SWITCH_TOPIC, String_)
+        lidar_switch_pub.Init()
+        time.sleep(0.5)  # let DDS discovery match the robot before the first write
+        send_lidar_switch(lidar_switch_pub, "ON" if self.lidar_on else "OFF")
+
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
         # ROS2 publishers (imu_state / joint_state match the Go2 simulation node)
@@ -339,7 +352,8 @@ class ControlNode(Node):
                                              "time_origin_monotonic": self.time_start,
                                              "max_tilt": self.enable_max_tilt,
                                              "imu_guard": self.enable_imu_guard,
-                                             "cmd_timeout": self.enable_cmd_timeout})
+                                             "cmd_timeout": self.enable_cmd_timeout,
+                                             "lidar_on": self.lidar_on})
         self.hardware_info_pub.publish(hardware_info_msg)
 
         # sensor data is published from the control loop, right after each robot state read
@@ -776,6 +790,8 @@ def main(args=None):
                   'Print a control loop timing summary every few seconds.')
     add_bool_flag(parser, 'hold-lie', False,
                   "In 'damp', keep holding the lying pose stiffly instead of relaxing to pure damping.")
+    parser.add_argument('--lidar', dest='lidar_on', action='store_true',
+                        help='Turn the LiDAR on. By default it is turned off (no spinning) and stays off after exit.')
     args = parser.parse_args()
 
     print()
@@ -793,7 +809,8 @@ def main(args=None):
                             enable_imu_guard=args.imu_guard,
                             enable_cmd_timeout=args.cmd_timeout,
                             hold_lie=args.hold_lie,
-                            print_timing=args.print_timing)
+                            print_timing=args.print_timing,
+                            lidar_on=args.lidar_on)
     ctrl_node.Init()
 
     # spin ROS2 node in background thread
