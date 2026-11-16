@@ -1,13 +1,21 @@
 # G1 hardware notes
 
-> **⚠️ Two open timing issues, both fixed on the Go2 (`foxy` branch) but NOT on the G1. Fix both before
-> trusting G1 hardware results:**
+> **⚠️ Open timing issues: all fixed on the Go2 (`foxy` branch), NOT on the G1. Fix them before trusting
+> G1 hardware results:**
 > 1. [`fsm_time` can run slower than real time](#️-open-issue-hardware_time--fsm_time-can-run-slower-than-real-time)
 >    (tick-counting clock). Go2 fix: `3edaad8`.
 > 2. [Control loop latency: up to 30 ms of avoidable delay](#️-open-issue-control-loop-latency-up-to-30-ms-of-avoidable-delay)
->    (three unsynchronized timers). Go2 fix: `5265d6c`. **On the Go2 this visibly reduced swaying.**
+>    (three unsynchronized timers). Go2 fix: `5265d6c`, with the trigger corrected in `ea09935`.
+>    **On the Go2 this visibly reduced swaying.**
+> 3. [Policy steps land 1 tick early or late on a third of steps](#️-found-after-the-latency-fix-policy-steps-land-1-tick-early-or-late)
+>    (a bug in the first version of fix #2, found with the timing measurements). Go2 fix: `ea09935`.
+>    **If you copy fix #2, use the corrected trigger in this README. The first version had this bug.**
 >
-> Fix #1 first: the #2 fix steps the policy off `fsm_time`, so it needs a correct clock.
+> Also: [timing measurements](#timing-measurements-port-these-to-the-g1) for checking all of this on
+> the robot, and [other findings](#other-go2-findings-that-likely-apply-to-the-g1) (the logger misses
+> messages, the policy runs before `control`, a power loss empties the log).
+>
+> Fix #1 first: fix #2 steps the policy off `fsm_time`, so it needs a correct clock.
 
 ## ⚠️ Open issue: `hardware_time` / `fsm_time` can run slower than real time
 
@@ -293,7 +301,7 @@ The Go2 had the same three timers at 5 ms periods, so it had about 7.5 ms averag
 - Order inside a tick: the G1 loop decodes and processes state before building and writing `LowCmd` for 29
   motors in a Python `for` loop. It's worth timing a tick on the G1 computer.
 
-### The fix (as done on the Go2, commit `5265d6c` on `foxy`)
+### The fix (as done on the Go2: `5265d6c` on `foxy`, trigger corrected in `ea09935`)
 
 The fix keeps the policy at exactly 50 Hz and keeps one action per 20 ms. It only removes the waits.
 
@@ -317,26 +325,50 @@ Publishing from the loop still removes the publish-timer wait. The state is then
 old (`rt/lowstate` is about 500 Hz, so ≤ 2 ms).
 
 **2. Step the policy when `fsm_time` arrives, not on a free timer.** In each controller, remove
-`create_timer(ctrl_dt, ...)` and step from `time_callback`:
+`create_timer(ctrl_dt, ...)` and step from `time_callback`.
+
+> ⚠️ The first Go2 version (`5265d6c`) used `step = int(fsm_time // ctrl_dt)` with no offset. That
+> version has a bug: a third of policy steps landed one tick early or late. See
+> [the bug section](#️-found-after-the-latency-fix-policy-steps-land-1-tick-early-or-late). Use this
+> corrected version (`ea09935`):
 
 ```python
+# hardware.py ticks every LOW_LEVEL_CONTROL_DT, and fsm_time restarts exactly on a tick, so later
+# ticks land exactly on the ctrl_dt slot boundaries. Shift the slot grid by half a tick, so a
+# boundary falls BETWEEN two ticks and tick jitter can never move a step to another tick.
+TRIGGER_OFFSET = 0.005   # [sec] half of the G1's LOW_LEVEL_CONTROL_DT (0.01). On the Go2: 0.0025.
+
 # __init__: subscriptions -- keep fsm_time LAST. rclpy's executor handles ready subscriptions in
 # creation order, so this tick's IMU and joint messages are taken before the policy steps.
 # Sensor queue depth 1.
 self.last_step = None
+self.slot_time = 0.0     # [sec] step * ctrl_dt: the ideal time of the current policy step
 
 def time_callback(self, msg):
     prev_time = self.fsm_time
     self.fsm_time = msg.data
-    step = int(self.fsm_time // self.ctrl_dt)
-    # new 20 ms step, or fsm_time restarted (FSM transition)
+    step = int((self.fsm_time + TRIGGER_OFFSET) // self.ctrl_dt)
+    # new step, or fsm_time restarted (FSM transition)
     if self.last_step is None or step != self.last_step or self.fsm_time < prev_time:
         self.last_step = step
+        self.slot_time = step * self.ctrl_dt
         self.control_callback()
+
+# anything that depends on time uses the slot time (or the step index), NOT the raw fsm_time:
+phase = (self.slot_time % self.gait_period) / self.gait_period      # e.g. control_29dof_vel.py
 ```
 
-- **Rate:** exactly `1/ctrl_dt` steps per second of the hardware clock, with no drift. A dropped sensor
-  tick delays only that one step by one tick.
+- **Rate:** exactly `1/ctrl_dt` steps per second of the hardware clock, with no drift, every
+  `ctrl_dt / LOW_LEVEL_CONTROL_DT` ticks (2 on the G1, 4 on the Go2). A dropped tick delays only that one
+  step.
+- **Use the slot time, not `fsm_time`, for anything timed:**
+  - **Gait phase:** the phase then advances exactly `ctrl_dt` per step, as in training.
+  - **Mimic frame index:** in `control_29dof_mimic.py`, `frame = int(self.fsm_time / self.ctrl_dt)` has
+    the same boundary problem. With event-driven steps, `fsm_time` sits within microseconds of a frame
+    boundary, so some steps would get the previous frame: frames repeat and then skip. Use
+    `frame = min(self.last_step, self.motion_num_frames - 1)`.
+  - **Ramps:** for the mimic `control` ramp (`fsm_time / frame_pos_duration`), raw `fsm_time` is fine. It
+    only needs to be smooth.
 - **Needs the clock fix:** with a tick-counting `fsm_time`, the policy rate would inherit the drift.
 - **G1 `phase_step` controllers** (`walk/jog_unicycle*`, `crawl_*`): this also fixes the related rcl-timer
   issue in the first section, because steps are now tied to the hardware clock. If a step can be skipped
@@ -368,10 +400,9 @@ G1-specific details for `write_policy_cmd()`:
 
 ### What to expect on the G1
 
-- **Policy rate:** still 50 Hz on average. With a real hardware loop, the interval between steps now
-  varies by ±1 sensor tick. We saw 15–25 ms on the Go2 (5 ms ticks), so expect about 10–30 ms on the G1
-  (10 ms ticks). The average stays exactly 20 ms. If that's a problem, publish sensors at a finer rate than
-  the policy, or move the policy into the hardware loop.
+- **Policy rate:** exactly 50 Hz. With the corrected trigger, every step is exactly 2 ticks apart, with
+  only scheduling jitter. On the Go2: 19.3–20.7 ms (1st–99th percentile). With the buggy trigger it
+  would be 10/20/30 ms on the G1, which is worse than the Go2's 15/20/25 ms.
 - **Delay:** expect about 15 ms less on average and much less jitter. Measure before and after with the
   torque-fit method above. On the G1 use `Kp`/`Kd` from the config, `command[:, :29]` as `q_des`, and
   `joint_state` = `[q, dq, ddq, tau_est]`. The logged state and command are both in the model frame
@@ -384,3 +415,143 @@ G1-specific details for `write_policy_cmd()`:
 Run the policy inside `hardware.py`'s control loop, every `ctrl_dt / LOW_LEVEL_CONTROL_DT` ticks. This
 removes both ROS hops and all three timer waits, so the delay is the robot round trip only, with no jitter.
 The cost is losing the separate controller node that mirrors the sim setup.
+
+---
+
+## ⚠️ Found after the latency fix: policy steps land 1 tick early or late
+
+**Status (2026-11-15):** Found on the **Go2** with the timing measurements below, and fixed in `ea09935` on
+`foxy`. It was a bug in the first version of the latency fix (`5265d6c`). **It only affects the G1 if
+that first version is copied. Use the corrected trigger in fix #2 above.**
+
+### Symptom
+After the latency fix, a third of the Go2's policy steps were not 20 ms apart. In a 106 s run:
+
+| Step interval | 15 ms | 20 ms | 25 ms |
+|---|---|---|---|
+| Count | 849 | 3617 | 849 |
+
+The offset from the ideal step time was always either ~0 ms or ~5 ms (one tick), never in between. The
+average rate was still exactly 50 Hz, so a rate check didn't show it. Only the per-step intervals did.
+
+### Cause
+1. `hardware.py` ticks every 5 ms (10 ms on the G1).
+2. On every FSM transition it sets `fsm_start_time = time_` *at a tick*. So `fsm_time` is 0 exactly at a
+   tick, and every later tick lands within microseconds of a multiple of 5 ms.
+3. The policy slot boundaries are multiples of 20 ms, so every 4th tick sits *exactly* on a boundary.
+4. The trigger was `floor(fsm_time / ctrl_dt)`. Whether the boundary tick reads 19.99 ms or 20.01 ms is
+   decided by microseconds of scheduling jitter. At 19.99 ms the step runs on the *next* tick, 5 ms late.
+5. As the jitter flips sign, consecutive steps come 15 or 25 ms apart.
+
+Before the first FSM transition, the boundaries happened to fall mid-tick, because `hardware_time`'s
+origin isn't on a tick. That's why the controller's first timing lines showed a steady 3.2 ms offset and
+only switched to 15/25 ms intervals after `init -> damp`.
+
+### Fix (`ea09935`)
+1. **Half-tick offset:** `step = floor((fsm_time + LOW_LEVEL_CONTROL_DT/2) / ctrl_dt)`. Each slot boundary
+   now falls *halfway between* two ticks. Jitter under half a tick (2.5 ms on the Go2, 5 ms on the G1)
+   can no longer move a step to another tick.
+2. **Slot time for anything timed:** the gait phase uses `slot_time = step * ctrl_dt`, not the raw
+   `fsm_time`. The phase input then advances exactly `ctrl_dt` per step, with no timing jitter, as in
+   training. On the G1, the mimic frame index needs the same treatment (see fix #2).
+
+### Result on the Go2 (109 s run, same robot and policy)
+
+| | Before (`5265d6c`) | After (`ea09935`) |
+|---|---|---|
+| Step intervals 15 / 20 / 25 ms | 849 / 3617 / 849 | **0 / 5442 / 0** |
+| Step interval, 1st–99th percentile | 14.8–25.2 ms | **19.3–20.7 ms** |
+| Offset from ideal step time, 1st–99th percentile | 0–5.0 ms | **−0.01 to 0.03 ms** |
+
+Before going on the robot, a bench test reproduced the bug. A fake hardware node published tick-aligned
+`fsm_time` with ±0.1 ms jitter. The old trigger gave 251/496/251 intervals of 15/20/25 ms; the new
+trigger gave 0/548/0.
+
+**Behavior:** we couldn't measure a difference in roll shake between the two runs, because they were
+driven differently. The second run had about 30% larger stick commands and 4× more pose input. Comparing
+behavior needs identical commands, for example a scripted joystick replay. The timing fix is correct
+either way: the policy now gets the timing it was trained with.
+
+---
+
+## Timing measurements (port these to the G1)
+
+Added on the Go2 in `ea09935`. They measure everything above directly on the robot, without the torque
+fit. **Port them to the G1 first:** they show whether the G1 has the clock drift, dropped ticks or step
+jitter, and they confirm each fix.
+
+### What was added
+**`hardware.py`**
+- **`deploy_robot/loop_timing`:** one `Float32MultiArray` per tick, published at the end of the tick:
+  `[seq, tick interval, read, publish, cmd, tick total, new state (0/1), last callback write, callback writes since last tick]`.
+  Durations are in ms; `cmd` includes waiting for `write_lock`.
+- **`--print-timing`:** prints one summary line every 5 s, with the loop rate, longest gap, mean/max per
+  part, % of ticks with no new state, and the callback write count and cost.
+- **Read stamps:** `imu_state` and `joint_state` get one extra value at the end, the `hardware_time` at
+  which that state was read. Readers slice the leading fields, so this is backward compatible. The logger
+  stores the wider rows, and `plot.py` infers the joint count with `width // 4`.
+- **Clock origin:** `time_start` (the `time.monotonic()` origin of `hardware_time`) is set in `Init()` and
+  published as `time_origin_monotonic` in the latched `hardware_info` message. `time.monotonic()` is
+  system-wide, so a controller on the same computer can convert its clock into `hardware_time`.
+
+**Controllers:** `utils/policy_timing.py` (`PolicyTiming`), shared by all controllers.
+- **`deploy_robot/policy_timing`:** one row per step: `[seq, step interval, slot offset, imu age, joint
+  age, trigger age, same tick (0/1), inference, step total]`, in ms.
+- **Subscription order:** it subscribes to `hardware_info` and `hardware_time`. Create it *before* the
+  `fsm_time` subscription, so `hardware_time` is processed first within a tick.
+- **`--print-timing`:** prints a summary every 5 s.
+
+**Logger:** `loop_timing` and `policy_timing` are optional datasets. Add them to the G1's `optional` list
+in `deploy/logger/log.py`.
+
+### What it showed on the Go2 (Jetson Orin NX, 200 Hz loop, pose policy)
+
+| Quantity | Value |
+|---|---|
+| Loop rate | 200 Hz in every FSM state; longest gap 6.7 ms in 109 s; **no dropped ticks** |
+| Tick cost (mean / max) | 2.1–2.3 / 4.9 ms of a 5 ms budget: read + decode 0.83, publish 0.36, command build + CRC + write 1.0–1.1 |
+| Immediate writes from `command_callback` | 50/s, about 1 ms each; stretch the longest gap from about 5.3 ms to 6–7 ms in `control` (harmless) |
+| Observation age at the policy step | 1.2 ms mean, 2.6 ms max |
+| IMU and joint data from the triggering tick | 100% (confirms the ordering assumption) |
+| Trigger age (tick start → policy step starts) | about 2.0 ms mean, 3.5 ms max |
+| Inference / whole step | 0.3 / 0.7 ms (MLP, ONNX on CPU) |
+| Command → motor (torque fit) | 10 ms (15 ms before the latency fix) |
+
+**G1 differences to expect:**
+- The `hg` `LowState_` carries 35 motor entries (vs 20), and the loop writes 29 motors. So read and command
+  build will cost more per tick, but the G1 has a 10 ms budget.
+- The G1 also reads `rt/secondary_imu`.
+- The G1 decodes state in SDK callbacks, so the `read` column will be small. Watch `tick interval` and the
+  longest gap instead: callback decoding at 500 Hz competes for the GIL.
+
+---
+
+## Other Go2 findings that likely apply to the G1
+
+1. **The logger misses messages; don't use its rows to measure rates.** `deploy/logger/log.py` samples
+   the *latest* message of each topic on its own unsynchronized timer.
+   - It can miss or duplicate messages. In one Go2 run the logged `hardware_time` suggested the loop ran at
+     about 157 Hz, but the loop was really at 200 Hz.
+   - With `loop_timing` logged, the logger saw 97% of ticks.
+   - Use the sequence numbers and intervals *inside* `loop_timing` / `policy_timing` (deduplicate by
+     `seq`), not the spacing between logged rows.
+2. **The policy runs, and feeds back its own actions, before `control`.**
+   - The controllers step the policy in every FSM state, but `hardware.py` only applies the commands in
+     `control`/`track`. Meanwhile the policy's last-action input is its own unapplied output.
+   - While the robot is held in `home`, that loop can drift to a large action, so the first real step starts
+     from a bad action.
+   - On the Go2, the first second of `control` asked for a 0.3–0.56 rad hip splay against the ground
+     (5–11 Nm, with a 20 A current spike at startup).
+   - **Not fixed yet.** The fix is to step the policy only in `control`/`track`, or to zero the action and
+     last-action input when entering them. This applies to every G1 controller with an `actions` input.
+3. **A power loss leaves an empty log.**
+   - When the Go2 shut off, it powered down the computer, and the h5 file was left at 0 bytes. h5py's
+     writes were still in the OS cache, not on disk.
+   - **Not fixed yet.** The fix is to call `os.fsync` after each periodic dump in `utils/logger.py`.
+   - This matters on the G1 only if the computer can lose power with the robot.
+4. **A delay-randomized policy and the latency fix help each other.**
+   - On the Go2, switching from a policy trained without delay randomization to one trained with it cut the
+     8–15 Hz roll shake by about 30% while moving.
+   - The latency fix then cut it about 16% more, and the robot visibly swayed less.
+   - When training G1 policies, match the measured delay range. Measure the G1 first, then set the
+     training range. Expect about 10–25 ms sensor → motor after the fixes.
