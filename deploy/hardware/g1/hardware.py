@@ -31,8 +31,7 @@ sys.path.append(ROOT_DIR)
 from utils.experiment_utils import HARDWARE_INFO_TOPIC, experiment_info_qos
 
 # Unitree SDK imports
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
-from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactory, ChannelFactoryInitialize
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
@@ -40,6 +39,10 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import IMUState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+from cyclonedds.internal import InvalidSample
+from cyclonedds.qos import Qos, Policy
+from cyclonedds.sub import DataReader
+from cyclonedds.topic import Topic
 
 
 ########################################################################
@@ -91,11 +94,8 @@ class Mode:
     AB = 1  # Parallel Control for A/B Joints
 
 
-# low-level control frequency 
+# low-level control frequency
 LOW_LEVEL_CONTROL_DT = 0.01  # [sec]
-
-# ROS2 sensor publishing frequency
-ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
 
 # max allowable pelvis roll/pitch before forcing damp (when you fall)
 SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
@@ -167,6 +167,7 @@ class ControlNode(Node):
         self.fsm_lock = threading.Lock()       # protects FSM state
         self.sensor_lock = threading.Lock()    # protects sensor state arrays
         self.cmd_lock = threading.Lock()       # protects command arrays
+        self.write_lock = threading.Lock()     # serializes building + writing low_cmd (control loop vs command_callback)
 
         # finite state machine state
         self.fsm_state = "init"
@@ -178,8 +179,12 @@ class ControlNode(Node):
         # safety flags
         self.safety_triggered = False
 
+        # hardware time: wall clock since the first control loop tick. Counting ticks would run
+        # slow, because the SDK's RecurrentThread drops missed ticks instead of catching up.
+        self.time_ = 0.0          # [sec]
+        self.time_start = None    # time.monotonic() at the first control loop tick
+
         # other stuff from unitree's example
-        self.time_ = 0.0
         self.mode_machine_ = 0
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()  
         self.low_state = None 
@@ -257,11 +262,12 @@ class ControlNode(Node):
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.lowcmd_publisher_.Init()
 
-        # create subscribers
-        self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
-        self.lowstate_subscriber.Init(self.LowStateHandler, 1)
-        self.torso_imu_subscriber = ChannelSubscriber("rt/secondary_imu", IMUState_)
-        self.torso_imu_subscriber.Init(self.TorsoIMUHandler, 1)
+        # create readers: the control loop takes only the latest sample each tick. A callback would
+        # decode every message (~1 kHz each topic) in Python and starve the loop of the GIL.
+        participant = ChannelFactory()._ChannelFactory__participant   # private attr: re-check after SDK upgrades
+        latest_only = Qos(Policy.History.KeepLast(1))
+        self.lowstate_reader = DataReader(participant, Topic(participant, "rt/lowstate", LowState_), latest_only)
+        self.torso_imu_reader = DataReader(participant, Topic(participant, "rt/secondary_imu", IMUState_), latest_only)
 
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
@@ -283,8 +289,8 @@ class ControlNode(Node):
         hardware_info_msg.data = json.dumps({"flip_waist_pitch": self.flip_waist_pitch})
         self.hardware_info_pub.publish(hardware_info_msg)
 
-        # sensor publish timer
-        self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)
+        # sensor data is published from the control loop, right after the FSM / fsm_time update
+        # (a separate ROS timer would add 0-10 ms of unsynchronized wait)
 
         print("ROS2 publishers and subscribers initialized successfully.")
 
@@ -296,14 +302,15 @@ class ControlNode(Node):
             interval=LOW_LEVEL_CONTROL_DT, target=self.LowCmdWrite, name="control"
         )
 
-        # wait until we receive the first low state message
-        while self.update_mode_machine_ == False:
-            time.sleep(1)
-        
+        # wait until we receive the first low state message (sets update_mode_machine_)
+        print("Waiting for the first low state message...")
+        while not self.update_mode_machine_:
+            self.read_low_state()
+            time.sleep(0.01)
+
         # start the low-level control thread
-        if self.update_mode_machine_ == True:
-            self.lowCmdWriteThreadPtr.Start()
-            print("Low-level robot control thread started successfully.")
+        self.lowCmdWriteThreadPtr.Start()
+        print("Low-level robot control thread started successfully.")
 
 
     #################################################################
@@ -335,6 +342,33 @@ class ControlNode(Node):
             self.Kp_cmd[:] = data[2*nu : 3*nu]
             self.Kd_cmd[:] = data[3*nu : 4*nu]
             self.tau_ff_cmd[:] = data[4*nu : 5*nu]
+
+        # write the new command now instead of waiting up to one control tick (0-10 ms). Only in
+        # control/track as seen by the control loop (prev_fsm_state), and never after a safety stop.
+        with self.write_lock:
+            if self.prev_fsm_state in ("control", "track") and not self.safety_triggered:
+                self.fill_policy_cmd()
+                self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+                self.lowcmd_publisher_.Write(self.low_cmd)
+
+
+    # fill low_cmd from the latest policy command (caller holds write_lock)
+    def fill_policy_cmd(self):
+        with self.cmd_lock:
+            q_cmd = self.q_cmd.copy()
+            dq_cmd = self.dq_cmd.copy()
+            Kp_cmd = self.Kp_cmd.copy()
+            Kd_cmd = self.Kd_cmd.copy()
+            tau_ff_cmd = self.tau_ff_cmd.copy()
+        for i in range(G1_NUM_MOTOR):
+            self.low_cmd.mode_pr = Mode.PR
+            self.low_cmd.mode_machine = self.mode_machine_
+            self.low_cmd.motor_cmd[i].mode = 1
+            self.low_cmd.motor_cmd[i].tau = self.joint_sign[i] * tau_ff_cmd[i]
+            self.low_cmd.motor_cmd[i].q = self.joint_sign[i] * q_cmd[i]
+            self.low_cmd.motor_cmd[i].dq = self.joint_sign[i] * dq_cmd[i]
+            self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
+            self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
 
 
     # publish sensor data to ROS2 topics
@@ -394,7 +428,30 @@ class ControlNode(Node):
     # SDK HARDWARE
     #################################################################
 
-    # callback to receive low state messages
+    # take the latest sample of a reader, or None if nothing new arrived (non-blocking)
+    @staticmethod
+    def take_latest(reader: DataReader):
+        samples = reader.take(N=1)
+        if samples and not isinstance(samples[0], InvalidSample):
+            return samples[0]
+        return None
+
+
+    # read and process the latest low state, if a new one arrived
+    def read_low_state(self):
+        msg = self.take_latest(self.lowstate_reader)
+        if msg is not None:
+            self.LowStateHandler(msg)
+
+
+    # read and process the latest torso IMU state, if a new one arrived
+    def read_torso_imu(self):
+        msg = self.take_latest(self.torso_imu_reader)
+        if msg is not None:
+            self.TorsoIMUHandler(msg)
+
+
+    # process a low state message
     def LowStateHandler(self, msg: LowState_):
         self.low_state = msg
 
@@ -433,7 +490,7 @@ class ControlNode(Node):
                 self.motor_temp[i] = self.low_state.motor_state[i].temperature
 
 
-    # callback to receive torso IMU messages
+    # process a torso IMU message
     def TorsoIMUHandler(self, msg: IMUState_):
 
         # IMU guard: a lost packet has a near-zero quaternion (and zeroed rpy, gyro, accel)
@@ -460,8 +517,15 @@ class ControlNode(Node):
     # main control loop to send low-level commands
     def LowCmdWrite(self):
         
-        # update hardware time
-        self.time_ += LOW_LEVEL_CONTROL_DT
+        # update hardware time (wall clock: a dropped tick no longer slows it down)
+        now = time.monotonic()
+        if self.time_start is None:
+            self.time_start = now
+        self.time_ = now - self.time_start
+
+        # read the latest robot state (pelvis IMU + joints, then torso IMU)
+        self.read_low_state()
+        self.read_torso_imu()
 
         # read FSM state under lock
         with self.fsm_lock:
@@ -478,79 +542,72 @@ class ControlNode(Node):
         # update fsm time
         self.fsm_time = self.time_ - self.fsm_start_time
 
-        # safety: force damp if pelvis tilts beyond specified threshold
-        if self.enable_max_tilt and not self.safety_triggered:
-            with self.sensor_lock:
-                rpy = self.pelvis_imu_rpy
-            if rpy is not None:
-                roll, pitch = abs(rpy[0]), abs(rpy[1])
-                if roll > SAFETY_MAX_TILT or pitch > SAFETY_MAX_TILT:
-                    print()
-                    print("*" * 70)
-                    print(f"SAFETY: roll={np.degrees(roll):.2f} pitch={np.degrees(pitch):.2f} -> FORCING DAMP. PLEASE RESTART!")
-                    print("*" * 70)
-                    self.safety_triggered = True
-        if self.safety_triggered:
-            fsm_state = "damp"
+        # publish this tick's state right away (fsm_time goes out last: the policy node steps on
+        # its arrival, so it sees this tick's joint and IMU state)
+        self.publish_sensor_data()
 
-        # [init]: zero out all commands
-        if fsm_state == "init":
-            for i in range(G1_NUM_MOTOR):
-                self.low_cmd.mode_pr = Mode.PR
-                self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode = 1
-                self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = 0.0
-                self.low_cmd.motor_cmd[i].dq = 0.0
-                self.low_cmd.motor_cmd[i].kp = 0.0
-                self.low_cmd.motor_cmd[i].kd = 0.0
+        # build and write the command (shared with command_callback, which writes new policy
+        # commands immediately)
+        with self.write_lock:
+            # safety: force damp if pelvis tilts beyond specified threshold
+            if self.enable_max_tilt and not self.safety_triggered:
+                with self.sensor_lock:
+                    rpy = self.pelvis_imu_rpy
+                if rpy is not None:
+                    roll, pitch = abs(rpy[0]), abs(rpy[1])
+                    if roll > SAFETY_MAX_TILT or pitch > SAFETY_MAX_TILT:
+                        print()
+                        print("*" * 70)
+                        print(f"SAFETY: roll={np.degrees(roll):.2f} pitch={np.degrees(pitch):.2f} -> FORCING DAMP. PLEASE RESTART!")
+                        print("*" * 70)
+                        self.safety_triggered = True
+            if self.safety_triggered:
+                fsm_state = "damp"
 
-        # [damp]: Kd damping, no position tracking
-        elif fsm_state == "damp":
-            for i in range(G1_NUM_MOTOR):
-                self.low_cmd.mode_pr = Mode.PR
-                self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode = 1
-                self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = 0.0
-                self.low_cmd.motor_cmd[i].dq = 0.0
-                self.low_cmd.motor_cmd[i].kp = 0.0
-                self.low_cmd.motor_cmd[i].kd = 3.0
+            # [init]: zero out all commands
+            if fsm_state == "init":
+                for i in range(G1_NUM_MOTOR):
+                    self.low_cmd.mode_pr = Mode.PR
+                    self.low_cmd.mode_machine = self.mode_machine_
+                    self.low_cmd.motor_cmd[i].mode = 1
+                    self.low_cmd.motor_cmd[i].tau = 0.0
+                    self.low_cmd.motor_cmd[i].q = 0.0
+                    self.low_cmd.motor_cmd[i].dq = 0.0
+                    self.low_cmd.motor_cmd[i].kp = 0.0
+                    self.low_cmd.motor_cmd[i].kd = 0.0
 
-        # [home]: interpolate to default joint positions and gains
-        elif fsm_state == "home":
-            ratio = np.clip(self.fsm_time / self.home_pos_duration, 0.0, 1.0)
-            for i in range(G1_NUM_MOTOR):
-                self.low_cmd.mode_pr = Mode.PR
-                self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode = 1
-                self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = self.joint_sign[i] * ((1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i])
-                self.low_cmd.motor_cmd[i].dq = 0.0
-                self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
-                self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
+            # [damp]: Kd damping, no position tracking
+            elif fsm_state == "damp":
+                for i in range(G1_NUM_MOTOR):
+                    self.low_cmd.mode_pr = Mode.PR
+                    self.low_cmd.mode_machine = self.mode_machine_
+                    self.low_cmd.motor_cmd[i].mode = 1
+                    self.low_cmd.motor_cmd[i].tau = 0.0
+                    self.low_cmd.motor_cmd[i].q = 0.0
+                    self.low_cmd.motor_cmd[i].dq = 0.0
+                    self.low_cmd.motor_cmd[i].kp = 0.0
+                    self.low_cmd.motor_cmd[i].kd = 3.0
 
-        # [control / track]: read from ROS2 command subscriber (mimic policy)
-        elif fsm_state == "control" or fsm_state == "track":
-            with self.cmd_lock:
-                q_cmd = self.q_cmd.copy()
-                dq_cmd = self.dq_cmd.copy()
-                Kp_cmd = self.Kp_cmd.copy()
-                Kd_cmd = self.Kd_cmd.copy()
-                tau_ff_cmd = self.tau_ff_cmd.copy()
-            for i in range(G1_NUM_MOTOR):
-                self.low_cmd.mode_pr = Mode.PR
-                self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode = 1
-                self.low_cmd.motor_cmd[i].tau = self.joint_sign[i] * tau_ff_cmd[i]
-                self.low_cmd.motor_cmd[i].q = self.joint_sign[i] * q_cmd[i]
-                self.low_cmd.motor_cmd[i].dq = self.joint_sign[i] * dq_cmd[i]
-                self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
-                self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
+            # [home]: interpolate to default joint positions and gains
+            elif fsm_state == "home":
+                ratio = np.clip(self.fsm_time / self.home_pos_duration, 0.0, 1.0)
+                for i in range(G1_NUM_MOTOR):
+                    self.low_cmd.mode_pr = Mode.PR
+                    self.low_cmd.mode_machine = self.mode_machine_
+                    self.low_cmd.motor_cmd[i].mode = 1
+                    self.low_cmd.motor_cmd[i].tau = 0.0
+                    self.low_cmd.motor_cmd[i].q = self.joint_sign[i] * ((1.0 - ratio) * self.fsm_start_q[i] + ratio * self.home_joint_pos[i])
+                    self.low_cmd.motor_cmd[i].dq = 0.0
+                    self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
+                    self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
 
-        # check sum commands for safety and then publish
-        self.low_cmd.crc = self.crc.Crc(self.low_cmd)
-        self.lowcmd_publisher_.Write(self.low_cmd)
+            # [control / track]: latest command from the policy node
+            elif fsm_state == "control" or fsm_state == "track":
+                self.fill_policy_cmd()
+
+            # check sum commands for safety and then publish
+            self.low_cmd.crc = self.crc.Crc(self.low_cmd)
+            self.lowcmd_publisher_.Write(self.low_cmd)
 
 
 ############################################################################
