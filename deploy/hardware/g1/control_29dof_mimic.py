@@ -35,6 +35,11 @@ from utils.math_utils import (
 )
 
 
+# The policy steps when fsm_time crosses a control_dt slot boundary. fsm_time restarts exactly on a
+# hardware.py tick, so shift the boundaries by half a tick: then tick jitter can't move a step.
+TRIGGER_OFFSET = 0.005  # [sec] half of hardware.py's LOW_LEVEL_CONTROL_DT (0.01)
+
+
 ############################################################################
 # CONTROLLER NODE
 ############################################################################
@@ -60,16 +65,17 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # ROS subscribers
-        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 10)
-        if self.anchor != "pelvis":
-            self.anchor_imu_sub = self.create_subscription(Float32MultiArray, f'deploy_robot/{self.anchor}_imu_state', self.anchor_imu_callback, 10)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
-        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
+        # policy step trigger state (see time_callback)
+        self.last_step = None     # slot index of the last policy step (= the motion frame in 'track')
 
-        # control timer to run the policy at a fixed frequency
-        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
+        # ROS subscribers. Keep fsm_time LAST: the policy steps in time_callback, and the executor
+        # takes ready subscriptions in creation order, so this tick's IMU and joint state come first.
+        self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
+        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 1)
+        if self.anchor != "pelvis":
+            self.anchor_imu_sub = self.create_subscription(Float32MultiArray, f'deploy_robot/{self.anchor}_imu_state', self.anchor_imu_callback, 1)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
+        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 1)
 
         # sensor state
         self.anchor_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # (w, x, y, z) from anchor IMU
@@ -201,9 +207,16 @@ class ControlNode(Node):
         self.fsm_state = msg.data
 
 
-    # fsm time — time since entering the current FSM state (hardware.py resets it on each transition)
+    # fsm time -- time since entering the current FSM state (hardware.py resets it on each transition).
+    # Steps the policy once per control_dt slot of the hardware clock, right as the fresh state arrives.
     def time_callback(self, msg):
+        prev_time = self.fsm_time
         self.fsm_time = msg.data
+        step = int((self.fsm_time + TRIGGER_OFFSET) // self.ctrl_dt)
+        # new step, or fsm_time restarted (FSM transition)
+        if self.last_step is None or step != self.last_step or self.fsm_time < prev_time:
+            self.last_step = step
+            self.control_callback()
 
 
     # anchor IMU: [rpy(3), quat(4), gyro(3), acc(3)] — orientation when anchor != pelvis
@@ -311,7 +324,9 @@ class ControlNode(Node):
         else:
             # [track]: advance the motion from frame 0, then freeze at the last frame (no loop)
             self.interp_captured = False
-            frame = min(int(self.fsm_time / self.ctrl_dt), self.motion_num_frames - 1)
+            # slot index, not int(fsm_time / ctrl_dt): steps fire right at the slot boundaries, where
+            # the raw time would round some frames down (repeat, then skip)
+            frame = min(self.last_step, self.motion_num_frames - 1)
 
         # policy query (control: holding frame 0 after the ramp; track: advancing the motion).
         # align motion frame 0 with the robot's current yaw on the first policy tick.

@@ -30,6 +30,11 @@ from utils.policy import Policy
 from utils.experiment_utils import publish_experiment_info
 
 
+# The policy steps when fsm_time crosses a control_dt slot boundary. fsm_time restarts exactly on a
+# hardware.py tick, so shift the boundaries by half a tick: then tick jitter can't move a step.
+TRIGGER_OFFSET = 0.005  # [sec] half of hardware.py's LOW_LEVEL_CONTROL_DT (0.01)
+
+
 ############################################################################
 # CONTROLLER NODE
 ############################################################################
@@ -55,14 +60,16 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # ROS subscribers
-        self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
-        self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
+        # policy step trigger state (see time_callback)
+        self.last_step = None     # slot index of the last policy step
+        self.slot_time = 0.0      # [sec] last_step * ctrl_dt: the ideal time of the current policy step
 
-        # control timer to run the policy at a fixed frequency
-        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
+        # ROS subscribers. Keep fsm_time LAST: the policy steps in time_callback, and the executor
+        # takes ready subscriptions in creation order, so this tick's IMU and joint state come first.
+        self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
+        self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 1)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
+        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 1)
 
         # sensor state
         self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
@@ -176,9 +183,17 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # sim time
+    # fsm time -- time since entering the current FSM state (hardware.py resets it on each transition).
+    # Steps the policy once per control_dt slot of the hardware clock, right as the fresh state arrives.
     def time_callback(self, msg):
+        prev_time = self.fsm_time
         self.fsm_time = msg.data
+        step = int((self.fsm_time + TRIGGER_OFFSET) // self.ctrl_dt)
+        # new step, or fsm_time restarted (FSM transition)
+        if self.last_step is None or step != self.last_step or self.fsm_time < prev_time:
+            self.last_step = step
+            self.slot_time = step * self.ctrl_dt
+            self.control_callback()
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -190,8 +205,9 @@ class ControlNode(Node):
         qj = (self.qpos_joints - self.qpos_joints_default)
         dqj = self.qvel_joints
 
-        # gait phase clock (zeroed when standing)
-        phase = (self.fsm_time % self.gait_period) / self.gait_period
+        # gait phase clock (zeroed when standing). Slot time, not the raw fsm_time: the phase then
+        # advances exactly ctrl_dt per step, as in training
+        phase = (self.slot_time % self.gait_period) / self.gait_period
         two_pi = 2.0 * math.pi
         gait_phase = np.array([
             math.sin(two_pi * phase),
