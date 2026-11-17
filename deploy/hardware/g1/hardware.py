@@ -167,7 +167,7 @@ class ControlNode(Node):
         self.fsm_lock = threading.Lock()       # protects FSM state
         self.sensor_lock = threading.Lock()    # protects sensor state arrays
         self.cmd_lock = threading.Lock()       # protects command arrays
-        self.write_lock = threading.Lock()     # serializes building + writing low_cmd (control loop vs command_callback)
+        self.write_lock = threading.Lock()     # serializes low_cmd writes (control loop vs command_callback)
 
         # finite state machine state
         self.fsm_state = "init"
@@ -179,8 +179,7 @@ class ControlNode(Node):
         # safety flags
         self.safety_triggered = False
 
-        # hardware time: wall clock since the first control loop tick. Counting ticks would run
-        # slow, because the SDK's RecurrentThread drops missed ticks instead of catching up.
+        # hardware time: wall clock since the first control loop tick
         self.time_ = 0.0          # [sec]
         self.time_start = None    # time.monotonic() at the first control loop tick
 
@@ -262,9 +261,8 @@ class ControlNode(Node):
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.lowcmd_publisher_.Init()
 
-        # create readers: the control loop takes only the latest sample each tick. A callback would
-        # decode every message (~1 kHz each topic) in Python and starve the loop of the GIL.
-        participant = ChannelFactory()._ChannelFactory__participant   # private attr: re-check after SDK upgrades
+        # create readers (the control loop polls the latest sample each tick)
+        participant = ChannelFactory()._ChannelFactory__participant   # private SDK attr
         latest_only = Qos(Policy.History.KeepLast(1))
         self.lowstate_reader = DataReader(participant, Topic(participant, "rt/lowstate", LowState_), latest_only)
         self.torso_imu_reader = DataReader(participant, Topic(participant, "rt/secondary_imu", IMUState_), latest_only)
@@ -289,8 +287,7 @@ class ControlNode(Node):
         hardware_info_msg.data = json.dumps({"flip_waist_pitch": self.flip_waist_pitch})
         self.hardware_info_pub.publish(hardware_info_msg)
 
-        # sensor data is published from the control loop, right after the FSM / fsm_time update
-        # (a separate ROS timer would add 0-10 ms of unsynchronized wait)
+        # sensor data is published from the control loop (no ROS timer)
 
         print("ROS2 publishers and subscribers initialized successfully.")
 
@@ -343,8 +340,7 @@ class ControlNode(Node):
             self.Kd_cmd[:] = data[3*nu : 4*nu]
             self.tau_ff_cmd[:] = data[4*nu : 5*nu]
 
-        # write the new command now instead of waiting up to one control tick (0-10 ms). Only in
-        # control/track as seen by the control loop (prev_fsm_state), and never after a safety stop.
+        # write the new command right away (control/track only, never after a safety stop)
         with self.write_lock:
             if self.prev_fsm_state in ("control", "track") and not self.safety_triggered:
                 self.fill_policy_cmd()
@@ -517,7 +513,7 @@ class ControlNode(Node):
     # main control loop to send low-level commands
     def LowCmdWrite(self):
         
-        # update hardware time (wall clock: a dropped tick no longer slows it down)
+        # update hardware time (wall clock)
         now = time.monotonic()
         if self.time_start is None:
             self.time_start = now
@@ -542,12 +538,10 @@ class ControlNode(Node):
         # update fsm time
         self.fsm_time = self.time_ - self.fsm_start_time
 
-        # publish this tick's state right away (fsm_time goes out last: the policy node steps on
-        # its arrival, so it sees this tick's joint and IMU state)
+        # publish this tick's state (fsm_time last, it triggers the policy)
         self.publish_sensor_data()
 
-        # build and write the command (shared with command_callback, which writes new policy
-        # commands immediately)
+        # build and write the command
         with self.write_lock:
             # safety: force damp if pelvis tilts beyond specified threshold
             if self.enable_max_tilt and not self.safety_triggered:

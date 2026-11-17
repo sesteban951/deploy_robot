@@ -35,9 +35,7 @@ from utils.math_utils import (
 )
 
 
-# The policy steps when fsm_time crosses a control_dt slot boundary. fsm_time restarts exactly on a
-# hardware.py tick, so shift the boundaries by half a tick: then tick jitter can't move a step.
-TRIGGER_OFFSET = 0.005  # [sec] half of hardware.py's LOW_LEVEL_CONTROL_DT (0.01)
+TRIGGER_OFFSET = 0.005  # [sec] half a hardware.py tick, so tick jitter can't move a policy step
 
 
 ############################################################################
@@ -68,8 +66,7 @@ class ControlNode(Node):
         # policy step trigger state (see time_callback)
         self.last_step = None     # slot index of the last policy step (= the motion frame in 'track')
 
-        # ROS subscribers. Keep fsm_time LAST: the policy steps in time_callback, and the executor
-        # takes ready subscriptions in creation order, so this tick's IMU and joint state come first.
+        # ROS subscribers (fsm_time last, so this tick's sensors are taken first)
         self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
         self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 1)
         if self.anchor != "pelvis":
@@ -207,8 +204,7 @@ class ControlNode(Node):
         self.fsm_state = msg.data
 
 
-    # fsm time -- time since entering the current FSM state (hardware.py resets it on each transition).
-    # Steps the policy once per control_dt slot of the hardware clock, right as the fresh state arrives.
+    # fsm time; steps the policy once per control_dt slot
     def time_callback(self, msg):
         prev_time = self.fsm_time
         self.fsm_time = msg.data
@@ -324,8 +320,7 @@ class ControlNode(Node):
         else:
             # [track]: advance the motion from frame 0, then freeze at the last frame (no loop)
             self.interp_captured = False
-            # slot index, not int(fsm_time / ctrl_dt): steps fire right at the slot boundaries, where
-            # the raw time would round some frames down (repeat, then skip)
+            # motion frame = slot index (one frame per policy step)
             frame = min(self.last_step, self.motion_num_frames - 1)
 
         # policy query (control: holding frame 0 after the ramp; track: advancing the motion).

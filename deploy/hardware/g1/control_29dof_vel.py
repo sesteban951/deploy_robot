@@ -30,9 +30,7 @@ from utils.policy import Policy
 from utils.experiment_utils import publish_experiment_info
 
 
-# The policy steps when fsm_time crosses a control_dt slot boundary. fsm_time restarts exactly on a
-# hardware.py tick, so shift the boundaries by half a tick: then tick jitter can't move a step.
-TRIGGER_OFFSET = 0.005  # [sec] half of hardware.py's LOW_LEVEL_CONTROL_DT (0.01)
+TRIGGER_OFFSET = 0.005  # [sec] half a hardware.py tick, so tick jitter can't move a policy step
 
 
 ############################################################################
@@ -62,10 +60,9 @@ class ControlNode(Node):
 
         # policy step trigger state (see time_callback)
         self.last_step = None     # slot index of the last policy step
-        self.slot_time = 0.0      # [sec] last_step * ctrl_dt: the ideal time of the current policy step
+        self.slot_time = 0.0      # [sec] ideal time of the current policy step
 
-        # ROS subscribers. Keep fsm_time LAST: the policy steps in time_callback, and the executor
-        # takes ready subscriptions in creation order, so this tick's IMU and joint state come first.
+        # ROS subscribers (fsm_time last, so this tick's sensors are taken first)
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 1)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
@@ -183,8 +180,7 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # fsm time -- time since entering the current FSM state (hardware.py resets it on each transition).
-    # Steps the policy once per control_dt slot of the hardware clock, right as the fresh state arrives.
+    # fsm time; steps the policy once per control_dt slot
     def time_callback(self, msg):
         prev_time = self.fsm_time
         self.fsm_time = msg.data
@@ -205,8 +201,7 @@ class ControlNode(Node):
         qj = (self.qpos_joints - self.qpos_joints_default)
         dqj = self.qvel_joints
 
-        # gait phase clock (zeroed when standing). Slot time, not the raw fsm_time: the phase then
-        # advances exactly ctrl_dt per step, as in training
+        # gait phase clock from the slot time (zeroed when standing)
         phase = (self.slot_time % self.gait_period) / self.gait_period
         two_pi = 2.0 * math.pi
         gait_phase = np.array([

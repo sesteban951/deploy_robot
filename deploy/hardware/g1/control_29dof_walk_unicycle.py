@@ -34,9 +34,7 @@ from utils.experiment_utils import publish_experiment_info
 from utils.locomotion.jog_modes import JogTwistCommander
 
 
-# The policy steps when fsm_time crosses a control_dt slot boundary. fsm_time restarts exactly on a
-# hardware.py tick, so shift the boundaries by half a tick: then tick jitter can't move a step.
-TRIGGER_OFFSET = 0.005  # [sec] half of hardware.py's LOW_LEVEL_CONTROL_DT (0.01)
+TRIGGER_OFFSET = 0.005  # [sec] half a hardware.py tick, so tick jitter can't move a policy step
 
 
 ############################################################################
@@ -105,10 +103,9 @@ class ControlNode(Node):
 
         # policy step trigger state (see time_callback)
         self.last_step = None     # slot index of the last policy step
-        self.step_advance = 1     # slots since the last policy step (> 1 if one was skipped)
+        self.step_advance = 1     # slots since the last policy step
 
-        # ROS subscribers. Keep fsm_time LAST: the policy steps in time_callback, and the executor
-        # takes ready subscriptions in creation order, so this tick's IMU and joint state come first.
+        # ROS subscribers (fsm_time last, so this tick's sensors are taken first)
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
         self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 1)
@@ -284,8 +281,7 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # fsm time -- time since entering the current FSM state (hardware.py resets it on each transition).
-    # Steps the policy once per control_dt slot of the hardware clock, right as the fresh state arrives.
+    # fsm time; steps the policy once per control_dt slot
     def time_callback(self, msg):
         prev_time = self.fsm_time
         self.fsm_time = msg.data
@@ -399,7 +395,7 @@ class ControlNode(Node):
         cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
-        # advance the free-running gait clock (by the slots elapsed, so a skipped step keeps it in time)
+        # advance the gait clock by the slots elapsed
         self.phase_step = (self.phase_step + self.step_advance) % self.motion_period_frames
 
 
