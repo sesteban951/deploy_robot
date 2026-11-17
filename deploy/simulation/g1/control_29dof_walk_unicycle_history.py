@@ -35,6 +35,9 @@ from utils.experiment_utils import publish_experiment_info
 from utils.locomotion.jog_modes import JogTwistCommander
 
 
+TRIGGER_OFFSET = 1e-6  # [sec] only absorbs float rounding (sim time has no jitter)
+
+
 ############################################################################
 # CONTROLLER NODE
 ############################################################################
@@ -88,14 +91,16 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # ROS subscribers
-        self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
-        self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
+        # policy step trigger state (see time_callback)
+        self.last_step = None     # slot index of the last policy step
+        self.step_advance = 1     # slots since the last policy step
+        self.slot_time = 0.0      # [sec] ideal sim time of the current policy step
 
-        # control timer to run the policy at a fixed frequency
-        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
+        # ROS subscribers (simulation_time last, so this step's sensors are taken first)
+        self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
+        self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 1)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
+        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 1)
 
         # sensor state
         self.quat = np.array([1.0, 0.0, 0.0, 0.0])  # pelvis (w, x, y, z)
@@ -264,9 +269,21 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # simulation time
+    # simulation time; steps the policy once per control_dt slot of sim time
     def time_callback(self, msg):
+        prev_time = self.sim_time
         self.sim_time = msg.data
+        step = int((self.sim_time + TRIGGER_OFFSET) // self.ctrl_dt)
+        # sim restarted: a new episode of slots
+        if self.last_step is None or self.sim_time < prev_time:
+            self.last_step, self.step_advance = step, 1
+        elif step != self.last_step:
+            self.step_advance = step - self.last_step
+            self.last_step = step
+        else:
+            return
+        self.slot_time = self.last_step * self.ctrl_dt
+        self.control_callback()
 
     # commanded planar twist [vx, vy, wz]: left stick Y = drive (forward/back), right stick X =
     # steer (left +), both at once. The lateral stick (vy) is ignored: the library has no vy.
@@ -368,8 +385,8 @@ class ControlNode(Node):
         cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
-        # advance the free-running gait clock
-        self.phase_step = (self.phase_step + 1) % self.motion_period_frames
+        # advance the gait clock by the slots elapsed
+        self.phase_step = (self.phase_step + self.step_advance) % self.motion_period_frames
 
 
 ############################################################################

@@ -36,6 +36,9 @@ from utils.math_utils import (
 )
 
 
+TRIGGER_OFFSET = 1e-6  # [sec] only absorbs float rounding (sim time has no jitter)
+
+
 ############################################################################
 # CONTROLLER NODE
 ############################################################################
@@ -61,12 +64,16 @@ class ControlNode(Node):
         # ROS publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
-        # ROS subscribers
-        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 10)
+        # policy step trigger state (see time_callback)
+        self.last_step = None     # slot index of the last policy step
+        self.step_advance = 1     # slots since the last policy step
+        self.slot_time = 0.0      # [sec] ideal sim time of the current policy step
+
+        # ROS subscribers (simulation_time is subscribed last, below)
+        self.pelvis_imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_callback, 1)
         if self.anchor != "pelvis":
-            self.anchor_imu_sub = self.create_subscription(Float32MultiArray, f'deploy_robot/{self.anchor}_imu_state', self.anchor_imu_callback, 10)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
+            self.anchor_imu_sub = self.create_subscription(Float32MultiArray, f'deploy_robot/{self.anchor}_imu_state', self.anchor_imu_callback, 1)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
         self.joystick_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.joystick_callback, 10)
         self.fsm_sub = self.create_subscription(String, 'deploy_robot/fsm', self.fsm_callback, 10)
 
@@ -83,13 +90,13 @@ class ControlNode(Node):
         # yaw alignment between the robot's current heading and motion frame 0
         self.init_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self.init_quat_captured = False
-        self.policy_start_time = None
+        self.policy_start_step = None   # slot of the first policy step (no-joystick loop)
         self.prev_frame = 0  # to detect the loop wrap in no-joystick mode
 
         # joystick / FSM gating of the motion playback
         self.joystick_connected = False   # latest connection flag from the joystick node
         self.fsm_state = "control"        # connected default: "control" = frozen on the first frame
-        self.track_start_time = None      # sim time the current "track" episode began (None = not tracking)
+        self.track_start_step = None      # slot of frame 0 of the current "track" (None = not tracking)
 
         # upfront check: is a joystick connected? this locks the playback mode for the run
         self.use_fsm = self.check_joystick_connected()
@@ -98,8 +105,8 @@ class ControlNode(Node):
         else:
             print("No joystick connected: looping the motion trajectory continuously.")
 
-        # control timer to run the policy at a fixed frequency (created last, after the joystick check)
-        self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
+        # simulation time last (after the joystick check, which spins this node)
+        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 1)
 
         print("Control node initialized.")
 
@@ -232,9 +239,21 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # hardware time
+    # simulation time; steps the policy once per control_dt slot of sim time
     def time_callback(self, msg):
+        prev_time = self.sim_time
         self.sim_time = msg.data
+        step = int((self.sim_time + TRIGGER_OFFSET) // self.ctrl_dt)
+        # sim restarted: a new episode of slots
+        if self.last_step is None or self.sim_time < prev_time:
+            self.last_step, self.step_advance = step, 1
+        elif step != self.last_step:
+            self.step_advance = step - self.last_step
+            self.last_step = step
+        else:
+            return
+        self.slot_time = self.last_step * self.ctrl_dt
+        self.control_callback()
 
     # joystick command: [is_connected, vx, vy, omega]
     def joystick_callback(self, msg):
@@ -245,12 +264,12 @@ class ControlNode(Node):
         state = msg.data
         entering_control = (state == "control" and self.fsm_state != "control")
         if state == "track" and self.fsm_state != "track":
-            # entering track: (re)start the trajectory from the first frame
-            self.track_start_time = self.sim_time
+            # entering track: (re)start the trajectory at the next policy step
+            self.track_start_step = self.last_step + 1 if self.last_step is not None else 0
             print("FSM entered 'track': starting motion trajectory.")
         elif state != "track" and self.fsm_state == "track":
             # leaving track: reset so the next 'track' replays from the start
-            self.track_start_time = None
+            self.track_start_step = None
             print(f"FSM left 'track' (now '{state}'): holding the first frame.")
         
         # re-align the yaw to the robot's current heading on every (re)entry to control
@@ -268,15 +287,13 @@ class ControlNode(Node):
     def compute_frame(self):
         if not self.use_fsm:
             # no joystick: loop the trajectory continuously
-            elapsed = self.sim_time - self.policy_start_time
-            return int(elapsed / self.ctrl_dt) % self.motion_num_frames
-        elif self.track_start_time is None:
+            return (self.last_step - self.policy_start_step) % self.motion_num_frames
+        elif self.track_start_step is None:
             # in "control" (not tracking): hold the first frame
             return 0
         else:
             # tracking: advance from frame 0, then freeze at the last frame (no loop)
-            elapsed = self.sim_time - self.track_start_time
-            return min(int(elapsed / self.ctrl_dt), self.motion_num_frames - 1)
+            return min(max(self.last_step - self.track_start_step, 0), self.motion_num_frames - 1)
 
     # build the observation vector for the policy
     # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
@@ -323,8 +340,8 @@ class ControlNode(Node):
     def control_callback(self):
 
         # one-time timing origin (used by the no-FSM continuous-loop mode)
-        if self.policy_start_time is None:
-            self.policy_start_time = self.sim_time
+        if self.policy_start_step is None:
+            self.policy_start_step = self.last_step
 
         # current motion frame for this tick
         frame = self.compute_frame()

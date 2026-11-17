@@ -40,6 +40,8 @@ from utils.math_utils import quat_to_rpy
 RENDER_HZ = 50.0   # [Hz] viewer render rate
 CAM_MSG_SEC = 2.0  # [s] how long the camera-mode line stays up after a [C] press
 
+MAX_CATCHUP = 0.005  # [s] max real-time catch-up; beyond it sim time slips instead of bursting
+
 
 ############################################################################
 # SIMULATION NODE
@@ -93,12 +95,7 @@ class SimulationNode(Node):
         sim_period = 0.0 # run as fast as possible, real-time sync is handled in the loop
         self.timer = self.create_timer(sim_period, self.step_simulation)
 
-        # create timers for publishing
-        imu_state_period = self.sim_dt
-        joint_state_period = self.sim_dt
-        self.pelvis_imu_timer = self.create_timer(imu_state_period, self.publish_pelvis_imu)
-        self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
-        self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
+        # sensors are published from step_simulation, after every physics step
 
         print("Simulation node initialized.")
         print("    Press [Tab] to toggle the left UI.")
@@ -345,7 +342,10 @@ class SimulationNode(Node):
         if self.apply_noise:
             self._apply_sensor_noise()
 
-        # publish simulation time
+        # publish this step's sensors, then the sim time last (it triggers the policy)
+        self.publish_pelvis_imu()
+        self.publish_torso_imu()
+        self.publish_joint_state()
         time_msg = Float64()
         time_msg.data = self.mj_data.time
         self.simulation_time_pub.publish(time_msg)
@@ -402,8 +402,9 @@ class SimulationNode(Node):
         if remaining > 0.0:
             time.sleep(remaining)
 
-        # Keep a fixed absolute schedule so the loop can catch up after overruns.
-        self._next_step_deadline += self.sim_dt
+        # fixed absolute schedule, but never more than MAX_CATCHUP behind
+        self._next_step_deadline = max(self._next_step_deadline + self.sim_dt,
+                                       time.perf_counter() - MAX_CATCHUP + self.sim_dt)
 
 
     # shutdown the node and close the viewer
