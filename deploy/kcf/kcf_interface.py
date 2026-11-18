@@ -152,7 +152,7 @@ class StateProvider:
 
     Both sources require complete Feedback from the policy/state provider.
     Mocap supplies a calibrated pelvis pose/velocity in the same clock as that
-    feedback; the dummy adapter and a future OptiTrack adapter share this input.
+    feedback; the OptiTrack adapter deploy/mocap/estimator.py publishes this input.
     """
 
     def __init__(self, source='simulation'):
