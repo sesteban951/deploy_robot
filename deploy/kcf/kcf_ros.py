@@ -64,9 +64,13 @@ class KCFNode(Node):
         
         self.source = None
         self.profile, self.decode_feedback = profile, decoder
+        # MPC prediction model: learned KCF (default) or the ideal single integrator (--single-integrator)
+        self.prediction_model = 'single_integrator' if getattr(args, 'single_integrator', False) else 'kcf'
+        print(f"MPC prediction model: {self.prediction_model}", flush=True)
         self.status("warming_up; shadow" if not self.enabled else "warming_up; kcf_control")
         try:
-            self.source, self.state_from_feedback = load_controller(self.profile.name, args.reference_mode)
+            self.source, self.state_from_feedback = load_controller(
+                self.profile.name, args.reference_mode, self.prediction_model)
             if keyboard is not None:
                 keyboard.discard()  # Never execute keys queued during GPU warmup.
         except BaseException:
@@ -90,10 +94,12 @@ class KCFNode(Node):
             self.status_text = reason
 
     def invalidate(self, reason):
+        # a feedback/runtime problem in track drops to control (zero twist) instead of damp
         if (self.keyboard_operator is not None and self.keyboard_operator.state == 'track'
                 and reason not in ('fsm_changed', 'waiting_for_operator_track')):
-            self.keyboard_operator.stop()
-            self.fsm, self.operator_wall = 'damp', -float('inf')
+            self.keyboard_operator.hold()
+            self.fsm, self.operator_wall = 'control', -float('inf')
+            print(f"WARNING: KCF track stopped ({reason}): FSM -> control, zero twist. Press t to re-arm.", flush=True)
         was_active = self.active
         self.active = False
         self.command = np.zeros(3)
@@ -239,8 +245,7 @@ class KCFNode(Node):
         fresh = (self.ready and self.command_scale is not None
                  and now - self.valid_feedback_wall < self.timeout)
         if self.keyboard_operator.state == 'track' and not fresh:
-            self.keyboard_operator.stop()
-            self.invalidate('feedback_timeout; re-arm required')
+            self.invalidate('feedback_timeout; re-arm required')   # holds in control (zero twist)
         if self.enabled:
             self.keyboard_operator.update(keys or '', feedback_ready=fresh)
         elif keys and any(key in keys.lower() for key in ('q', '\x03', '\x04')):
@@ -286,6 +291,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--profile", default=os.environ.get('KCF_MODEL_PROFILE', 'walking'), help="Model profile declared in deploy/configs/g1 (default: walking)")
     parser.add_argument("--reference-mode", help="Optional reference selection; MPC gains/settings remain unchanged")
     parser.add_argument('--shadow', action='store_true', help='Compute only; never publish actuation or FSM enable messages')
+    parser.add_argument('--single-integrator', action='store_true',
+                        help='MPC predicts with the ideal single integrator (robot follows the twist) instead of the KCF model')
     parser.add_argument('--state-source', choices=('simulation', 'mocap'),
                         help='Override kcf.state_source in the deployment YAML for this run')
     args, ros_args = parser.parse_known_args(argv)

@@ -26,6 +26,10 @@ class KeyboardOperator:
     def stop(self):
         self.fsm.step(JoystickState(LB=1))
 
+    def hold(self):
+        # lost/invalid feedback: track -> control (zero twist), the walking policy keeps balancing
+        self.fsm.step(JoystickState(LMB=1))
+
     def update(self, keys, *, feedback_ready):
         keys = keys.lower()
         # A stop anywhere in a queued batch dominates every arming key.
