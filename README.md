@@ -91,23 +91,38 @@ python deploy/logger/log.py --mode sim
 
 ### Mocap input
 
-Start `python deploy/kcf/dummy_mocap_ros.py` in another activated terminal and
-set `kcf.state_source: mocap` in the deployment YAML. The dummy is a simulation-backed
-placeholder for the future OptiTrack adapter, not a separate controller path.
+The OptiTrack adapter is `deploy/mocap/estimator.py`. It publishes the
+`nav_msgs/Odometry` input on `/deploy_kcf/mocap` (contract in
+`deploy/kcf/kcf_interface.py`): world-to-pelvis pose and body-frame velocity,
+stamped on the ROS clock.
 
-Both publishers use the same `nav_msgs/Odometry` input on `/deploy_kcf/mocap`:
-calibrated world-to-pelvis pose, body-frame velocity and measurement timestamps
-aligned with the policy clock. The contract is in `deploy/kcf/kcf_interface.py`.
-Later, stop the dummy and launch your OptiTrack adapter on that interface;
-the KCF and policy commands stay unchanged. If needed, remap the KCF input using
-`--ros-args -r /deploy_kcf/mocap:=/your/calibrated_pelvis` in Terminal 1.
+```bash
+python deploy/mocap/estimator.py               # robot mode: IMU orientation/gyro, yaw aligned to mocap
+python deploy/mocap/estimator.py --mode mocap  # everything from mocap (no robot needed)
+python deploy/mocap/visualizer.py              # optional: view the published pose
+```
+
+On hardware, `deploy/hardware/g1/control_29dof_kcf.py` subscribes to it and
+merges the pose into the KCF feedback, converting the ROS-clock stamp onto the
+policy clock; keep `kcf.state_source: simulation` (feedback used as published).
+Simulation has no mocap source; run it with `--pose-source simulation`.
 
 ## Hardware
 
-**KCF hardware control is not connected yet.** OptiTrack feedback, the physical
-motor mapping and the hardware command hookup still require implementation and
-validation. `--mode hardware` currently fails closed; do not use the simulation
-launcher to control a physical robot.
+**Torques are live.** `deploy/hardware/g1/hardware.py` has `ZERO_TORQUE = False`;
+set it to `True` for a dry run (every motor gets Kp = Kd = tau = 0, the robot is limp,
+sensors and the KCF pipeline still run). Do not use the simulation launcher on a physical robot.
+
+The hardware controller `deploy/hardware/g1/control_29dof_kcf.py` walks with the
+29-joint velocity policy `g1_29dof_vel.onnx` (mechanical waist lock OFF) and takes
+its twist from KCF. KCF's model is 23-joint, so the feedback keeps the 23 KCF joints
+of the 29 by name; with `kcf_joint_shift` they are re-centred from this policy's
+default pose onto the KCF policy's. The pelvis pose comes from `deploy/mocap/estimator.py`.
+KCF plans only inside `kcf.twist_limits` (in `g1_23dof_kcf.yaml`), which must fit
+inside the controller's `command_limits` (in `g1_29dof_kcf.yaml`).
+
+KCF keyboard: `h` home, `c` control (zero twist: stand in place), `t` track (KCF twist),
+`d` damp, Space/`x` stop.
 
 Hardware deployment on this branch is G1 only.
 
@@ -133,28 +148,34 @@ This checks the SDK connection, not the KCF/OptiTrack integration.
 
 Use separate terminals, each with `conda activate deploy`. The KCF variant keeps
 the original controller/SDK layout and replaces only the joystick command node
-with the keyboard-enabled KCF node. Its hardware mode remains blocked until the
-integration above is complete.
+with the keyboard-enabled KCF node, plus the mocap estimator.
 
 Terminal 1 — KCF command node:
 
 ```bash
-python deploy/kcf/kcf_ros.py
+python deploy/kcf/kcf_ros.py                       # MPC with the learned KCF model
+python deploy/kcf/kcf_ros.py --single-integrator   # MPC with the ideal single integrator (same guards and safety)
 ```
 
 Terminal 2 — hardware policy controller:
 
 ```bash
-python deploy/hardware/g1/<control_script>.py --config <your-config-file>.yaml
+python deploy/hardware/g1/control_29dof_kcf.py --config g1_29dof_kcf
 ```
 
 Terminal 3 — hardware SDK node:
 
 ```bash
-python deploy/hardware/g1/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
+python deploy/hardware/g1/hardware.py --config g1_29dof_kcf --network <network_interface_name>
 ```
 
-Terminal 4 (optional, logging to `logs/hardware/`):
+Terminal 4 — mocap pelvis estimator (Motive streaming the `kcf` rigid body):
+
+```bash
+python deploy/mocap/estimator.py
+```
+
+Terminal 5 (optional, logging to `logs/hardware/`):
 
 ```bash
 python deploy/logger/log.py --mode hw              # G1
