@@ -1,0 +1,40 @@
+# KCF on hardware with the 29dof velocity policy (g1_29dof_vel): KCF sends the twist, this policy walks.
+# KCF's model is 23-joint: the feedback drops the 6 extra joints (see deploy/hardware/g1/control_29dof_kcf.py).
+kcf_policy_profile: walking   # KCF profile (NOT kcf_profile: kcf_mpc needs exactly one kcf_profile yaml)
+xml_path: "g1/g1_29dof_mode11_scene.xml"
+policy_path: "g1_29dof_vel.onnx"
+
+# interpolate to default position duration
+home_pos_duration: 3.0  # [sec]
+
+# PD gains per joint (same as g1_29dof_vel.yaml)
+Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST, normal gains (mechanical lock OFF)
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
+Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 1.814, 1.814,    # Warning: ACTIVE WAIST
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+
+# home positions (same as g1_29dof_vel.yaml; hardware ramps here during the 'home' FSM state)
+home_base_pos: [0, 0, 0.78, 1, 0, 0, 0]
+home_joint_pos: [-0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+                 -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+                  0.0, 0.0, 0.0,
+                  0.35,  0.18, 0.0, 0.87, 0.0, 0.0, 0.0,
+                  0.35, -0.18, 0.0, 0.87, 0.0, 0.0, 0.0]
+
+# policy timing (must match KCF's: checked by the control node)
+control_dt: 0.02
+gait_period: 0.6
+stand_cmd_threshold: 0.05   # [m/s, rad/s] norm of the physical twist below which the gait clock is zeroed
+
+# commands are physical body twists (kcf_ros reads cmd_scale from this config to scale the operator stream)
+cmd_scale: [1.0, 1.0, 1.0]
+command_limits: [0.7, 0.7, 1.0]   # [m/s, m/s, rad/s] largest twist accepted; kcf.twist_limits must fit inside
+
+# KCF feedback: re-centre the 23 joints from this policy's default pose onto the KCF policy's (its training pose)
+kcf_joint_shift: true
