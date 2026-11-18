@@ -100,6 +100,9 @@ LOW_LEVEL_CONTROL_DT = 0.01  # [sec]
 # max allowable pelvis roll/pitch before forcing damp (when you fall)
 SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 
+# DRY RUN: zero Kp, Kd, and tau on every motor in every written command (robot is limp, sensors still stream)
+ZERO_TORQUE = False
+
 
 ########################################################################
 # CONTROL
@@ -134,6 +137,8 @@ class ControlNode(Node):
             print("WARNING: max tilt safety check is DISABLED.")
         if not self.enable_imu_guard:
             print("WARNING: IMU dropout guard is DISABLED.")
+        if ZERO_TORQUE:
+            print("WARNING: ZERO_TORQUE dry run: every motor gets Kp = Kd = tau = 0 (robot is limp).")
 
         # IMU states
         self.pelvis_imu_rpy = None            # roll, pitch, yaw
@@ -344,8 +349,19 @@ class ControlNode(Node):
         with self.write_lock:
             if self.prev_fsm_state in ("control", "track") and not self.safety_triggered:
                 self.fill_policy_cmd()
+                self.zero_torque_cmd()
                 self.low_cmd.crc = self.crc.Crc(self.low_cmd)
                 self.lowcmd_publisher_.Write(self.low_cmd)
+
+
+    # ZERO_TORQUE dry run: no stiffness, damping, or feedforward on any motor (caller holds write_lock)
+    def zero_torque_cmd(self):
+        if not ZERO_TORQUE:
+            return
+        for i in range(G1_NUM_MOTOR):
+            self.low_cmd.motor_cmd[i].kp = 0.0
+            self.low_cmd.motor_cmd[i].kd = 0.0
+            self.low_cmd.motor_cmd[i].tau = 0.0
 
 
     # fill low_cmd from the latest policy command (caller holds write_lock)
@@ -600,6 +616,7 @@ class ControlNode(Node):
                 self.fill_policy_cmd()
 
             # check sum commands for safety and then publish
+            self.zero_torque_cmd()
             self.low_cmd.crc = self.crc.Crc(self.low_cmd)
             self.lowcmd_publisher_.Write(self.low_cmd)
 
