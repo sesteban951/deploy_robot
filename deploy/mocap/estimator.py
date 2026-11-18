@@ -1,0 +1,327 @@
+##
+#
+# Pelvis state estimator -> nav_msgs/Odometry for KCF (same message as deploy/kcf/dummy_mocap_ros.py).
+# Both modes: raw mocap position, linear velocity from a least-squares line fit over a short window.
+#   --mode robot (default): orientation and body omega from the pelvis IMU, IMU yaw offset to match mocap
+#     (offset measured once at startup over YAW_CALIB_SAMPLES ticks; keep the robot still while it runs).
+#   --mode mocap: mocap orientation, body omega from a line fit of mocap rotations (no robot needed).
+# The raw Motive pose is also published on /deploy_robot/mocap.
+#
+##
+
+# standard imports
+import argparse
+import socket
+import struct
+import threading
+import time
+from collections import deque
+
+# other imports
+import numpy as np
+
+# ROS2 imports
+import rclpy
+from rclpy.node import Node
+from rclpy.duration import Duration
+from nav_msgs.msg import Odometry
+from std_msgs.msg import Float32MultiArray
+
+
+############################################################################
+# CONSTANTS
+############################################################################
+
+# NatNet message IDs, ports, and rigid body layout
+NAT_REQUEST_MODELDEF = 4
+NAT_MODELDEF = 5
+NAT_FRAMEOFDATA = 7
+NAT_DATASET_RIGIDBODY = 1
+MULTICAST_GROUP = "239.255.42.99"
+COMMAND_PORT = 1510
+DATA_PORT = 1511
+RIGID_BODY = struct.Struct("<i3f4ffH")   # id, pos (x, y, z), quat (x, y, z, w), mean error, params
+
+IMU_TIMEOUT = 0.1   # [sec] robot mode publishes no Odometry while the pelvis IMU is older than this
+YAW_CALIB_SAMPLES = 100   # robot mode: mocap-IMU yaw samples averaged at startup (1 s at 100 Hz)
+ODOM_TOPIC = "/deploy_kcf/mocap"   # same as MOCAP_TOPIC in deploy/kcf/kcf_interface.py (KCF input)
+RAW_TOPIC = "/deploy_robot/mocap"  # raw Motive pose: [pos (3), quat (w, x, y, z)]
+
+
+############################################################################
+# MOCAP CLIENT
+############################################################################
+
+class MocapClient:
+    """
+    Keep the latest tracked pose of one Motive rigid body (by name), plus a short position history.
+    """
+
+    def __init__(self, server_ip: str, body_name: str, capture_hz: float):
+
+        # Motive capture rate: frame number / capture_hz is the capture time (arrival time is bursty)
+        self.capture_hz = capture_hz
+
+        # ask Motive for its model definitions, retrying lost packets (this socket also gives our local IP)
+        cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        cmd.connect((server_ip, COMMAND_PORT))
+        cmd.settimeout(1.0)
+        for _ in range(3):
+            cmd.send(struct.pack("<HH", NAT_REQUEST_MODELDEF, 0))
+            try:
+                data = cmd.recv(65535)
+            except (socket.timeout, ConnectionRefusedError):
+                continue
+            if struct.unpack_from("<H", data)[0] == NAT_MODELDEF:
+                break
+        else:
+            raise TimeoutError(f"No reply from Motive at [{server_ip}]: check streaming is on and the network.")
+        local_ip = cmd.getsockname()[0]
+        cmd.close()
+
+        # find the body's streaming ID: descriptions are [type, size, data], a rigid body starts with name\0, ID
+        self.body_id = None
+        off = 8
+        for _ in range(struct.unpack_from("<i", data, 4)[0]):
+            data_type, size = struct.unpack_from("<ii", data, off)
+            off += 8
+            if data_type == NAT_DATASET_RIGIDBODY and data[off:].startswith(body_name.encode() + b"\0"):
+                self.body_id = struct.unpack_from("<i", data, off + len(body_name) + 1)[0]
+                break
+            off += size
+        if self.body_id is None:
+            raise KeyError(f"No rigid body [{body_name}] in Motive.")
+
+        # join the multicast stream on the interface that routes to Motive
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("", DATA_PORT))
+        self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                             socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton(local_ip))
+
+        # latest tracked (pos, quat (w, x, y, z), arrival time) and (capture time, pos, quat) history
+        self.pose = None
+        self.history = deque(maxlen=256)
+        threading.Thread(target=self.receive_loop, daemon=True).start()
+
+    # receive every frame and keep our body's pose whenever it is tracked
+    def receive_loop(self):
+        while True:
+            data = self.sock.recv(65535)
+            t_arrival = time.monotonic()
+
+            # a malformed or truncated packet is skipped, so it can never kill this thread
+            try:
+                if struct.unpack_from("<H", data)[0] != NAT_FRAMEOFDATA:
+                    continue
+                t_capture = struct.unpack_from("<i", data, 4)[0] / self.capture_hz
+
+                # skip header and frame number, then marker sets and loose markers ([count, size, data] each)
+                off = 8
+                off += 8 + struct.unpack_from("<i", data, off + 4)[0]
+                off += 8 + struct.unpack_from("<i", data, off + 4)[0]
+
+                # rigid bodies [count, size, bodies]: read only IDs until ours shows up
+                n_bodies = struct.unpack_from("<i", data, off)[0]
+                off += 8
+                for _ in range(n_bodies):
+                    if struct.unpack_from("<i", data, off)[0] == self.body_id:
+                        _, px, py, pz, qx, qy, qz, qw, _, params = RIGID_BODY.unpack_from(data, off)
+                        if params & 0x01:
+                            # a restarted frame counter (Motive restart) starts a fresh history
+                            if self.history and t_capture <= self.history[-1][0]:
+                                self.history.clear()
+                            self.history.append((t_capture, (px, py, pz), (qw, qx, qy, qz)))
+                            self.pose = ((px, py, pz), (qw, qx, qy, qz), t_arrival)
+                        break
+                    off += RIGID_BODY.size
+            except struct.error:
+                continue
+
+    # latest tracked ((x, y, z), (w, x, y, z), age [s]); None if never tracked or older than max_age [s]
+    def get_pose(self, max_age: float = 0.1):
+        pose = self.pose
+        if pose is None:
+            return None
+        age = time.monotonic() - pose[2]
+        return (pose[0], pose[1], age) if age <= max_age else None
+
+    # world linear velocity [m/s]: slope of a least-squares line through the last `window` [s] of positions
+    def get_velocity(self, window: float):
+        history = list(self.history)
+        if len(history) < 2:
+            return None
+        t = np.array([h[0] for h in history])
+        p = np.array([h[1] for h in history])
+        recent = t >= t[-1] - window
+        t, p = t[recent] - t[recent].mean(), p[recent] - p[recent].mean(axis=0)
+        if len(t) < 2:
+            return None
+        return (t @ p) / (t @ t)
+
+    # body-frame angular velocity [rad/s]: slope of a line fit to the window's rotations relative to the newest
+    def get_angular_velocity(self, window: float):
+        history = list(self.history)
+        if len(history) < 2:
+            return None
+        t = np.array([h[0] for h in history])
+        q = np.array([h[2] for h in history])
+        recent = t >= t[-1] - window
+        t, q = t[recent], q[recent]
+        if len(t) < 2:
+            return None
+
+        # relative rotation q_ref^-1 * q_i (w >= 0, so the short way around) as a rotation vector
+        w0, v0 = q[-1, 0], -q[-1, 1:]
+        w = w0 * q[:, 0] - q[:, 1:] @ v0
+        v = w0 * q[:, 1:] + q[:, :1] * v0 + np.cross(v0, q[:, 1:])
+        v[w < 0], w[w < 0] = -v[w < 0], -w[w < 0]
+        norm = np.linalg.norm(v, axis=1)
+        scale = np.where(norm > 1e-9, 2.0 * np.arctan2(norm, w) / np.maximum(norm, 1e-12), 2.0)
+        r = v * scale[:, None]
+
+        # line fit of the rotation vectors over capture time
+        t, r = t - t.mean(), r - r.mean(axis=0)
+        return (t @ r) / (t @ t)
+
+
+############################################################################
+# ESTIMATOR NODE
+############################################################################
+
+class EstimatorNode(Node):
+    """
+    Fuse mocap position/velocity with the pelvis IMU and publish the KCF mocap Odometry.
+    """
+
+    def __init__(self, mocap: MocapClient, window: float, rate: float, mode: str = 'robot'):
+
+        super().__init__('mocap_estimator')
+        self.mocap = mocap
+        self.window = window
+        self.mode = mode
+
+        # latest pelvis IMU orientation (w, x, y, z), body-frame gyro, and arrival time
+        self.imu_quat = np.array([1.0, 0.0, 0.0, 0.0])
+        self.imu_omega = np.zeros(3)
+        self.imu_time = None
+
+        # robot mode: yaw offset [rad] added to the IMU so its yaw matches mocap (None until calibrated)
+        self.yaw_samples = []
+        self.yaw_offset = None
+
+        # ROS publisher, subscriber, and publish timer
+        self.odom_pub = self.create_publisher(Odometry, ODOM_TOPIC, 1)
+        self.raw_pub = self.create_publisher(Float32MultiArray, RAW_TOPIC, 1)
+        self.imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.imu_callback, 1)
+        self.timer = self.create_timer(1.0 / rate, self.publish_callback)
+
+    # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
+    def imu_callback(self, msg):
+        data = np.array(msg.data, dtype=np.float64)
+        self.imu_quat = data[3:7]
+        self.imu_omega = data[7:10]
+        self.imu_time = time.monotonic()
+
+    # publish the latest estimate (nothing while the body is not tracked, so KCF sees mocap as stale)
+    def publish_callback(self):
+
+        # raw mocap pose, published whenever the body is tracked
+        pose = self.mocap.get_pose()
+        if pose is None:
+            return
+        pos, mocap_quat, age = pose
+        self.raw_pub.publish(Float32MultiArray(data=[*pos, *mocap_quat]))
+
+        # mocap world velocity
+        vel_world = self.mocap.get_velocity(self.window)
+        if vel_world is None:
+            return
+
+        # robot: IMU orientation and gyro (nothing while the IMU is stale); mocap: mocap orientation, line-fit omega
+        if self.mode == 'robot':
+            if self.imu_time is None or time.monotonic() - self.imu_time >= IMU_TIMEOUT:
+                return
+            w, x, y, z = self.imu_quat / np.linalg.norm(self.imu_quat)
+            omega = self.imu_omega
+
+            # calibrate once: circular mean of (mocap yaw - IMU yaw) over the first matched samples
+            if self.yaw_offset is None:
+                mw, mx, my, mz = mocap_quat
+                yaw_mocap = np.arctan2(2 * (mw * mz + mx * my), 1 - 2 * (my * my + mz * mz))
+                yaw_imu = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+                self.yaw_samples.append(yaw_mocap - yaw_imu)
+                if len(self.yaw_samples) < YAW_CALIB_SAMPLES:
+                    return
+                self.yaw_offset = np.arctan2(np.mean(np.sin(self.yaw_samples)), np.mean(np.cos(self.yaw_samples)))
+                print(f"Yaw calibrated: IMU yaw offset {np.degrees(self.yaw_offset):+.2f} deg to match mocap.")
+
+            # IMU orientation rotated by the yaw offset about world z: q = q_offset * q_imu
+            c, s = np.cos(self.yaw_offset / 2), np.sin(self.yaw_offset / 2)
+            quat = np.array([c * w - s * z, c * x - s * y, c * y + s * x, c * z + s * w])
+        else:
+            omega = self.mocap.get_angular_velocity(self.window)
+            if omega is None:
+                return
+            quat = np.array(mocap_quat) / np.linalg.norm(mocap_quat)
+
+        # world velocity into the body frame with the published quaternion (KCF rotates it back with it)
+        w, x, y, z = quat
+        rotation = np.array([
+            [1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+            [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+            [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)],
+        ])
+        vel_body = rotation.T @ vel_world
+
+        # stamp with the measurement time on the ROS clock (now minus the mocap pose age)
+        msg = Odometry()
+        msg.header.stamp = (self.get_clock().now() - Duration(seconds=age)).to_msg()
+        msg.header.frame_id, msg.child_frame_id = 'world', 'pelvis'
+        p, o = msg.pose.pose.position, msg.pose.pose.orientation
+        p.x, p.y, p.z = pos
+        o.w, o.x, o.y, o.z = quat.tolist()
+        lin, ang = msg.twist.twist.linear, msg.twist.twist.angular
+        lin.x, lin.y, lin.z = vel_body.tolist()
+        ang.x, ang.y, ang.z = omega.tolist()
+        self.odom_pub.publish(msg)
+
+
+############################################################################
+# MAIN
+############################################################################
+
+if __name__ == "__main__":
+
+    # parse arguments
+    parser = argparse.ArgumentParser(description='Publish the pelvis Odometry for KCF from OptiTrack + pelvis IMU.')
+    parser.add_argument('--mode', type=str, default='robot', choices=['robot', 'mocap'],
+                        help='robot: orientation/omega from the pelvis IMU; mocap: everything from mocap')
+    parser.add_argument('--server', type=str, default='192.168.1.15', help='IP of the Motive PC')
+    parser.add_argument('--body', type=str, default='kcf', help='rigid body name in Motive')
+    parser.add_argument('--capture-hz', type=float, default=240.0, help='Motive capture rate [Hz]')
+    parser.add_argument('--window', type=float, default=0.04, help='velocity line-fit window [s]')
+    parser.add_argument('--rate', type=float, default=100.0, help='publish rate [Hz]')
+    args = parser.parse_args()
+
+    # connect to Motive and track the body
+    mocap = MocapClient(args.server, args.body, args.capture_hz)
+    print(f"Tracking rigid body [{args.body}] (ID {mocap.body_id}) from Motive [{args.server}].")
+    print(f"    Mode [{args.mode}]: orientation and omega from the "
+          f"{'pelvis IMU, yaw aligned to mocap (no Odometry while it is stale)' if args.mode == 'robot' else 'mocap (line fit)'}.")
+    if args.mode == 'robot':
+        print(f"    Calibrating the IMU yaw offset over the first {YAW_CALIB_SAMPLES} samples: keep the robot still.")
+    print(f"    Publishing [{ODOM_TOPIC}] at {args.rate:g} Hz, velocity window {1000 * args.window:g} ms.")
+    print(f"    Publishing raw mocap pose [{RAW_TOPIC}].")
+
+    # run the estimator node
+    rclpy.init()
+    node = EstimatorNode(mocap, args.window, args.rate, args.mode)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()

@@ -126,7 +126,7 @@ if __name__ == "__main__":
     # parse arguments
     parser = argparse.ArgumentParser(description='Print the pose of one Motive rigid body.')
     parser.add_argument('--server', type=str, default='192.168.1.15', help='IP of the Motive PC')
-    parser.add_argument('--body', type=str, default='MarkerHelmet', help='rigid body name in Motive')
+    parser.add_argument('--body', type=str, default='kcf', help='rigid body name in Motive')
     args = parser.parse_args()
 
     # connect to Motive and track the body
