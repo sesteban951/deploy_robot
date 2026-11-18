@@ -1,11 +1,12 @@
 ##
 #
-# Pelvis state estimator -> nav_msgs/Odometry for KCF (same message as deploy/kcf/dummy_mocap_ros.py).
+# Pelvis state estimator -> nav_msgs/Odometry for KCF (the mocap contract in deploy/kcf/kcf_interface.py).
 # Both modes: raw mocap position, linear velocity from a least-squares line fit over a short window.
 #   --mode robot (default): orientation and body omega from the pelvis IMU, IMU yaw offset to match mocap
 #     (offset measured once at startup over YAW_CALIB_SAMPLES ticks; keep the robot still while it runs).
 #   --mode mocap: mocap orientation, body omega from a line fit of mocap rotations (no robot needed).
 # The raw Motive pose is also published on /deploy_robot/mocap.
+# Guards: a lost mocap or IMU stream is held at its last value for HOLD_TIME (with warnings), then Odometry stops.
 #
 ##
 
@@ -42,7 +43,9 @@ COMMAND_PORT = 1510
 DATA_PORT = 1511
 RIGID_BODY = struct.Struct("<i3f4ffH")   # id, pos (x, y, z), quat (x, y, z, w), mean error, params
 
-IMU_TIMEOUT = 0.1   # [sec] robot mode publishes no Odometry while the pelvis IMU is older than this
+IMU_TIMEOUT = 0.1     # [sec] a pelvis IMU message older than this counts as lost (robot mode)
+MOCAP_TIMEOUT = 0.1   # [sec] a tracked mocap pose older than this counts as lost
+HOLD_TIME = 0.5       # [sec] guards re-publish the last mocap/IMU value this long, then stop (KCF -> control)
 YAW_CALIB_SAMPLES = 100   # robot mode: mocap-IMU yaw samples averaged at startup (1 s at 100 Hz)
 ODOM_TOPIC = "/deploy_kcf/mocap"   # same as MOCAP_TOPIC in deploy/kcf/kcf_interface.py (KCF input)
 RAW_TOPIC = "/deploy_robot/mocap"  # raw Motive pose: [pos (3), quat (w, x, y, z)]
@@ -210,6 +213,13 @@ class EstimatorNode(Node):
         self.yaw_samples = []
         self.yaw_offset = None
 
+        # guards: last good mocap velocities, and the arrival time [s, monotonic] when each stream was lost
+        self.last_vel_world = None
+        self.last_omega_mocap = None
+        self.mocap_lost_at = None
+        self.imu_lost_at = None
+        self.mocap_expired = self.imu_expired = False
+
         # ROS publisher, subscriber, and publish timer
         self.odom_pub = self.create_publisher(Odometry, ODOM_TOPIC, 1)
         self.raw_pub = self.create_publisher(Float32MultiArray, RAW_TOPIC, 1)
@@ -226,27 +236,63 @@ class EstimatorNode(Node):
     # publish the latest estimate (nothing while the body is not tracked, so KCF sees mocap as stale)
     def publish_callback(self):
 
-        # raw mocap pose, published whenever the body is tracked
-        pose = self.mocap.get_pose()
-        if pose is None:
-            return
-        pos, mocap_quat, age = pose
-        self.raw_pub.publish(Float32MultiArray(data=[*pos, *mocap_quat]))
+        now = time.monotonic()
 
-        # mocap world velocity
-        vel_world = self.mocap.get_velocity(self.window)
-        if vel_world is None:
-            return
-
-        # robot: IMU orientation and gyro (nothing while the IMU is stale); mocap: mocap orientation, line-fit omega
-        if self.mode == 'robot':
-            if self.imu_time is None or time.monotonic() - self.imu_time >= IMU_TIMEOUT:
+        # fresh mocap: raw pose, line-fit velocities (kept for the guard), and a recovery warning
+        pose = self.mocap.get_pose(MOCAP_TIMEOUT)
+        if pose is not None:
+            pos, mocap_quat, age = pose
+            self.raw_pub.publish(Float32MultiArray(data=[*pos, *mocap_quat]))
+            vel_world = self.mocap.get_velocity(self.window)
+            if vel_world is None:
                 return
+            self.last_vel_world = vel_world
+            if self.mode == 'mocap':
+                self.last_omega_mocap = self.mocap.get_angular_velocity(self.window)
+            if self.mocap_lost_at is not None:
+                print(f"WARNING: mocap recovered after {now - self.mocap_lost_at:.2f} s.", flush=True)
+                self.mocap_lost_at, self.mocap_expired = None, False
+
+        # mocap guard: re-publish the last pose/velocity (stamped now) for up to HOLD_TIME, then stop
+        else:
+            if self.mocap.pose is None or self.last_vel_world is None:
+                return
+            pos, mocap_quat, arrival = self.mocap.pose
+            if self.mocap_lost_at is None:
+                self.mocap_lost_at = arrival
+                print(f"WARNING: mocap lost (no tracked pose). Holding the last pose for up to {HOLD_TIME} s.", flush=True)
+            if now - self.mocap_lost_at > HOLD_TIME:
+                if not self.mocap_expired:
+                    print(f"WARNING: mocap lost for over {HOLD_TIME} s: Odometry stopped (KCF falls back to control).", flush=True)
+                    self.mocap_expired = True
+                return
+            age, vel_world = 0.0, self.last_vel_world
+
+        # robot: IMU orientation and gyro; mocap: mocap orientation, line-fit omega
+        if self.mode == 'robot':
+
+            # IMU guard: keep the last IMU message for up to HOLD_TIME, then stop
+            if self.imu_time is None:
+                return
+            if now - self.imu_time >= IMU_TIMEOUT:
+                if self.imu_lost_at is None:
+                    self.imu_lost_at = self.imu_time
+                    print(f"WARNING: pelvis IMU lost. Holding the last IMU message for up to {HOLD_TIME} s.", flush=True)
+                if now - self.imu_lost_at > HOLD_TIME:
+                    if not self.imu_expired:
+                        print(f"WARNING: pelvis IMU lost for over {HOLD_TIME} s: Odometry stopped (KCF falls back to control).", flush=True)
+                        self.imu_expired = True
+                    return
+            elif self.imu_lost_at is not None:
+                print(f"WARNING: pelvis IMU recovered after {now - self.imu_lost_at:.2f} s.", flush=True)
+                self.imu_lost_at, self.imu_expired = None, False
             w, x, y, z = self.imu_quat / np.linalg.norm(self.imu_quat)
             omega = self.imu_omega
 
-            # calibrate once: circular mean of (mocap yaw - IMU yaw) over the first matched samples
+            # calibrate once, on fresh samples only: circular mean of (mocap yaw - IMU yaw)
             if self.yaw_offset is None:
+                if self.mocap_lost_at is not None or self.imu_lost_at is not None:
+                    return
                 mw, mx, my, mz = mocap_quat
                 yaw_mocap = np.arctan2(2 * (mw * mz + mx * my), 1 - 2 * (my * my + mz * mz))
                 yaw_imu = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
@@ -260,7 +306,7 @@ class EstimatorNode(Node):
             c, s = np.cos(self.yaw_offset / 2), np.sin(self.yaw_offset / 2)
             quat = np.array([c * w - s * z, c * x - s * y, c * y + s * x, c * z + s * w])
         else:
-            omega = self.mocap.get_angular_velocity(self.window)
+            omega = self.last_omega_mocap
             if omega is None:
                 return
             quat = np.array(mocap_quat) / np.linalg.norm(mocap_quat)
@@ -274,7 +320,7 @@ class EstimatorNode(Node):
         ])
         vel_body = rotation.T @ vel_world
 
-        # stamp with the measurement time on the ROS clock (now minus the mocap pose age)
+        # stamp with the measurement time on the ROS clock (now minus the mocap pose age; a held pose is stamped now)
         msg = Odometry()
         msg.header.stamp = (self.get_clock().now() - Duration(seconds=age)).to_msg()
         msg.header.frame_id, msg.child_frame_id = 'world', 'pelvis'
@@ -308,7 +354,8 @@ if __name__ == "__main__":
     mocap = MocapClient(args.server, args.body, args.capture_hz)
     print(f"Tracking rigid body [{args.body}] (ID {mocap.body_id}) from Motive [{args.server}].")
     print(f"    Mode [{args.mode}]: orientation and omega from the "
-          f"{'pelvis IMU, yaw aligned to mocap (no Odometry while it is stale)' if args.mode == 'robot' else 'mocap (line fit)'}.")
+          f"{'pelvis IMU, yaw aligned to mocap' if args.mode == 'robot' else 'mocap (line fit)'}.")
+    print(f"    Guards: a lost mocap/IMU stream is held at its last value for {HOLD_TIME} s, then Odometry stops.")
     if args.mode == 'robot':
         print(f"    Calibrating the IMU yaw offset over the first {YAW_CALIB_SAMPLES} samples: keep the robot still.")
     print(f"    Publishing [{ODOM_TOPIC}] at {args.rate:g} Hz, velocity window {1000 * args.window:g} ms.")
