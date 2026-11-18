@@ -1,0 +1,46 @@
+{
+  "underlay": "/opt/ros/humble",
+  "python": "3.11",
+  "numpy_major": 2,
+  "sources": {
+    "rosidl_python": {
+      "url": "https://github.com/ros2/rosidl_python.git",
+      "tag": "0.14.4",
+      "commit": "2507d5dbc1aebe2254d9eac088f007dcaea2ff03"
+    },
+    "rcl_interfaces": {
+      "url": "https://github.com/ros2/rcl_interfaces.git",
+      "tag": "1.2.1",
+      "commit": "5e01a28f9866a564491480e12d8659a134678741"
+    },
+    "common_interfaces": {
+      "url": "https://github.com/ros2/common_interfaces.git",
+      "tag": "4.2.4",
+      "commit": "53761cba9a000902602e7e695cb40de78eadee7f"
+    },
+    "unique_identifier_msgs": {
+      "url": "https://github.com/ros2/unique_identifier_msgs.git",
+      "tag": "2.2.1",
+      "commit": "27767cefcf8a80da44641dc208c57722c28aa11c"
+    },
+    "rclpy": {
+      "url": "https://github.com/ros2/rclpy.git",
+      "tag": "3.3.14",
+      "commit": "993b2b6d254a923503a049c14034cde07ebc750a"
+    },
+    "test_interface_files": {
+      "url": "https://github.com/ros2/test_interface_files.git",
+      "tag": "0.9.1",
+      "commit": "a0c8f5e338490ddf8b98238dce35c06810115e8b"
+    }
+  },
+  "overlay_build_dependencies": [
+    "empy==3.3.4",
+    "lark-parser==0.12.0",
+    "catkin_pkg==1.1.1",
+    "PyYAML==6.0.3",
+    "pybind11==2.13.6",
+    "netifaces==0.11.0",
+    "typeguard==4.6.0"
+  ]
+}

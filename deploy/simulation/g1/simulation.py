@@ -7,6 +7,7 @@
 # standard imports
 import argparse
 import time
+import threading
 from collections import deque
 
 # mujoco imports
@@ -20,7 +21,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray, Float64MultiArray
 
 # directory imports
 import sys
@@ -79,6 +80,15 @@ class SimulationNode(Node):
         self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/torso_imu_state', 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
+        self.kcf_state_pub = None
+        if self.config.get('kcf_enabled', False):
+            if (self.nq, self.nv, self.nu) != (30, 29, 23):
+                raise ValueError("KCF simulation requires the walking 23-joint model")
+            self.kcf_state_pub = self.create_publisher(Float64MultiArray, '/deploy_kcf/sim_state', 1)
+            ratio = self.config['control_dt'] / self.sim_dt
+            self.kcf_decimation = round(ratio)
+            if self.kcf_decimation < 1 or abs(ratio - self.kcf_decimation) > 1e-6:
+                raise ValueError("KCF control_dt must be an integer number of physics steps")
 
         # ROS subscribers
         self.command_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/command', self.command_callback, 10)
@@ -165,6 +175,8 @@ class SimulationNode(Node):
         # assign initial state
         self.mj_data.qpos[:7] = self.default_base
         self.mj_data.qpos[7:7+self.nu] = self.home_joints
+        if self.config.get('kcf_enabled', False):
+            mujoco.mj_forward(self.mj_model, self.mj_data)
 
         # build list of joint sensor names (matching actuator order)
         self.joint_pos_sensor_names = []
@@ -191,6 +203,7 @@ class SimulationNode(Node):
         self._cam_msg_until = 0.0   # wall time until which the camera-mode line is shown
 
         # launch the viewer
+        viewer_threads_before = set(threading.enumerate())
         self.viewer = mujoco.viewer.launch_passive(
             self.mj_model,
             self.mj_data,
@@ -198,6 +211,7 @@ class SimulationNode(Node):
             show_left_ui=False,  # disable left tab (use 'Tab' for toggling on/off)
             show_right_ui=False, # disable right tab (use 'Tab + Shift' for toggling on/off)
         )
+        self._viewer_threads = [t for t in threading.enumerate() if t not in viewer_threads_before]
 
         # viewer settings
         self._viewer_font_scale = getattr(
@@ -279,8 +293,13 @@ class SimulationNode(Node):
 
     # publish joint state: [q(nu), dq(nu), ddq(nu), tau_est(nu)]
     def publish_joint_state(self):
-        qpos_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_pos_sensor_names])
-        qvel_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_vel_sensor_names])
+        if self.config.get('kcf_enabled', False):
+            # The original walking XML has no named per-joint sensors.
+            qpos_joints = self.mj_data.qpos[7:].copy()
+            qvel_joints = self.mj_data.qvel[6:].copy()
+        else:
+            qpos_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_pos_sensor_names])
+            qvel_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_vel_sensor_names])
         ddq_joints = np.zeros(self.nu)  # NOTE: no such thing as joint acceleration sensors in Mujoco, so we publish zeros here
         tau_est_joints = self.mj_data.ctrl[:self.nu].copy()
 
@@ -334,8 +353,11 @@ class SimulationNode(Node):
             self.mj_data.ctrl[:] = 0.0
 
         # step the simulation
-        mujoco.mj_step(self.mj_model, self.mj_data)
-        self._step_count += 1
+        # In the opt-in KCF setup, hold the initial pose until policy startup.
+        # Otherwise the robot free-falls while ONNX/ROS discovery initializes.
+        if self.command_received or self.kcf_state_pub is None:
+            mujoco.mj_step(self.mj_model, self.mj_data)
+            self._step_count += 1
 
         # inject sensor noise (newer mujoco dropped the sensornoise, so we
         # apply the per-sensor std devs from XML noise="..." attrs by hand)
@@ -346,6 +368,11 @@ class SimulationNode(Node):
         self.publish_pelvis_imu()
         self.publish_torso_imu()
         self.publish_joint_state()
+        if self.kcf_state_pub is not None and self._step_count % self.kcf_decimation == 0:
+            # One atomic snapshot on the actual policy grid, not a 500 Hz stream
+            # whose latest-value queue can shift the policy/gait clock by 2 ms.
+            state = np.concatenate(([self.mj_data.time], self.mj_data.qpos, self.mj_data.qvel))
+            self.kcf_state_pub.publish(Float64MultiArray(data=state.tolist()))
         time_msg = Float64()
         time_msg.data = self.mj_data.time
         self.simulation_time_pub.publish(time_msg)
@@ -409,8 +436,11 @@ class SimulationNode(Node):
 
     # shutdown the node and close the viewer
     def destroy_node(self):
-        if self.viewer.is_running():
-            self.viewer.close()
+        self.viewer.close()
+        # close() only requests shutdown. Wait for the passive render thread
+        # before Python/GLFW teardown.
+        for thread in self._viewer_threads:
+            thread.join(timeout=2.0)
         super().destroy_node()
 
 
@@ -428,12 +458,13 @@ def main(args=None):
         description='Asynchronous Simulation Node using Mujoco.'
     )
     # config path argument
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
         '--config',
         type=str,
-        required=True,
         help='Path to the config yaml file. Example: "g1_29dof.yaml".'
     )
+    selection.add_argument('--profile', help='Select the complete model bundle in deploy/configs/kcf')
     # enable sensor noise (off by default)
     parser.add_argument(
         '--noise',
@@ -455,6 +486,11 @@ def main(args=None):
         help='Simulation rate in Hz (default 500). Example: "--sim-hz 1000".'
     )
     args = parser.parse_args()
+    if args.profile is not None:
+        from kcf_mpc.profiles import load_profile
+        profile = load_profile(args.profile)
+        profile.validate_assets()
+        args.config = profile.values['simulation_config']
     if args.delay < 0:
         parser.error("--delay must be zero or positive.")
     if args.sim_hz <= 0:

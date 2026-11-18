@@ -1,148 +1,169 @@
 # Deploy Robot in Simulation and on Hardware
 <p align="center"><img src="utils/img/menhir.png" width="50%"/></p>
 
-This repo is for deploying asynchronous sim and real robot code for the Unitree G1 and Go2 robot. 
+Asynchronous policy deployment for Unitree G1 and Go2. Walking KCF-MPC is
+self-contained in this repository and currently validated in G1 simulation.
 
-A brief overview of the repo structure is as follows:
-- `deploy`: main deployment code for both sim and real robot. The `simulation` folder contains code for sim deployment, and the `hardware` folder contains code for real robot deployment.
-- `models`: contains the Mujoco XML files and mesh files, one subfolder per robot (`g1`, `go2`).
-- `motions`: contains motion files for the robot.
-- `policy`: contains the policies to use for controlling the robot.
-- `utils`: contains utility code.
-
----
+- `deploy`: command, policy, simulation and hardware nodes.
+- `kcf_mpc`: optimized MPC runtime, gains and trajectory references.
+- `models`, `policy`, `motions`: robot and controller assets.
+- `utils`: shared deployment utilities.
 
 # Installation
-> [!IMPORTANT]
-> If you are on **Ubuntu 24**:
-> - Use ROS2 `jazzy` instead. Simply replace every mention of `humble` with `jazzy`.
-> - Install the conda env with `Python 3.12`. Simply change `python=3.10` to `python=3.12` in the `environment.yml` file.
 
 ## ROS2
-Use ROS2 `humble` to communicate across different pieces of code. Install instructions are here: https://docs.ros.org/en/humble/Installation.html
 
-If your scripts use the ROS joystick, you can install `joy` package via:
-```bash
-sudo apt update
-sudo apt install ros-humble-joy
-```
+KCF uses **ROS Humble, Python 3.11 / NumPy 2 and an NVIDIA GPU**.
+Install [ROS Humble](https://docs.ros.org/en/humble/Installation.html)
+and Conda first. Jazzy/Python 3.12 is not qualified for KCF.
 
-## Conda Environment
-Use `make` to create the `deploy` conda environment from `environment.yml`:
+From the repository root:
+
 ```bash
+sudo apt install build-essential cmake git-lfs python3-colcon-common-extensions
+git lfs install
+git lfs pull
 make install
-```
-This creates the env **and** sets the `DEPLOY_ROOT_DIR` environment variable (scoped to the env) to this repo. Then, activate the env:
-```bash
 conda activate deploy
 ```
-Other `make` targets:
+
+`make install` creates the environment, builds matching ROS Python bindings
+and sets `DEPLOY_ROOT_DIR`. ROS loads automatically with `conda activate deploy`
+
 ```bash
-make update      # update the env from environment.yml (after editing dependencies)
-make uninstall   # remove the deploy env (run `conda deactivate` first)
+make update      # update dependencies
+make kcf-setup   # repair/rebuild ROS bindings and activation hooks
+make uninstall   # remove the environment after conda deactivate
 ```
 
-## Unitree SDK2 for Python
-After the `conda` environment is set up, install the Unitree SDK inside the conda environment.
-Make sure you are in the `deploy` conda environment by using `conda activate deploy`, and then follow the Unitree SDK installation instructions here: https://github.com/unitreerobotics/unitree_sdk2_python
+## Unitree SDK2 (hardware only)
 
-## tmux (optional)
-The launch shortcuts in `deploy/launch/` (e.g. `launch_walk.sh`) open all the terminals for you in one `tmux` session. Install it if you want to use them:
-```bash
-sudo apt install tmux
-```
+Inside `conda activate deploy`, follow the
+[Unitree SDK2 installation instructions](https://github.com/unitreerobotics/unitree_sdk2_python).
 
-## Policy
-Download the trained `.onnx` policy from WandB and place it in the `policy/<robot>/` folder. Then set `policy_path` in the corresponding config in `deploy/configs/<robot>/` to its filename.
+## Policy and MPC configuration
 
----
+The walking policy, KCF checkpoint and normalization are under `policy/g1/kcf/`.
+`deploy/configs/g1/g1_23dof_kcf.yaml` contains the robot/policy settings and the
+`kcf:` model bundle. Set `kcf.state_source` to `simulation` or `mocap` there;
+an optional `--state-source` flag overrides it for one run.
+MPC gains and trajectory defaults are in `kcf_mpc/config/mpc_config.py`.
 
 # Deployment
-## Simulation
-### Launching
-You will open terminals, each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the Mujoco simulation.
 
-Terminal 1 (if you use joystick):
+Run every command from this repository root, with `conda activate deploy`
+in each terminal. KCF uses keyboard controls; no joystick node or pygame is needed.
+
+## Simulation
+
+Terminal 1 — KCF command node (wait for `ready`):
+
 ```bash
-python deploy/joystick/joystick_ros.py 
+python deploy/kcf/kcf_ros.py
 ```
-Terminal 2:
+
+Terminal 2 — walking policy:
+
 ```bash
-python deploy/simulation/<robot>/<control_script>.py --config <your-config-file>.yaml
+python deploy/simulation/g1/control_23dof_vel.py --config g1_23dof_kcf.yaml
 ```
-Terminal 3:
+
+Terminal 3 — visible MuJoCo simulation:
+
 ```bash
-python deploy/simulation/<robot>/simulation.py --config <your-config-file>.yaml
+python deploy/simulation/g1/simulation.py --config g1_23dof_kcf.yaml
 ```
-Terminal 4 (optional, to log data to `logs/simulation/`):
+
+In **Terminal 1**, press `d` → `h` → `c` → `t` to enter KCF tracking.
+`c` leaves tracking with zero velocity; **Space** or `x` stops tracking;
+`q` or Ctrl+C exits. Keep this terminal in the foreground.
+Loss of terminal control, stale feedback or a long loop pause disarms tracking;
+repeat `h` → `c` → `t` after recovery. These keys do not provide a physical emergency stop.
+
+To select a trajectory, add e.g. `--reference-mode lissajous` to Terminal 1.
+Use `--shadow` for prediction without actuation or FSM commands.
+
+Terminal 4 (optional logging to `logs/simulation/`):
+
 ```bash
 python deploy/logger/log.py --mode sim
 ```
 
+### Mocap input
+
+Start `python deploy/kcf/dummy_mocap_ros.py` in another activated terminal and
+set `kcf.state_source: mocap` in the deployment YAML. The dummy is a simulation-backed
+placeholder for the future OptiTrack adapter, not a separate controller path.
+
+Both publishers use the same `nav_msgs/Odometry` input on `/deploy_kcf/mocap`:
+calibrated world-to-pelvis pose, body-frame velocity and measurement timestamps
+aligned with the policy clock. The contract is in `deploy/kcf/kcf_interface.py`.
+Later, stop the dummy and launch your OptiTrack adapter on that interface;
+the KCF and policy commands stay unchanged. If needed, remap the KCF input using
+`--ros-args -r /deploy_kcf/mocap:=/your/calibrated_pelvis` in Terminal 1.
+
 ## Hardware
-> [!NOTE]
-> Hardware deployment on this branch is for the **G1** only. The Go2 hardware code (hardware node, controllers,
-> stand example, Orin/Foxy setup) is developed on the `foxy` branch.
 
-### Turning the robot on
-Press the power button twice and hold on the second press. You should see the robot's eyes light up and hear fan sounds from the motors. After a while of setup, the robot will say "zero torque mode".
+**KCF hardware control is not connected yet.** OptiTrack feedback, the physical
+motor mapping and the hardware command hookup still require implementation and
+validation. `--mode hardware` currently fails closed; do not use the simulation
+launcher to control a physical robot.
 
-This means the robot is on and ready to receive commands.
+Hardware deployment on this branch is G1 only.
 
 ### Network Configuration
-First ensure that you are connected to the robot via an ethernet cable. Then go to Ubuntu settings and configure the IPv4 Method to `Manual`, set the Address to `192.168.123.99`, and the Netmask to `255.255.255.0`. 
 
-You can find the network interface name (e.g. `enp8s0`) via `ifconfig` command in a terminal. You will need it to run hardware deployment code.
+Connect Ethernet and set IPv4 address `192.168.123.99`, netmask `255.255.255.0`.
+Use the name of the Ethernet interface connected to the robot, e.g. `enp8s0`,
+where `<network_interface_name>` appears below.
 
 ### Sanity Check
-To make sure everything is working and you can communicate with the robot, you can run the example low level control script, which moves the G1's arms and ankles. Run:
+
+The existing Unitree low-level example checks communication by moving the G1's
+arms and ankles. Follow the robot's hardware safety procedure and run it by
+itself, not alongside another controller:
+
 ```bash
 python deploy/hardware/g1/g1_low_level_example.py <network_interface_name>
 ```
-where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
+
+This checks the SDK connection, not the KCF/OptiTrack integration.
 
 ### Launching
-You will open terminals, each in the `deploy` conda environment. In the first terminal, you will launch the joystick node (if you use it). In the second terminal, you will launch the controller. In the third terminal, you will launch the hardware SDK node.
 
-Terminal 1 (if you use joystick):
+Use separate terminals, each with `conda activate deploy`. The KCF variant keeps
+the original controller/SDK layout and replaces only the joystick command node
+with the keyboard-enabled KCF node. Its hardware mode remains blocked until the
+integration above is complete.
+
+Terminal 1 — KCF command node:
+
 ```bash
-python deploy/joystick/joystick_ros.py 
+python deploy/kcf/kcf_ros.py
 ```
-Terminal 2:
+
+Terminal 2 — hardware policy controller:
+
 ```bash
 python deploy/hardware/g1/<control_script>.py --config <your-config-file>.yaml
 ```
-Terminal 3:
+
+Terminal 3 — hardware SDK node:
+
 ```bash
 python deploy/hardware/g1/hardware.py --config <your-config-file>.yaml --network <network_interface_name>
 ```
-Terminal 4 (optional, to log data to `logs/hardware/`):
-```bash
-python deploy/logger/log.py --mode hw               # G1
-python deploy/logger/log.py --mode hw --robot go2   # Go2
-```
-where `<network_interface_name>` is the name of your network interface (e.g. `enp8s0`).
 
----
+Terminal 4 (optional, logging to `logs/hardware/`):
+
+```bash
+python deploy/logger/log.py --mode hw              # G1
+python deploy/logger/log.py --mode hw --robot go2  # Go2 logger
+```
 
 # Plotting
-To visualize a logged run, use `logs/plot.py`. With no arguments it plots the most recent log found under `logs/simulation/` or `logs/hardware/`:
-```bash
-python logs/plot.py
-```
-To plot a specific log, pass its path:
-```bash
-python logs/plot.py --filename logs/hardware/<your-log>.h5
-```
-This brings up joint positions and velocities (measured vs commanded), estimated joint torques, the pelvis and torso IMUs, joystick commands, and motor temperatures — whichever of these datasets the log contains.
 
----
-
-# Small details
-If you want VS Code to recognize the Unitree SDK source code, just add the following to your `.vscode/settings.json` that is located in your root directory:
-```json
-{
-  "python.analysis.extraPaths": ["<path-to>/unitree_sdk2_python"]
-}
+```bash
+python logs/plot.py                                   # latest log
+python logs/plot.py --filename logs/hardware/<run>.h5  # selected log
 ```
-To be clear, this is only so you can do the `ctrl + click` to jump to the source code of the Unitree SDK. You don't need this for the code to run.

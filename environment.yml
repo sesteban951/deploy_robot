@@ -1,18 +1,31 @@
-# hardware deploy env
+# make install builds the ROS bindings and installs automatic Conda hooks.
 name: deploy
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
-  - numpy
-  - scipy
-  - matplotlib
-  - pyyaml
+  # Requires ROS bindings built for CPython 3.11; system Humble/Ubuntu 22.04
+  # bindings under /opt/ros/humble are CPython 3.10 and cannot be reused.
+  - python=3.11
+  - numpy=2.4.6
+  - scipy>=1.15
+  - matplotlib>=3.8
+  - pyyaml=6.0.3
+  - pytorch=2.14.1
+  - setuptools<81
   - pip
   - pip:
-    - "mujoco>=3.17.0"
-    - "warp-lang>=1.11.1"
-    - onnx
-    - onnxruntime
-    - pygame
-    - h5py
+    - "jax[cuda12]==0.10.2"
+    # Native GPU rollout compiler/headers: match the qualified walking build.
+    - "nvidia-cuda-runtime-cu12==12.9.79"
+    - "nvidia-cuda-nvcc-cu12==12.9.86"
+    - "nvidia-cuda-nvrtc-cu12==12.9.86"
+    - "nvidia-cuda-cccl-cu12==12.9.27"
+    - "mujoco==3.16.0"
+    - "warp-lang==1.18.0"
+    - "onnx==1.23.2"
+    - "onnxruntime==1.32.0"
+    - "pygame==2.6.1"
+    - "h5py==3.16.0"
+    - "netifaces==0.11.0"
+    - "typeguard==4.6.0"
+    - "lark-parser==0.12.0"

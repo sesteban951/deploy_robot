@@ -3,3 +3,8 @@
 **/.claude/
 **/MUJOCO_LOG.TXT
 logs/
+.cache/
+build/
+dist/
+*.egg-info/
+tests/
