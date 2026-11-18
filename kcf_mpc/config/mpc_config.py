@@ -202,7 +202,7 @@ def get_default_mpc_config(
         },
         "reference_mode": "fixed",  # fixed waypoints lissajous hairpin slalom stop_turn_go rounded_square
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
-        "reference": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        "reference": (0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
         "reference_startup": {
             "hold_seconds": 0.5,
             "transition_seconds": 3.0,
