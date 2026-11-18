@@ -27,7 +27,10 @@ command_limits: [1.0, 1.0, 0.75]
 kcf_enabled: true
 
 kcf:
+  # simulation = use the feedback as published. Hardware MUST use it: the controller already merges the
+  # mocap pose into the feedback on the policy clock; 'mocap' re-merges with ROS-clock stamps and rejects them.
   state_source: simulation  # simulation or mocap
+  twist_limits: [0.7, 0.7, 0.7]  # [m/s, m/s, rad/s] MPC plans only inside these (tightens its input bounds)
   version: 1
   state_dim: 85
   input_dim: 3

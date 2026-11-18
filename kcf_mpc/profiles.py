@@ -68,6 +68,15 @@ class ModelProfile:
             if reference_mode not in REFERENCE_MODES:
                 raise ValueError(f'reference_mode must be one of {REFERENCE_MODES}')
             settings['reference_mode'] = reference_mode
+        # optional kcf.twist_limits [vx, vy, wz]: tighten the MPC input bounds, so it only plans
+        # (and issues) twists inside them; clipping its output instead would cancel its committed plan
+        limits = self.values.get('twist_limits')
+        if limits is not None:
+            limits = [float(x) for x in limits]
+            if len(limits) != 3 or not all(0 < x < float('inf') for x in limits):
+                raise ValueError('kcf.twist_limits must be three positive numbers [vx, vy, wz]')
+            settings['input_lower_bounds'] = tuple(max(lo, -lim) for lo, lim in zip(settings['input_lower_bounds'], limits))
+            settings['input_upper_bounds'] = tuple(min(hi, lim) for hi, lim in zip(settings['input_upper_bounds'], limits))
         return settings
 
 
