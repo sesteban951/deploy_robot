@@ -55,10 +55,10 @@ class JoystickNode(Node):
         joystick_dt = 0.02
         self.command_timer = self.create_timer(joystick_dt, self.publish_command)
 
-        # first-order low-pass filter on the sticks: y += alpha * (x - y) every publish
+        # first-order low-pass filter on the sticks and RT: y += alpha * (x - y) every publish
         self.alpha = alpha
         self.use_filter = use_filter
-        self.sticks = [0.0, 0.0, 0.0, 0.0]   # filtered LS_Y, LS_X, RS_X, RS_Y
+        self.sticks = [0.0, 0.0, 0.0, 0.0, 0.0]   # filtered LS_Y, LS_X, RS_X, RS_Y, RT
         print(f"Stick filter: {'alpha ' + str(alpha) if use_filter else 'off'}")
 
         print("Command node initialized.")
@@ -119,9 +119,9 @@ class JoystickNode(Node):
 
         # if not connected, publish zero command and return (and restart the filter from 0)
         if self.is_connected == 0.0:
-            self.sticks = [0.0, 0.0, 0.0, 0.0]
+            self.sticks = [0.0, 0.0, 0.0, 0.0, 0.0]
             cmd_msg = Float32MultiArray()
-            cmd_msg.data = [0.0] * 9  # same width as a connected message
+            cmd_msg.data = [0.0] * 10  # same width as a connected message
             self.command_pub.publish(cmd_msg)
             return
 
@@ -135,23 +135,24 @@ class JoystickNode(Node):
         self.fsm_pub.publish(fsm_msg)
 
         # convert the joystick state to a command message (sticks low-pass filtered)
-        raw = [self.joystick_state.LS_Y, self.joystick_state.LS_X, self.joystick_state.RS_X, self.joystick_state.RS_Y]
+        raw = [self.joystick_state.LS_Y, self.joystick_state.LS_X, self.joystick_state.RS_X, self.joystick_state.RS_Y,
+               self.joystick_state.RT]
         if self.use_filter:
             self.sticks = [y + self.alpha * (x - y) for x, y in zip(raw, self.sticks)]
         else:
             self.sticks = raw
-        LS_Y, LS_X, RS_X, RS_Y = self.sticks
+        LS_Y, LS_X, RS_X, RS_Y, RT = self.sticks
         RB = float(self.joystick_state.RB)
         U_DPAD = self.joystick_state.U_DPAD
         D_DPAD = self.joystick_state.D_DPAD
         Y = float(self.joystick_state.Y)
 
-        # publish the command:
-        #   [connected, LS_Y (vx), LS_X (vy), RS_X (wz), RS_Y, RB, U_DPAD, D_DPAD, Y]
+        # publish the command (RT last so the first 9 indices are unchanged for older readers):
+        #   [connected, LS_Y (vx), LS_X (vy), RS_X (wz), RS_Y, RB, U_DPAD, D_DPAD, Y, RT (0 released, 1 pressed)]
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = [self.is_connected, 
-                        LS_Y, LS_X, RS_X, RS_Y, 
-                        RB, U_DPAD, D_DPAD, Y]
+        cmd_msg.data = [self.is_connected,
+                        LS_Y, LS_X, RS_X, RS_Y,
+                        RB, U_DPAD, D_DPAD, Y, RT]
 
         self.command_pub.publish(cmd_msg)
 

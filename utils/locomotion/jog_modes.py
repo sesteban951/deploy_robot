@@ -97,8 +97,10 @@ class JogTwistCommander:
     """Joystick -> unicycle twist shaper. One per control node.
 
     `cfg` is the loaded controller yaml (stick_deadband, fwd_vx_range, bwd_vx_range,
-    curve_wz_range). Call `update(fwd_stick, turn_stick)` once per control tick; it returns
-    (mode, twist). Stateless apart from the last mode / twist, kept for logging."""
+    curve_wz_range, optional fwd_vx_range_boost). Call `update(fwd_stick, turn_stick, boost)`
+    once per control tick; it returns (mode, twist). `boost` in [0, 1] (e.g. the RT trigger)
+    blends the forward band's endpoints from fwd_vx_range (0) to fwd_vx_range_boost (1); it is
+    ignored without fwd_vx_range_boost. Stateless apart from the last mode / twist / band."""
 
     def __init__(self, cfg):
         self.deadband = float(cfg["stick_deadband"])
@@ -106,7 +108,11 @@ class JogTwistCommander:
         self.bwd_vx = tuple(float(v) for v in cfg["bwd_vx_range"])
         self.curve_wz = tuple(float(v) for v in cfg["curve_wz_range"])
         self.pivot_wz = tuple(float(v) for v in cfg["pivot_wz_range"])
+        boost = cfg.get("fwd_vx_range_boost")
+        self.fwd_vx_boost = None if boost is None else tuple(float(v) for v in boost)
         assert 0.0 <= self.deadband < 1.0, "stick_deadband must be in [0, 1)"
+        assert self.fwd_vx_boost is None or min(self.fwd_vx_boost) > 0.0, \
+            "fwd_vx_range_boost must not include 0 (0 is the idle clip)"
         assert min(self.fwd_vx) > 0.0 and max(self.bwd_vx) < 0.0, \
             "vx bands must not include 0 (0 is the idle clip)"
         assert min(self.curve_wz) <= 0.0 <= max(self.curve_wz), \
@@ -121,11 +127,21 @@ class JogTwistCommander:
     def reset(self):
         self.mode = "idle"
         self.twist = np.zeros(3, dtype=np.float32)
+        self.fwd_band = (min(self.fwd_vx), max(self.fwd_vx))
 
-    def update(self, fwd_stick, turn_stick):
+    # the forward band at a boost level: each endpoint moves linearly from the slow to the fast band
+    def forward_band(self, boost=0.0):
+        lo, hi = min(self.fwd_vx), max(self.fwd_vx)
+        if self.fwd_vx_boost is None:
+            return lo, hi
+        b = float(np.clip(boost, 0.0, 1.0))
+        return (lo + b * (min(self.fwd_vx_boost) - lo), hi + b * (max(self.fwd_vx_boost) - hi))
+
+    def update(self, fwd_stick, turn_stick, boost=0.0):
         self.mode = select_jog_mode(fwd_stick, turn_stick, deadband=self.deadband)
+        self.fwd_band = self.forward_band(boost)
         self.twist = shape_jog_twist(self.mode, fwd_stick, turn_stick,
-                                     deadband=self.deadband, fwd_vx=self.fwd_vx,
+                                     deadband=self.deadband, fwd_vx=self.fwd_band,
                                      bwd_vx=self.bwd_vx, curve_wz=self.curve_wz,
                                      pivot_wz=self.pivot_wz)
         return self.mode, self.twist
@@ -136,7 +152,10 @@ class JogTwistCommander:
         return (f"both sticks inside {d:.2f} -> idle/stand; "
                 f"drive parked + steer [{d:.2f}, 1] -> PIVOT |wz| [{min(self.pivot_wz):.2f}, "
                 f"{max(self.pivot_wz):.2f}] rad/s (vx = 0); "
-                f"forward  stick [{d:.2f}, 1] -> vx [{min(self.fwd_vx):+.2f}, {max(self.fwd_vx):+.2f}] m/s; "
+                f"forward  stick [{d:.2f}, 1] -> vx [{min(self.fwd_vx):+.2f}, {max(self.fwd_vx):+.2f}] m/s"
+                + ("" if self.fwd_vx_boost is None else
+                   f" (boost 1 -> [{min(self.fwd_vx_boost):+.2f}, {max(self.fwd_vx_boost):+.2f}])")
+                + "; " +
                 f"backward stick [{d:.2f}, 1] -> vx [{max(self.bwd_vx):+.2f}, {min(self.bwd_vx):+.2f}] m/s; "
                 f"steer    stick [{d:.2f}, 1] -> wz [0, {max(self.curve_wz):+.2f}] left / "
                 f"[0, {min(self.curve_wz):+.2f}] right rad/s, together with the drive")
