@@ -11,7 +11,8 @@
 >    first Go2 version of fix #2). The G1 uses the corrected half-tick trigger from the start.
 >
 > **Still open on the G1:** see [Open issues](#open-issues-on-the-g1). These include no link-loss
-> watchdog, a stale command on `control` re-entry, and the vel controller running before `control`.
+> watchdog, a stale command on `control` re-entry, the vel controller running before `control`, and a
+> pending full-body calibration (the right ankle sits rolled).
 
 ## G1 timing fixes and measurements (2026-11-15)
 
@@ -631,3 +632,15 @@ in `deploy/logger/log.py`.
 7. **Delay randomization.** Every G1 mjlab task randomizes actuator delay over 0–40 ms (`min_delay_sec=0`),
    so the new ~2 ms latency (plus the motor response) is inside the trained range. On the Go2, a
    delay-randomized policy and the latency fix together reduced sway the most.
+8. **TODO: full-body joint calibration on the current G1** (the unit in use since 2026-09-28 ~21:00).
+   - **Symptom:** the right foot doesn't sit flat while standing: it is rolled +3 to +5° (forward
+     kinematics of the joints plus the pelvis IMU), while the left is at about −0.5°.
+   - **Cause:** the right ankle roll reads about +0.05 rad high. The policy "corrects" a tilt that isn't
+     there and pushes the real foot onto its edge with 2–5 Nm. The left ankle holds about 0 Nm.
+   - **Not the policy:** this happens on every run on this unit, with every policy (walk v0/v1, backpack,
+     jog), from the first second after the policy engages. Sim is symmetric. The previous unit's logs
+     (up to 2026_09_28__20_51) are flat.
+   - **This unit's waist pitch reads with the opposite sign**, which is why `--flip-waist-pitch` defaults to on.
+     Re-check that flag after calibrating.
+   - **To check after calibrating:** hang the robot in `home` and compare both soles with an inclinometer.
+     In the logs, the standing right/left sole roll should match within about 1°.
