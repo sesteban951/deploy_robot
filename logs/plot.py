@@ -132,8 +132,8 @@ def experiment_label(meta: dict) -> str:
     return "   |   ".join(bits)
 
 
-# load and log all avilable data from the log
-def plot_log(file_path: str):
+# load a log: (data, meta), stale leading rows dropped and time zeroed; data is None if no rows
+def load_log(file_path: str):
 
     print(f"Loading {file_path}")
     with h5py.File(file_path, "r") as f:
@@ -142,13 +142,11 @@ def plot_log(file_path: str):
 
     # experiment metadata (config / policy / motion) recorded as root attributes
     print_experiment_info(meta)
-    exp_label = experiment_label(meta)
 
-    # a log may contain only experiment metadata (e.g. a run that never entered the
-    # control/track FSM state, so no data rows were logged) -- nothing to plot then
+    # a log may contain only experiment metadata
     if "time" not in data or "joint_state" not in data:
-        print("No time-series data in this log (only experiment metadata) -- nothing to plot.")
-        return
+        print("No time-series data in this log (only experiment metadata) -- nothing to show.")
+        return None, meta
 
     # drop stale leading rows of time when fsm is in not in right state
     t_raw = data["time"][:, 0]
@@ -159,8 +157,18 @@ def plot_log(file_path: str):
         data = {name: arr[start:] for name, arr in data.items()}
 
     # time axis (zeroed so runs always start at 0)
+    data["time"] = data["time"] - data["time"][0]
+    return data, meta
+
+
+# plot all available data from the log
+def plot_log(file_path: str):
+
+    data, meta = load_log(file_path)
+    if data is None:
+        return
+    exp_label = experiment_label(meta)
     t = data["time"][:, 0]
-    t = t - t[0]
 
     # infer joint count from joint_state width: [q, dq, ddq, tau_est]
     N = data["joint_state"].shape[1] // 4
@@ -282,6 +290,8 @@ def main():
                         default=None,
                         help="Path to .h5 log file. If omitted, plots the most recent log "
                              "under logs/simulation/ or logs/hardware/.")
+    parser.add_argument("--replay", action="store_true",
+                        help="Replay the log in a MuJoCo viewer instead of plotting.")
     args = parser.parse_args()
 
     # if no file provided, search for the most recent .h5 log
@@ -294,8 +304,14 @@ def main():
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"No such file: {file_path}")
 
-    # load and plot the log
-    plot_log(file_path)
+    # replay in mujoco (imported lazily so plotting does not need mujoco), or plot
+    if args.replay:
+        from log_replay import replay_log
+        data, meta = load_log(file_path)
+        if data is not None:
+            replay_log(data, meta, os.path.basename(file_path))
+    else:
+        plot_log(file_path)
 
 
 if __name__ == "__main__":
