@@ -35,12 +35,12 @@ TRANSITIONS = {
     "track":   {"track", "damp", "control"},
 }
 
-# button to target state mapping
+# button chord (all held together) to target state mapping
 BUTTON_STATE_MAP = {
-    "LB":  "damp",    # go to "damp"
-    "A":   "home",    # go to "home"
-    "LMB": "control", # go to "control"
-    "RMB": "track",   # go to "track"
+    ("LB", "RB"): "damp",    # go to "damp"
+    ("A",):       "home",    # go to "home"
+    ("LMB",):     "control", # go to "control"
+    ("RMB",):     "track",   # go to "track"
 }
 
 
@@ -58,11 +58,11 @@ class FiniteStateMachine:
     # check that the joystick buttons are valid and transition if needed
     def step(self, joystick_state: JoystickState) -> str:
 
-        # check each button in priority order (LB -> A -> LMB)
-        for button, target in BUTTON_STATE_MAP.items():
+        # check each chord in priority order (LB+RB -> A -> LMB -> RMB)
+        for buttons, target in BUTTON_STATE_MAP.items():
 
-            # check if the button is pressed
-            if getattr(joystick_state, button):
+            # check if every button of the chord is pressed
+            if all(getattr(joystick_state, b) for b in buttons):
 
                 # only transition if the target state is reachable
                 if target in TRANSITIONS[self.state]:
