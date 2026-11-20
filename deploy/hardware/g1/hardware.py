@@ -29,6 +29,8 @@ sys.path.append(ROOT_DIR)
 
 # custom imports
 from utils.experiment_utils import HARDWARE_INFO_TOPIC, experiment_info_qos
+from utils.sensor_guard_utils import PelvisImuBackup, JointDropoutGuard, joint_limits_from_model
+from utils.math_utils import quat_to_rpy
 
 # Unitree SDK imports
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactory, ChannelFactoryInitialize
@@ -109,7 +111,8 @@ class ControlNode(Node):
     def __init__(self, config_path: str,
                        flip_waist_pitch: bool,
                        enable_max_tilt: bool,
-                       enable_imu_guard: bool):
+                       enable_imu_guard: bool,
+                       enable_joint_guard: bool):
 
         super().__init__("hardware_node")
 
@@ -134,6 +137,13 @@ class ControlNode(Node):
             print("WARNING: max tilt safety check is DISABLED.")
         if not self.enable_imu_guard:
             print("WARNING: IMU dropout guard is DISABLED.")
+        self.enable_joint_guard = enable_joint_guard
+        if not self.enable_joint_guard:
+            print("WARNING: joint dropout guard is DISABLED.")
+
+        # IMU guard: a lost torso IMU holds its last values, a lost pelvis IMU is estimated
+        # from the torso IMU + waist joints
+        self.imu_backup = PelvisImuBackup() if self.enable_imu_guard else None
 
         # IMU states
         self.pelvis_imu_rpy = None            # roll, pitch, yaw
@@ -155,6 +165,15 @@ class ControlNode(Node):
         self.ddq = np.zeros(G1_NUM_MOTOR)             # joint accelerations
         self.tau_est = np.zeros(G1_NUM_MOTOR)         # estimated joint torques
         self.motor_temp = np.zeros((G1_NUM_MOTOR, 2)) # motor temps [degC], 2 sensors/motor
+
+        # joint dropout guard
+        self.joint_guard = None
+        if self.enable_joint_guard:
+            q_min, q_max = joint_limits_from_model(ROOT_DIR + "/models/" + self.config["xml_path"])
+            assert len(q_min) == G1_NUM_MOTOR, f"model has {len(q_min)} joints, expected {G1_NUM_MOTOR}."
+            self.joint_guard = JointDropoutGuard(G1_NUM_MOTOR, q_min, q_max)
+        self.joint_lost_count = 0
+        self.joint_lost_mask = np.zeros(G1_NUM_MOTOR, dtype=bool)
 
         # command arrays
         self.q_cmd = np.array(self.home_joint_pos, dtype=np.float64)
@@ -387,6 +406,22 @@ class ControlNode(Node):
             ddq = self.ddq.copy()
             tau_est = self.tau_est.copy()
             motor_temp = self.motor_temp.copy()
+            # dropout state (the backup needs both IMUs to have reported at least once)
+            pelvis_lost = self.pelvis_imu_lost_count > 0
+            imus_ready = self.pelvis_imu_quaternion is not None and self.torso_imu_quaternion is not None
+            torso_ok = self.torso_imu_lost_count == 0
+
+        # pelvis IMU backup: track it while healthy, publish it while lost
+        if self.imu_backup is not None and imus_ready and torso_ok:
+            waist_q = q[[G1JointIndex.WaistYaw, G1JointIndex.WaistRoll, G1JointIndex.WaistPitch]]
+            est_quat, est_gyro = self.imu_backup.step(self.time_, waist_q, torso_imu_quat, torso_imu_gyro,
+                                                      None if pelvis_lost else pelvis_imu_quat)
+            if pelvis_lost:
+                # q and -q are the same rotation: keep the sign continuous with the last reading
+                if np.dot(est_quat, pelvis_imu_quat) < 0.0:
+                    est_quat = -est_quat
+                pelvis_imu_quat, pelvis_imu_gyro = est_quat, est_gyro
+                pelvis_imu_rpy = quat_to_rpy(est_quat)
 
         # imu_state: [rpy(3), quaternion(4), gyroscope(3), accelerometer(3)] = 13 floats
         pelvis_imu_msg = Float32MultiArray()
@@ -462,11 +497,30 @@ class ControlNode(Node):
         imu_lost = self.enable_imu_guard and quat_norm < 0.5
         if imu_lost:
             if self.pelvis_imu_lost_count == 0:
-                print("WARNING: pelvis IMU packet lost. Holding last good IMU values.")
+                print("WARNING: pelvis IMU packet lost. Using the torso IMU backup.")
             self.pelvis_imu_lost_count += 1
         elif self.pelvis_imu_lost_count > 0:
-            print(f"WARNING: pelvis IMU recovered after [{self.pelvis_imu_lost_count}] lost packets.")
+            print(f"         pelvis IMU recovered after [{self.pelvis_imu_lost_count}] lost packets.")
             self.pelvis_imu_lost_count = 0
+
+        # joint readings in the model's sign convention; the guard fills in lost motor records
+        motors = self.low_state.motor_state
+        q_new = self.joint_sign * np.array([motors[i].q for i in range(G1_NUM_MOTOR)])
+        dq_new = self.joint_sign * np.array([motors[i].dq for i in range(G1_NUM_MOTOR)])
+        joint_lost = np.zeros(G1_NUM_MOTOR, dtype=bool)
+        if self.joint_guard is not None:
+            temps = np.array([motors[i].temperature for i in range(G1_NUM_MOTOR)])
+            q_new, dq_new, joint_lost = self.joint_guard.step(self.time_, q_new, dq_new, temps)
+        if joint_lost.any():
+            if self.joint_lost_count == 0:
+                print("WARNING: joint state packet lost. Extrapolating at the last good velocity.")
+            self.joint_lost_count += 1
+            self.joint_lost_mask |= joint_lost
+        elif self.joint_lost_count > 0:
+            print(f"         joint state recovered after [{self.joint_lost_count}] lost packets "
+                  f"on [{int(self.joint_lost_mask.sum())}] joints.")
+            self.joint_lost_count = 0
+            self.joint_lost_mask[:] = False
 
         # update sensor states under lock
         with self.sensor_lock:
@@ -478,9 +532,9 @@ class ControlNode(Node):
                 self.pelvis_imu_accelerometer = imu.accelerometer
 
             # update joint states
+            self.q[:] = q_new
+            self.dq[:] = dq_new
             for i in range(G1_NUM_MOTOR):
-                self.q[i] = self.joint_sign[i] * self.low_state.motor_state[i].q
-                self.dq[i] = self.joint_sign[i] * self.low_state.motor_state[i].dq
                 self.ddq[i] = self.joint_sign[i] * self.low_state.motor_state[i].ddq
                 self.tau_est[i] = self.joint_sign[i] * self.low_state.motor_state[i].tau_est
                 self.motor_temp[i] = self.low_state.motor_state[i].temperature
@@ -499,7 +553,7 @@ class ControlNode(Node):
             self.torso_imu_lost_count += 1
             return
         if self.torso_imu_lost_count > 0:
-            print(f"WARNING: torso IMU recovered after [{self.torso_imu_lost_count}] lost packets.")
+            print(f"         torso IMU recovered after [{self.torso_imu_lost_count}] lost packets.")
             self.torso_imu_lost_count = 0
 
         # update sensor states under lock
@@ -642,7 +696,13 @@ def main(args=None):
         '--imu-guard',
         action=argparse.BooleanOptionalAction,
         default=True,
-        help='Hold the last good IMU values when an IMU packet is lost.'
+        help='Lost IMU packets: the torso IMU holds its last values, the pelvis IMU is estimated from the torso IMU and waist joints.'
+    )
+    parser.add_argument(
+        '--joint-guard',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Fill in a lost motor record: position advances at the last good velocity.'
     )
     # joint sign flip argument
     # WARNING: on by default for now; pass --no-flip-waist-pitch to disable
@@ -666,7 +726,8 @@ def main(args=None):
     ctrl_node = ControlNode(args.config,
                             flip_waist_pitch=args.flip_waist_pitch,
                             enable_max_tilt=args.max_tilt,
-                            enable_imu_guard=args.imu_guard)
+                            enable_imu_guard=args.imu_guard,
+                            enable_joint_guard=args.joint_guard)
     ctrl_node.Init()
 
     # spin ROS2 node in background thread
