@@ -10,7 +10,7 @@ from .kinematics import project_state
 def is_projected_g1(model):
     return (
         model is not None
-        and model.config.state_dim == 85
+        and model.config.state_dim == 103
         and model.config.input_dim == 3
         and model.config.L_embed == 0
         and hasattr(model, "projection_balance")
@@ -22,8 +22,8 @@ class ProjectedG1KCF(ControlledLiftedModel):
 
     def __init__(self, config, normalization=None, *, dt=0.02, projection_balance=1.0):
         super().__init__(config, normalization)
-        if config.state_dim != 85 or config.input_dim != 3 or config.L_embed != 0:
-            raise ValueError("Projected G1 requires 85 states, 3 inputs, and L_embed=0")
+        if config.state_dim != 103 or config.input_dim != 3 or config.L_embed != 0:
+            raise ValueError("Projected G1 requires 103 states, 3 inputs, and L_embed=0")
         if (
             not math.isfinite(dt)
             or dt <= 0
@@ -36,13 +36,13 @@ class ProjectedG1KCF(ControlledLiftedModel):
     def rollout_details(self, initial_observation, controls):
         if (
             initial_observation.ndim != 2
-            or initial_observation.shape[-1] != 85
+            or initial_observation.shape[-1] != 103
             or controls.ndim != 3
             or controls.shape[-1] != 3
             or controls.shape[0] != initial_observation.shape[0]
             or controls.shape[1] < 1
         ):
-            raise ValueError("Expected observations (B,85) and controls (B,H,3), H>=1")
+            raise ValueError("Expected observations (B,103) and controls (B,H,3), H>=1")
         previous = initial_observation
         lifted = self.lift(previous)
         raw_states, corrected_states, raw_lifts, corrected_lifts = [], [], [], []

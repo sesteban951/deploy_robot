@@ -8,8 +8,8 @@
 namespace ffi = xla::ffi;
 constexpr int kBlocks = 32;
 constexpr int kThreads = 512;
-constexpr int kShared = 86848, kParameters = 660312;
-constexpr int kForwardWorkspacePerStep = 1877;
+constexpr int kShared = 85792, kParameters = 660330;
+constexpr int kForwardWorkspacePerStep = 1895;
 static CUmodule module;
 static CUfunction forward_kernel, batch_kernel;
 static int forward_capacity = 0;
@@ -76,7 +76,7 @@ extern "C" int kcf_rollout_initialize_native(const char* ptx, int* info) {
 }
 
 static int Horizon(ffi::Buffer<ffi::F32> matrices) {
-  if (matrices.dimensions().size() != 3 || matrices.dimensions()[1] != 85 ||
+  if (matrices.dimensions().size() != 3 || matrices.dimensions()[1] != 103 ||
       matrices.dimensions()[2] != 256) return 0;
   int horizon = int(matrices.dimensions()[0]);
   return horizon >= 1 && horizon <= 20 ? horizon : 0;
@@ -88,8 +88,8 @@ static ffi::Error Forward(CUstream stream, double timestep, double projection_ba
     ffi::ResultBuffer<ffi::F32> workspace
     ) {
   int horizon = Horizon(matrices);
-  if (!forward_kernel || forward_capacity < kBlocks || !horizon || initial.element_count() != 85 ||
-      parameters.element_count() != kParameters || states->element_count() != horizon * 85 ||
+  if (!forward_kernel || forward_capacity < kBlocks || !horizon || initial.element_count() != 103 ||
+      parameters.element_count() != kParameters || states->element_count() != horizon * 103 ||
       workspace->element_count() != horizon * kForwardWorkspacePerStep ||
       !(std::isfinite(timestep) && timestep > 0 && std::isfinite(projection_balance) && projection_balance > 0))
     return ffi::Error::InvalidArgument("Persistent forward ABI or occupancy mismatch");
@@ -112,8 +112,8 @@ static ffi::Error Batch(CUstream stream, double timestep, double projection_bala
     ffi::Buffer<ffi::F32> parameters, ffi::ResultBuffer<ffi::F32> states) {
   const auto dims = matrices.dimensions();
   if (dims.size() != 4 || dims[0] < 1 || dims[0] > INT32_MAX || dims[1] < 1 || dims[1] > 20
-      || dims[2] != 85 || dims[3] != 256 || initials.element_count() != dims[0] * 85
-      || parameters.element_count() != kParameters || states->element_count() != dims[0] * dims[1] * 85
+      || dims[2] != 103 || dims[3] != 256 || initials.element_count() != dims[0] * 103
+      || parameters.element_count() != kParameters || states->element_count() != dims[0] * dims[1] * 103
       || !batch_kernel || !(std::isfinite(timestep) && timestep > 0
           && std::isfinite(projection_balance) && projection_balance > 0))
     return ffi::Error::InvalidArgument("Population rollout ABI mismatch");

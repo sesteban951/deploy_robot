@@ -1,8 +1,7 @@
 ##
 #
 # Hardware control node for KCF: the 29dof velocity policy walks, kcf_ros.py sends the twist (FSM 'track').
-# KCF's model is 23-joint, so its feedback keeps the 23 KCF joints of the 29 (by name) and drops the rest;
-# with kcf_joint_shift those joints/actions are re-centred from this policy's default pose onto KCF's.
+# The native-103 KCF model receives all 29 joints and previous raw policy actions directly.
 # Pelvis pose/velocity come from deploy/mocap/estimator.py. Policy clock: steps * control_dt, never reset;
 # mocap stamps (ROS clock) are moved onto it by their age at each policy step.
 # Guards: a lost IMU or mocap stream is held at its last value (mocap for HOLD_TIME), with warnings.
@@ -50,42 +49,22 @@ HOLD_TIME = 0.5         # [sec] a lost mocap Odometry is held this long, then th
 
 class ControlNode(Node):
     """
-    Run the 29dof velocity policy on the hardware with the twist from KCF, and publish KCF's 23-joint feedback.
+    Run the 29dof velocity policy with KCF twists and publish complete native-103 model feedback.
     """
 
     def __init__(self, config_path: str):
 
         super().__init__('control_node')
 
-        # load config file and the KCF profile (its 23-joint names and default pose define KCF's state)
+        # One deployment YAML owns both the policy and the matching KCF model.
         self.config = self.load_config(config_path)
-        self.kcf_profile = load_profile(self.config['kcf_policy_profile'])
+        self.kcf_profile = load_profile(self.config['kcf_profile'])
         self.kcf_profile.validate_assets()
-        if self.kcf_profile.values['joint_count'] != 23:
-            raise ValueError('The KCF profile must be the 23-joint walking profile.')
         if self.kcf_profile.values['state_source'] != 'simulation':
             raise ValueError("Set kcf.state_source: simulation in the KCF yaml: this node already merges the "
                              "mocap pose into the feedback on the policy clock (kcf_ros must use it as is).")
-        kcf_policy = Policy(str(self.kcf_profile.path(self.kcf_profile.values['policy_path'])))
-        self.kcf_joint_names = kcf_policy.metadata['joint_names']
-        self.kcf_default_joint_pos = kcf_policy.get_param('default_joint_pos')
-        self.kcf_action_scale = kcf_policy.get_param('action_scale')
-
         # load params
         self.init_policy()
-
-        # KCF timing and command limits must fit this node (KCF plans inside kcf.twist_limits)
-        kcf_robot = self.kcf_profile.symbol('robot_config_factory')()
-        for name in ('control_dt', 'gait_period'):
-            if not np.isclose(getattr(kcf_robot, name), self.config[name], atol=1e-9, rtol=0):
-                raise ValueError(f'{name} must match KCF ({getattr(kcf_robot, name)}).')
-        self.command_limits = np.array(self.config['command_limits'], dtype=float)
-        kcf_bounds = self.kcf_profile.settings()['input_upper_bounds']
-        if np.any(np.asarray(kcf_bounds) > self.command_limits + 1e-9):
-            raise ValueError(f'KCF plans up to {np.round(kcf_bounds, 3).tolist()}, above command_limits '
-                             f'{self.command_limits.tolist()}: set kcf.twist_limits in the KCF yaml.')
-        if not np.array_equal(self.cmd_scale, [1, 1, 1]):
-            raise ValueError('cmd_scale must be [1, 1, 1]: KCF and its operator stream send physical twists.')
 
         # broadcast which experiment is running (the logger records it, kcf_ros reads cmd_scale from it)
         self.experiment_info_pub = publish_experiment_info(self, config_path, self.config, self.policy)
@@ -131,7 +110,6 @@ class ControlNode(Node):
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
         self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 1)
 
-        print(f"    KCF twist bounds: {np.round(kcf_bounds, 3).tolist()} (gate accepts up to {self.command_limits.tolist()})")
         print("Control node initialized.")
 
 
@@ -152,7 +130,7 @@ class ControlNode(Node):
 
         return config
 
-    # initialize the 29dof policy and the 29dof -> KCF 23-joint map
+    # Initialize the 29dof policy and validate the complete policy/model contract.
     def init_policy(self):
 
         # PD gains, timing, and command params
@@ -162,7 +140,6 @@ class ControlNode(Node):
         self.gait_period = self.config["gait_period"]
         self.stand_cmd_threshold = self.config["stand_cmd_threshold"]
         self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
-        self.joint_shift = bool(self.config.get("kcf_joint_shift", True))
 
         # load the policy
         policy_path_full = ROOT_DIR + "/policy/g1/" + self.config['policy_path']
@@ -173,28 +150,37 @@ class ControlNode(Node):
         # deployment params embedded in the policy
         self.qpos_joints_default = self.policy.get_param('default_joint_pos')
         self.action_scale = self.policy.get_param('action_scale')
-        assert self.act_size == 29 and len(self.qpos_joints_default) == 29 and len(self.action_scale) == 29, \
-            "The policy must be a 29dof policy with default_joint_pos and action_scale metadata."
-        assert len(self.Kp) == 29 and len(self.Kd) == 29, "Kp and Kd must have 29 values."
-
-        # KCF joints by name in this policy's joint order; the 6 others are dropped from the KCF feedback
-        names = self.policy.metadata['joint_names']
-        self.kcf_joint_indices = np.array([names.index(n) for n in self.kcf_joint_names], dtype=np.int64)
-        dropped = [n for i, n in enumerate(names) if i not in self.kcf_joint_indices]
-
-        # joint shift: KCF sees each joint's offset from this policy's default as an offset from KCF's default
-        self.kcf_joint_offset = np.zeros(len(self.kcf_joint_indices))
-        if self.joint_shift:
-            if not np.allclose(self.action_scale[self.kcf_joint_indices], self.kcf_action_scale, atol=1e-6):
-                raise ValueError('kcf_joint_shift needs equal action scales on the KCF joints (raw actions are passed).')
-            self.kcf_joint_offset = self.kcf_default_joint_pos - self.qpos_joints_default[self.kcf_joint_indices]
+        if (self.obs_size, self.act_size) != (98, 29):
+            raise ValueError('Walking requires the 98-input, 29-output policy.')
+        if (self.kcf_profile.values['state_dim'], self.kcf_profile.values['joint_count']) != (103, 29):
+            raise ValueError('Walking requires the native-103, 29-joint KCF profile.')
+        cfg = self.kcf_profile.symbol('robot_config_factory')()
+        for name in ('control_dt', 'gait_period', 'stand_cmd_threshold'):
+            if not np.isclose(getattr(cfg, name), self.config[name], atol=1e-9, rtol=0):
+                raise ValueError(f'{name} must match the trained walking model ({getattr(cfg, name)}).')
+        for label, actual, expected in (
+            ('default_joint_pos', self.qpos_joints_default, cfg.default_joint_pos),
+            ('action_scale', self.action_scale, cfg.action_scale),
+            ('Kp', self.Kp, self.policy.get_param('joint_stiffness')),
+            ('Kd', self.Kd, self.policy.get_param('joint_damping')),
+        ):
+            if np.shape(actual) != (29,) or not np.allclose(actual, expected, atol=1e-6, rtol=0):
+                raise ValueError(f'{label} does not match the 29-joint policy/model contract.')
+        if not np.array_equal(self.cmd_scale, [1, 1, 1]):
+            raise ValueError('cmd_scale must be [1, 1, 1] for physical body commands.')
+        self.command_limits = np.asarray(self.config['command_limits'], dtype=float)
+        settings = self.kcf_profile.settings()
+        if (self.command_limits.shape != (3,) or not np.isfinite(self.command_limits).all()
+                or np.any(self.command_limits <= 0)
+                or np.any(np.asarray(settings['input_lower_bounds']) < -self.command_limits - 1e-9)
+                or np.any(np.asarray(settings['input_upper_bounds']) > self.command_limits + 1e-9)):
+            raise ValueError('MPC input bounds must fit the policy command_limits.')
 
         print(f"Loading policy from [{policy_path_full}].")
         print(f"    Input size: {self.obs_size}, output size: {self.act_size}")
         print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
-        print(f"    KCF feedback joints (policy index): {self.kcf_joint_indices.tolist()}")
-        print(f"    Dropped from the KCF feedback: {dropped}")
-        print(f"    KCF joint shift: {'ON (re-centred onto the KCF default pose)' if self.joint_shift else 'OFF (raw joints)'}")
+        print('    KCF feedback: all 29 joints and previous raw actions; native-103 state')
+        print(f"    KCF twist bounds: {settings['input_lower_bounds']} to {settings['input_upper_bounds']}")
 
 
     #################################################################
@@ -255,14 +241,13 @@ class ControlNode(Node):
         now = monotonic()
         t = self.policy_time
 
-        # proprioception on KCF's 23 joints: IMU orientation and body gyro, (shifted) joints
-        idx = self.kcf_joint_indices
-        q = np.zeros(30)
-        v = np.zeros(29)
+        # Full joint state in the trained policy/model order, without recentering.
+        q = np.zeros(36)
+        v = np.zeros(35)
         q[3:7] = self.quat
-        q[7:] = self.qpos_joints[idx] + self.kcf_joint_offset
+        q[7:] = self.qpos_joints
         v[3:6] = self.omega
-        v[6:] = self.qvel_joints[idx]
+        v[6:] = self.qvel_joints
 
         # IMU guard: the last pelvis IMU message stays in use; warn on loss and recovery
         if self.imu_wall is not None and now - self.imu_wall >= IMU_TIMEOUT:
@@ -303,8 +288,8 @@ class ControlNode(Node):
             self.cmd[:] = 0
             self.gate.candidates.clear()
 
-        # echo the CURRENT physical twist, but the PREVIOUS raw action on KCF's joints
-        feedback = Feedback(t, pose_time, t, valid, q, v, self.action[idx].copy(), self.cmd.copy())
+        # Echo the current physical twist and the previous complete raw policy action.
+        feedback = Feedback(t, pose_time, t, valid, q, v, self.action.copy(), self.cmd.copy())
         self.feedback_pub.publish(Float64MultiArray(data=feedback.pack()))
 
     # build the observation vector for the policy
@@ -373,7 +358,7 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Hardware control node: 29dof velocity policy driven by KCF twists, 23-joint KCF feedback.'
+        description='Hardware control node: 29dof walking policy with native-103 KCF feedback.'
     )
     # config path argument
     parser.add_argument(

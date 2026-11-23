@@ -20,10 +20,10 @@ template<class T> struct ProjectionWorkspace {
 static_assert(sizeof(ProjectionWorkspace<float>) == 53*sizeof(float));
 
 KCF_HD int geometry_index(int i) {
-  return i < 6 ? i : (i < 10 ? i+1 : 34);
+  return i < 6 ? i : (i < 10 ? i+1 : 40);
 }
 KCF_HD int scale_index(int i) {
-  return i < 2 ? i : (i == 2 ? 7 : (i == 3 ? 4 : (i == 4 ? 5 : 34)));
+  return i < 2 ? i : (i == 2 ? 7 : (i == 3 ? 4 : (i == 4 ? 5 : 40)));
 }
 template<class T> KCF_HD T maximum(T a,T b) {
   if (a != a) return a;
@@ -100,9 +100,9 @@ template<class T,bool CopyState=true,class Storage=T> KCF_HD void forward(
     T value=T(0);for(int j=0;j<3;++j) value+=s.a[3*i+j]*s.velocity[j];
     position[i]=b[i]+value;
   }
-  if constexpr(CopyState) for(int i=0;i<85;++i) following[i]=raw[i];
+  if constexpr(CopyState) for(int i=0;i<103;++i) following[i]=raw[i];
   for(int i=0;i<11;++i) following[geometry_index(i)]=s.normalized_raw[i];
-  for(int i=0;i<3;++i) {following[i==2?7:i]=position[i];following[i==2?34:4+i]=s.velocity[i];}
+  for(int i=0;i<3;++i) {following[i==2?7:i]=position[i];following[i==2?40:4+i]=s.velocity[i];}
 }
 
 } // namespace kcf_projection

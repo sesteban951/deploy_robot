@@ -2,7 +2,7 @@
 
 GPU KCF uses the fixed cooperative CUDA forward kernels. CPU equations are a
 numerical prediction reference, never an automatic GPU fallback. Both apply
-the trained projection and re-lifting at each step with all 85 physical states.
+the trained projection and re-lifting at each step with all 103 physical states.
 """
 
 import os
@@ -73,7 +73,7 @@ def project_state_jax(previous, raw, scale, *, dt, balance):
             raw[11:],
         )
     )
-    position, velocity = jnp.array([0, 1, 7]), jnp.array([4, 5, 34])
+    position, velocity = jnp.array([0, 1, 7]), jnp.array([4, 5, 40])
     a = 0.5 * dt * _rotation(raw)
     b = previous[position] + 0.5 * dt * (_rotation(previous) @ previous[velocity])
     wp = balance / jnp.maximum(scale[position], 1e-4) ** 2
@@ -89,9 +89,9 @@ def project_state_jax(previous, raw, scale, *, dt, balance):
             corrected_velocity[:2],
             raw[6:7],
             corrected_position[2:3],
-            raw[8:34],
+            raw[8:40],
             corrected_velocity[2:3],
-            raw[35:],
+            raw[41:],
         )
     )
 
@@ -120,10 +120,10 @@ class ProjectedJaxMPCBackend:
             "kcf",
             "single_integrator",
         ):
-            raise ValueError("Projected backend requires the projected 85-state G1 KCF")
+            raise ValueError("Projected backend requires the projected 103-state G1 KCF")
         if not np.isclose(model.dt, prediction_sample_period, rtol=0.0, atol=1e-12):
             raise ValueError("MPC timestep must match the projected checkpoint")
-        self.horizon, self.input_dim, self.observation_dim = int(horizon), 3, 85
+        self.horizon, self.input_dim, self.observation_dim = int(horizon), 3, 103
         self.tracking_feature_indices = tuple(int(i) for i in tracking_feature_indices)
         self.model_dt = float(model.dt)
         self.tracked_dim = len(tracking_feature_indices)
@@ -175,7 +175,7 @@ class ProjectedJaxMPCBackend:
         # discarded before re-lifting, so exporting them cannot affect dynamics.
         ts, tp = _export_mlp(
             model.transition_network.matrix_network, array,
-            output_size=85 * model.config.nH,
+            output_size=103 * model.config.nH,
         )
         mean, scale, umean, uscale = [
             array(getattr(model.normalizer, key))
@@ -237,7 +237,7 @@ class ProjectedJaxMPCBackend:
                 ).astype(features.dtype)
                 features = jnp.concatenate((features, moving), axis=-1)
             return _apply_mlp(features, transition_parameters, ts).reshape(
-                controls.shape[:-1] + (85, nH))
+                controls.shape[:-1] + (103, nH))
 
         def native_rollout(initial, controls, parameters):
             if prediction_model == "single_integrator":
@@ -277,7 +277,7 @@ class ProjectedJaxMPCBackend:
             if prediction_model == "single_integrator" or self.device.platform == "cpu":
                 return jax.vmap(lambda u: native_rollout(initial, u, parameters))(controls)
             matrices = transitions(controls, parameters)
-            initials = jnp.broadcast_to(initial, (controls.shape[0], 85))
+            initials = jnp.broadcast_to(initial, (controls.shape[0], 103))
             return self._native_rollout_kernel.batched(initials, matrices)
 
         def trajectory_cost(states, controls, reference, preceding):
@@ -314,9 +314,9 @@ class ProjectedJaxMPCBackend:
     def lift(self, observation):
         """Prepare the physical carry; re-lifting occurs inside every step."""
         state = self._array(observation)
-        if state.shape != (85,):
+        if state.shape != (103,):
             raise ValueError(
-                "Projected backend requires one native 85-state observation"
+                "Projected backend requires one native 103-state observation"
             )
         return state
 

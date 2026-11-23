@@ -1,5 +1,5 @@
 # Deploy Robot in Simulation and on Hardware
-<p align="center"><img src="utils/img/menhir.png" width="50%"/></p>
+<p align="center"><img src="utils/img/masih_kcf.png" width="50%"/></p>
 
 Asynchronous policy deployment for Unitree G1 and Go2. Walking KCF-MPC is
 self-contained in this repository and currently validated in G1 simulation.
@@ -38,16 +38,21 @@ make uninstall   # remove the environment after conda deactivate
 
 ## Unitree SDK2 (hardware only)
 
-Inside `conda activate deploy`, follow the
-[Unitree SDK2 installation instructions](https://github.com/unitreerobotics/unitree_sdk2_python).
+Install the pinned official [Unitree SDK2](https://github.com/unitreerobotics/unitree_sdk2_python)
+and its native Cyclone DDS dependency into the deployment Conda environment:
+
+```bash
+make hardware-setup
+```
 
 ## Policy and MPC configuration
 
-The walking policy, KCF checkpoint and normalization are under `policy/g1/kcf/`.
-`deploy/configs/g1/g1_23dof_kcf.yaml` contains the robot/policy settings and the
-`kcf:` model bundle. Set `kcf.state_source` to `simulation` or `mocap` there;
-an optional `--state-source` flag overrides it for one run.
-MPC gains and trajectory defaults are in `kcf_mpc/config/mpc_config.py`.
+`deploy/configs/g1/g1_29dof_kcf.yaml` is the single `walking` profile for both
+simulation and hardware. It selects `policy/g1/g1_29dof_vel.onnx`, the 29-joint XML,
+and the epoch-3240 model/normalization in `policy/g1/kcf/walking/` with asset checksums.
+The model uses 103 states, all 29 joints and previous raw policy actions, three
+physical body commands, and a 256-dimensional lift.
+MPC gains, standing hold/release, and trajectory defaults are in `kcf_mpc/config/mpc_config.py`.
 
 # Deployment
 
@@ -65,13 +70,13 @@ python deploy/kcf/kcf_ros.py
 Terminal 2 — walking policy:
 
 ```bash
-python deploy/simulation/g1/control_23dof_vel.py --config g1_23dof_kcf.yaml
+python deploy/simulation/g1/control_29dof_kcf.py --config g1_29dof_kcf.yaml
 ```
 
 Terminal 3 — visible MuJoCo simulation:
 
 ```bash
-python deploy/simulation/g1/simulation.py --config g1_23dof_kcf.yaml
+python deploy/simulation/g1/simulation.py --config g1_29dof_kcf.yaml
 ```
 
 In **Terminal 1**, press `d` → `h` → `c` → `t` to enter KCF tracking.
@@ -105,7 +110,7 @@ python deploy/mocap/visualizer.py              # optional: view the published po
 On hardware, `deploy/hardware/g1/control_29dof_kcf.py` subscribes to it and
 merges the pose into the KCF feedback, converting the ROS-clock stamp onto the
 policy clock; keep `kcf.state_source: simulation` (feedback used as published).
-Simulation has no mocap source; run it with `--pose-source simulation`.
+Simulation supplies its atomic MuJoCo snapshot directly; it does not need the mocap estimator.
 
 ## Hardware
 
@@ -115,11 +120,18 @@ sensors and the KCF pipeline still run). Do not use the simulation launcher on a
 
 The hardware controller `deploy/hardware/g1/control_29dof_kcf.py` walks with the
 29-joint velocity policy `g1_29dof_vel.onnx` (mechanical waist lock OFF) and takes
-its twist from KCF. KCF's model is 23-joint, so the feedback keeps the 23 KCF joints
-of the 29 by name; with `kcf_joint_shift` they are re-centred from this policy's
-default pose onto the KCF policy's. The pelvis pose comes from `deploy/mocap/estimator.py`.
-KCF plans only inside `kcf.twist_limits` (in `g1_23dof_kcf.yaml`), which must fit
-inside the controller's `command_limits` (in `g1_29dof_kcf.yaml`).
+its twist from KCF. All 29 joint positions, velocities and previous raw actions
+are passed directly to the model. Pelvis pose comes from `deploy/mocap/estimator.py`.
+Policy, model and command limits are selected by the same `g1_29dof_kcf.yaml`.
+
+Before a hardware session, check imports, model/policy compatibility, ONNX inference
+and the complete 145-value SDK motor-command/CRC path without opening a Unitree channel:
+
+```bash
+python deploy/hardware/g1/hardware.py --config g1_29dof_kcf --preflight
+```
+
+This check does not start a robot connection or send motor commands.
 
 KCF keyboard: `h` home, `c` control (zero twist: stand in place), `t` track (KCF twist),
 `d` damp, Space/`x` stop.
@@ -135,8 +147,7 @@ where `<network_interface_name>` appears below.
 ### Sanity Check
 
 The existing Unitree low-level example checks communication by moving the G1's
-arms and ankles. Follow the robot's hardware safety procedure and run it by
-itself, not alongside another controller:
+arms and ankles.
 
 ```bash
 python deploy/hardware/g1/g1_low_level_example.py <network_interface_name>
@@ -146,9 +157,7 @@ This checks the SDK connection, not the KCF/OptiTrack integration.
 
 ### Launching
 
-Use separate terminals, each with `conda activate deploy`. The KCF variant keeps
-the original controller/SDK layout and replaces only the joystick command node
-with the keyboard-enabled KCF node, plus the mocap estimator.
+Use separate terminals, each with `conda activate deploy`.
 
 Terminal 1 — KCF command node:
 
@@ -186,5 +195,6 @@ python deploy/logger/log.py --mode hw --robot go2  # Go2 logger
 
 ```bash
 python logs/plot.py                                   # latest log
-python logs/plot.py --filename logs/hardware/<run>.h5  # selected log
+python logs/plot_kcf.py --trace KCF_TRACE.npz --compare SI_TRACE.npz --output-dir /logs/plots
 ```
+Omit `--compare` if there is only one run you want to visualize and add `--no-playback` for the static plots.  

@@ -76,14 +76,11 @@ if __name__ == "__main__":
     if n_joints == 12:
         xml_path = ROOT_DIR + "/models/go2/go2_scene.xml"
         cam_distance = 1.5
-    elif n_joints == 23:
-        xml_path = ROOT_DIR + "/models/g1/g1_23dof_scene.xml"
-        cam_distance = 3.0
     elif n_joints == 29:
         xml_path = ROOT_DIR + "/models/g1/g1_29dof_mode11_scene.xml"
         cam_distance = 3.0
     else:
-        raise ValueError(f"Unsupported joint count {n_joints}; expected 12 (go2), 23 or 29 (g1).")
+        raise ValueError(f"Unsupported joint count {n_joints}; expected 12 (go2) or 29 (g1).")
     print(f"Using model: [{xml_path}].")
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_data = mujoco.MjData(mj_model)

@@ -1,13 +1,14 @@
 {
   "model_family": "walking",
-  "source_robot_repository": "https://github.com/StellaKombo/robot_sim",
-  "source_robot_commit": "531e234e75114360a83031a6146336b1423e6b68",
+  "robot_joint_count": 29,
+  "state_dim": 103,
   "source_model_repository": "https://github.com/StellaKombo/KCF_MPC",
-  "source_model_commit": "dbb675787e2ffd9831409e1a0c077dc711c3f030",
-  "source_results": "results/g1_kcf_handoff_epoch01540",
+  "source_model_branch": "results/walking-epoch03240",
+  "source_results": "results/g1_kcf_handoff_epoch03240",
+  "checkpoint_epoch": 3240,
   "checkpoint_modified": false,
   "normalization_modified": false,
-  "configuration": "config.json retains inference fields only; training paths are not required",
-  "runtime": "Namespaced deployment copy; native GPU sources, numerical gains and optimizer are unchanged. The controller includes actual-applied-command feedback acknowledgement.",
-  "asset_checksums": "deploy/configs/kcf/walking.yaml"
+  "configuration": "Unmodified training config; training paths are provenance only and are not read during inference.",
+  "runtime": "Deployment-local native-103 implementation with validated gains, standing hold/release and applied-command acknowledgement.",
+  "asset_checksums": "deploy/configs/g1/g1_29dof_kcf.yaml"
 }

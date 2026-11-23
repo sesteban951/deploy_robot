@@ -1,4 +1,4 @@
-"""Load an explicitly selected native-85 projected checkpoint for inference."""
+"""Load an explicitly selected native-103 projected checkpoint for inference."""
 
 import json
 from pathlib import Path

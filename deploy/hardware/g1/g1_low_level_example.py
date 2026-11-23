@@ -56,24 +56,24 @@ class G1JointIndex:
     RightAnkleRoll = 11
     RightAnkleA = 11
     WaistYaw = 12
-    WaistRoll = 13        # NOTE: INVALID for g1 23dof/29dof with waist locked
-    WaistA = 13           # NOTE: INVALID for g1 23dof/29dof with waist locked
-    WaistPitch = 14       # NOTE: INVALID for g1 23dof/29dof with waist locked
-    WaistB = 14           # NOTE: INVALID for g1 23dof/29dof with waist locked
+    WaistRoll = 13        # NOTE: INVALID for g1 29dof with waist locked
+    WaistA = 13           # NOTE: INVALID for g1 29dof with waist locked
+    WaistPitch = 14       # NOTE: INVALID for g1 29dof with waist locked
+    WaistB = 14           # NOTE: INVALID for g1 29dof with waist locked
     LeftShoulderPitch = 15
     LeftShoulderRoll = 16
     LeftShoulderYaw = 17
     LeftElbow = 18
     LeftWristRoll = 19
-    LeftWristPitch = 20   # NOTE: INVALID for g1 23dof
-    LeftWristYaw = 21     # NOTE: INVALID for g1 23dof
+    LeftWristPitch = 20
+    LeftWristYaw = 21
     RightShoulderPitch = 22
     RightShoulderRoll = 23
     RightShoulderYaw = 24
     RightElbow = 25
     RightWristRoll = 26
-    RightWristPitch = 27  # NOTE: INVALID for g1 23dof
-    RightWristYaw = 28    # NOTE: INVALID for g1 23dof
+    RightWristPitch = 27
+    RightWristYaw = 28
 
 
 class Mode:

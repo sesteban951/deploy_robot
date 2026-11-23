@@ -1,4 +1,4 @@
-"""Encode live MuJoCo feedback in the trained 85-state G1 KCF schema."""
+"""Encode live MuJoCo feedback in the trained 103-state G1 KCF schema."""
 
 from typing import Protocol
 import numpy as np
@@ -15,12 +15,12 @@ class G1State(Protocol):
 
 
 def g1_closed_loop_state(state: G1State, gait_period: float) -> np.ndarray:
-    """Build the native 85 channels, with position/heading in world coordinates.
+    """Build the native 103 channels, with position/heading in world coordinates.
 
     [px, py, sin(theta), cos(theta)] (4), [vx, vy, wz] (3), pz (1),
-    gravity (3), joint q (23),
-    [vz, wx, wy] (3), joint v (23), gait [sin, cos] (2), previous action (23).
-    MPC anchors the complete 85-state vector to one fixed rollout frame.
+    gravity (3), joint q (29),
+    [vz, wx, wy] (3), joint v (29), gait [sin, cos] (2), previous action (29).
+    MPC anchors the complete 103-state vector to one fixed rollout frame.
     """
     q = state.q.astype(np.float32)
     v = state.v.astype(np.float32)

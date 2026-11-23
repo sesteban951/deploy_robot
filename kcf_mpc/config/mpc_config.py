@@ -19,11 +19,9 @@ REFERENCE_MODES = (
 def resolve_mpc_model_config(
     config: dict[str, Any], *, prediction_model: str | None = None
 ) -> dict[str, Any]:
-    """Select a predictor and its gains before applying explicit run overrides.
+    """Select a predictor and its tuning before applying explicit run overrides.
 
     KCF keeps the top-level gains. SI uses its dedicated gain block when present.
-    Saved, fully resolved run settings must not be passed through this again:
-    they may contain intentional per-run gain overrides.
     """
     resolved = deepcopy(config)
     model = (
@@ -39,12 +37,17 @@ def resolve_mpc_model_config(
         keys = {
             "state_weights", "terminal_state_weights", "input_weight", "command_change_weights"
         }
-        if not isinstance(gains, dict) or set(gains) != keys:
+        if (not isinstance(gains, dict) or not keys.issubset(gains)
+                or set(gains) - keys - {"icem", "standing_hold"}):
             raise ValueError(
                 "single_integrator_gains must contain only state_weights, "
-                "terminal_state_weights, input_weight and command_change_weights"
+                "terminal_state_weights, input_weight and command_change_weights, "
+                "with optional iCEM sampling and standing-hold overrides"
             )
-        resolved.update(deepcopy(gains))
+        resolved.update({key: deepcopy(gains[key]) for key in keys})
+        resolved["icem"].update(deepcopy(gains.get("icem", {})))
+        if resolved.get("standing_hold") is not None:
+            resolved["standing_hold"].update(deepcopy(gains.get("standing_hold", {})))
     return resolved
 
 
@@ -117,16 +120,17 @@ def get_default_mpc_config(
         "solver": "icem",
         "icem": {
             "population": 42,
-            "iterations": 2,
+            "iterations": 3,
             "elites": 10,
             "decay": 6.0,
             "noise_beta": 3.0,
             "initial_std": 0.25,
-            "warm_std": 0.1,
+            "warm_std": 0.03,
             "reference_initialization": True,
             "momentum": 0.1,
             "reuse_fraction": 0.3,
-            # Body command rates: m/s², m/s², rad/s². Enforced inside iCEM.
+            # Tuned body command rates: m/s², m/s², rad/s²; enforced inside iCEM.
+            # These are controller choices, not limits inferred from training data.
             "command_rate_limits": [1.5, 1.5, 2.0],
         },
         "jax": {
@@ -173,15 +177,15 @@ def get_default_mpc_config(
         "tracking_feature_indices": tuple(range(10)),
         # KCF gains; SI selects the independent block below.
         # [px, py, sin(theta), cos(theta), vx_body, vy_body, wz_body, gravity_xyz].
-        "state_weights": (200.0, 200.0, 20.0, 20.0, 5.0, 5.0, 5.0, 100.0, 100.0, 20.0),
+        "state_weights": (400.0, 400.0, 180.0, 180.0, 5.0, 5.0, 5.0, 100.0, 100.0, 20.0),
         "terminal_state_weights": (
-            600.0,
-            600.0,
-            200.0,
-            200.0,
+            1200.0,
+            1200.0,
+            1800.0,
+            1800.0,
             10.0,
             10.0,
-            10.0,
+            15.0,
             300.0,
             300.0,
             60.0,
@@ -193,16 +197,31 @@ def get_default_mpc_config(
         "command_change_weights": (10.0, 10.0, 10.0),
         # Q/Q_terminal order: [px, py, sin(theta), cos(theta), vx, vy, wz, gx, gy, gz].
         "single_integrator_gains": {
-            "state_weights": (150.0, 150.0, 40.0, 40.0, 5.0, 5.0, 5.0, 100.0, 100.0, 20.0),
+            "state_weights": (150.0, 150.0, 80.0, 80.0, 20.0, 20.0, 5.0, 100.0, 100.0, 20.0),
             "terminal_state_weights": (
-                450.0, 450.0, 300.0, 300.0, 10.0, 10.0, 10.0, 300.0, 300.0, 60.0,
+                450.0, 450.0, 600.0, 600.0, 50.0, 50.0, 10.0, 300.0, 300.0, 60.0,
             ),
             "input_weight": 0.2,
             "command_change_weights": (10.0, 10.0, 10.0),
+            "icem": {"iterations": 2, "warm_std": 0.1},
+            "standing_hold": {"heading_gain": 1.5},
         },
-        "reference_mode": "fixed",  # fixed waypoints lissajous hairpin slalom stop_turn_go rounded_square
+        # Stop correcting small errors once a stationary goal has settled.
+        "standing_hold": {
+            "enter_position_m": 0.025,
+            "exit_position_m": 0.045,
+            "enter_heading_rad": math.radians(2.0),
+            "exit_heading_rad": math.radians(3.0),
+            "enter_linear_speed_mps": 0.10,
+            "enter_yaw_rate_rps": 0.20,
+            "settle_seconds": 0.02,
+            # Correct residual yaw during long holds without restarting the gait.
+            "heading_gain": 3.0,
+            "yaw_rate_damping": 0.2,
+        },
+        "reference_mode": "stop_turn_go",  # fixed waypoints lissajous hairpin slalom stop_turn_go rounded_square
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
-        "reference": (0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        "reference": (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
         "reference_startup": {
             "hold_seconds": 0.5,
             "transition_seconds": 3.0,
@@ -214,7 +233,7 @@ def get_default_mpc_config(
         "lissajous_reference": {
             "half_width": 1.5,
             "half_height": 0.75,
-            "omega": 0.25,
+            "omega": 0.20, # works within the current MPC input constraints
         },
         # Smooth start/stop path. Repeated poses create standing dwells;
         # each pose is [world X (m), world Y (m), yaw (rad)].
@@ -266,16 +285,18 @@ def get_default_mpc_config(
             "dwell_seconds": 1.0,
             "turn_angles": [math.pi / 2.0, -math.pi / 2.0, math.pi],
         },
-        # Preserve the existing MPC constraints when changing the predictor.
+        # Physical body commands: walking epoch-3240 training split 0.5/99.5
+        # Collection limits are +/-[0.5 m/s, 0.5 m/s, 1.0 rad/s].
+        # The checkpoint applies its own normalization
         "input_lower_bounds": (
-            -0.7433253526687622,
-            -0.7437153458595276,
-            -0.744255006313324,
+            -0.459801,
+            -0.462779,
+            -0.944198,
         ),
         "input_upper_bounds": (
-            0.7444727420806885,
-            0.74131178855896,
-            0.7436532974243164,
+            0.487012,
+            0.461249,
+            0.955684,
         ),
         "seed": 42,
     }

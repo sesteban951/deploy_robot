@@ -1,7 +1,7 @@
 """Walking KCF contract and command gate.
 
-Feedback Float64MultiArray (89): [policy_time, pose_time, applied_time, valid,
-qpos(30), qvel(29), previous_raw_RL_action(23), current_policy_twist(3)].
+Feedback Float64MultiArray (107): [policy_time, pose_time, applied_time, valid,
+qpos(36), qvel(35), previous_raw_RL_action(29), current_policy_twist(3)].
 qpos: world position (m), body-to-world quaternion wxyz, joints (rad).
 qvel: world linear (m/s), BODY angular (rad/s), joints (rad/s).
 
@@ -44,8 +44,8 @@ class Feedback:
     @classmethod
     def unpack(cls, data, max_pose_age=0.1):
         a = np.asarray(data, dtype=np.float64)
-        if a.shape != (89,) or not np.isfinite(a).all():
-            raise ValueError("feedback must contain 89 finite values (23 joints)")
+        if a.shape != (107,) or not np.isfinite(a).all():
+            raise ValueError("feedback must contain 107 finite values (29 joints)")
         t, pose_t, applied_t, valid = a[:4]
         if valid != 1 or t < 0 or pose_t < 0 or not (-1e-6 <= t - pose_t <= max_pose_age):
             raise ValueError("invalid, future or stale pelvis feedback")
@@ -53,8 +53,8 @@ class Feedback:
             raise ValueError("invalid applied-command timestamp")
         if abs(np.linalg.norm(a[7:11]) - 1.0) > 0.01:
             raise ValueError("pelvis quaternion must be unit wxyz")
-        return cls(t, pose_t, applied_t, True, a[4:34].copy(),
-                   a[34:63].copy(), a[63:86].copy(), a[86:89].copy())
+        return cls(t, pose_t, applied_t, True, a[4:40].copy(),
+                   a[40:75].copy(), a[75:104].copy(), a[104:107].copy())
 
 
 class CommandGate:
@@ -63,7 +63,7 @@ class CommandGate:
     Zero velocity is NOT an emergency stop.
     """
 
-    def __init__(self, timeout=0.1, limits=(1.0, 1.0, 0.75), dt=0.02):
+    def __init__(self, timeout=0.1, limits=(0.5, 0.5, 1.0), dt=0.02):
         self.timeout, self.dt = float(timeout), float(dt)
         self.limits = np.asarray(limits, dtype=np.float64)
         if (not math.isfinite(timeout) or timeout <= 0 or not math.isfinite(dt) or dt <= 0

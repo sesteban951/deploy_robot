@@ -3,7 +3,7 @@
 import torch
 
 POSITION = (0, 1, 7)
-VELOCITY = (4, 5, 34)
+VELOCITY = (4, 5, 40)
 ROM10 = (0, 1, 2, 3, 4, 5, 6, 8, 9, 10)
 
 

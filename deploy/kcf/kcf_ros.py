@@ -19,7 +19,7 @@ from utils.experiment_utils import EXPERIMENT_INFO_TOPIC, experiment_info_qos
 
 
 class KCFNode(Node):
-    def __init__(self, args, *, keyboard=None):
+    def __init__(self, args, *, keyboard=None, controller_factory=None):
         profile = load_profile(getattr(args, 'profile', 'walking'))
         decoder = profile.symbol('feedback_decoder')
         state_source = getattr(args, 'state_source', None)
@@ -69,7 +69,8 @@ class KCFNode(Node):
         print(f"MPC prediction model: {self.prediction_model}", flush=True)
         self.status("warming_up; shadow" if not self.enabled else "warming_up; kcf_control")
         try:
-            self.source, self.state_from_feedback = load_controller(
+            factory = load_controller if controller_factory is None else controller_factory
+            self.source, self.state_from_feedback = factory(
                 self.profile.name, args.reference_mode, self.prediction_model)
             if keyboard is not None:
                 keyboard.discard()  # Never execute keys queued during GPU warmup.
@@ -193,7 +194,8 @@ class KCFNode(Node):
             stamp = feedback.time + self.source.dt if stamp is None else float(stamp)
             valid = bool(cmd.shape == (3,) and np.isfinite(cmd).all()
                          and np.all(np.abs(cmd) <= self.command_limits + 1e-6)
-                         and np.isfinite(stamp) and reason in ('buffered', 'committed'))
+                         and np.isfinite(stamp)
+                         and reason in ('buffered', 'committed', 'standing_hold', 'standing_release'))
             finished = monotonic()
             if finished - self.feedback_wall >= self.timeout or not self.permitted(finished):
                 self.invalidate('feedback_or_operator_timeout')

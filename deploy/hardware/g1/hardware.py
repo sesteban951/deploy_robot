@@ -69,24 +69,24 @@ class G1JointIndex:
     RightAnkleRoll = 11
     RightAnkleA = 11
     WaistYaw = 12
-    WaistRoll = 13        # NOTE: INVALID for g1 23dof/29dof with waist locked
-    WaistA = 13           # NOTE: INVALID for g1 23dof/29dof with waist locked
-    WaistPitch = 14       # NOTE: INVALID for g1 23dof/29dof with waist locked
-    WaistB = 14           # NOTE: INVALID for g1 23dof/29dof with waist locked
+    WaistRoll = 13        # NOTE: INVALID for g1 29dof with waist locked
+    WaistA = 13           # NOTE: INVALID for g1 29dof with waist locked
+    WaistPitch = 14       # NOTE: INVALID for g1 29dof with waist locked
+    WaistB = 14           # NOTE: INVALID for g1 29dof with waist locked
     LeftShoulderPitch = 15
     LeftShoulderRoll = 16
     LeftShoulderYaw = 17
     LeftElbow = 18
     LeftWristRoll = 19
-    LeftWristPitch = 20   # NOTE: INVALID for g1 23dof
-    LeftWristYaw = 21     # NOTE: INVALID for g1 23dof
+    LeftWristPitch = 20
+    LeftWristYaw = 21
     RightShoulderPitch = 22
     RightShoulderRoll = 23
     RightShoulderYaw = 24
     RightElbow = 25
     RightWristRoll = 26
-    RightWristPitch = 27  # NOTE: INVALID for g1 23dof
-    RightWristYaw = 28    # NOTE: INVALID for g1 23dof
+    RightWristPitch = 27
+    RightWristYaw = 28
 
 
 class Mode:
@@ -627,9 +627,6 @@ class ControlNode(Node):
 
 def main(args=None):
 
-    # init ROS2
-    rclpy.init()
-
     # parse arguments
     parser = argparse.ArgumentParser(
         description="Hardware deployment node using Unitree SDK2 for Python."
@@ -638,16 +635,18 @@ def main(args=None):
     parser.add_argument(
         '--network',
         type=str,
-        required=True,
+        required=False,
         help='Network interface name for robot communication. Example: "enp8s0".'
     )
     # config path argument
     parser.add_argument(
         '--config',
         type=str,
-        required=True,
+        default='g1_29dof_kcf',
         help='Path to the config yaml file for hardware. Example: "g1_29dof_mimic.yaml".'
     )
+    parser.add_argument('--preflight', action='store_true',
+                        help='Check the local model/policy and SDK motor packet without connecting to the robot.')
     # safety flags (on by default, turn off with the --no- form)
     parser.add_argument(
         '--max-tilt',
@@ -670,6 +669,37 @@ def main(args=None):
         help='Flip the sign of the waist pitch joint readings and commands.'
     )
     args = parser.parse_args()
+
+    if not args.preflight and not args.network:
+        parser.error('--network is required when connecting to the robot')
+    rclpy.init()
+    if args.preflight:
+        from deploy.hardware.g1.control_29dof_kcf import ControlNode as WalkingPolicyNode
+        hardware_node = policy_node = None
+        try:
+            hardware_node = ControlNode(args.config, flip_waist_pitch=args.flip_waist_pitch,
+                                        enable_max_tilt=args.max_tilt, enable_imu_guard=args.imu_guard)
+            policy_node = WalkingPolicyNode(args.config)
+            observation = policy_node.build_observation()
+            action = policy_node.policy.inference(observation)
+            if action.shape != (29,) or not np.isfinite(action).all():
+                raise ValueError('Walking policy did not produce 29 finite actions')
+            command = np.concatenate((action * policy_node.action_scale + policy_node.qpos_joints_default,
+                                      np.zeros(29), policy_node.Kp, policy_node.Kd, np.zeros(29)))
+            hardware_node.command_callback(Float32MultiArray(data=command.tolist()))
+            hardware_node.fill_policy_cmd()
+            checksum = hardware_node.crc.Crc(hardware_node.low_cmd)
+            print(json.dumps(dict(preflight='passed', checkpoint_epoch=3240,
+                                  model_state_dim=103, policy_input_size=observation.size,
+                                  policy_action_size=action.size, motor_command_size=command.size,
+                                  sdk_crc=int(checksum), robot_connected=False), indent=2))
+        finally:
+            for node in (policy_node, hardware_node):
+                if node is not None:
+                    node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        sys.exit(0)
 
     print()
     while input("Press [Enter] to continue: ") != "":

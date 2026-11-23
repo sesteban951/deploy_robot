@@ -9,6 +9,7 @@ import argparse
 import time
 import threading
 from collections import deque
+from pathlib import Path
 
 # mujoco imports
 import mujoco
@@ -82,8 +83,8 @@ class SimulationNode(Node):
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
         self.kcf_state_pub = None
         if self.config.get('kcf_enabled', False):
-            if (self.nq, self.nv, self.nu) != (30, 29, 23):
-                raise ValueError("KCF simulation requires the walking 23-joint model")
+            if (self.nq, self.nv, self.nu) != (36, 35, 29):
+                raise ValueError("KCF simulation requires a floating-base 29-joint G1")
             self.kcf_state_pub = self.create_publisher(Float64MultiArray, '/deploy_kcf/sim_state', 1)
             ratio = self.config['control_dt'] / self.sim_dt
             self.kcf_decimation = round(ratio)
@@ -122,7 +123,8 @@ class SimulationNode(Node):
         # open the config file and load it (accept the name with or without the .yaml extension)
         if not config_path.endswith(".yaml"):
             config_path += ".yaml"
-        config_path_full = ROOT_DIR + "/deploy/configs/g1/" + config_path
+        config_path_full = (Path(config_path) if Path(config_path).is_absolute()
+                            else Path(ROOT_DIR) / "deploy/configs/g1" / config_path)
         with open(config_path_full, 'r') as f:
             config = yaml.safe_load(f)
 
@@ -414,6 +416,7 @@ class SimulationNode(Node):
             self.viewer.set_texts((
                 self._viewer_font_scale,
                 mujoco.mjtGridPos.mjGRID_TOPLEFT,
+                (self.config.get('simulation_label', 'G1 simulation') + "\n") +
                 f"Sim time:    {self.mj_data.time:.2f}s\n"
                 f"Real time:   {real_elapsed:.2f}s\n"
                 f"RTR:         {rtr:.2f}\n"

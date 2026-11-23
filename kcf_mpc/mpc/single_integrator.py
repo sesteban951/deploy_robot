@@ -1,12 +1,12 @@
-"""Ideal body-twist comparison using the same native 85-state G1 schema."""
+"""Ideal body-twist comparison using the same native 103-state G1 schema."""
 
 import numpy as np
 import jax.numpy as jnp
 
 def _period(initial, controls, sample_period):
-    if initial.shape != (85,):
+    if initial.shape != (103,):
         raise ValueError(
-            "single-integrator initial state must contain 85 native channels"
+            "single-integrator initial state must contain 103 native channels"
         )
     if controls.ndim != 2 or controls.shape[0] < 1 or controls.shape[1] != 3:
         raise ValueError("single-integrator controls must have shape (horizon, 3)")
@@ -35,5 +35,5 @@ def single_integrator_rollout_jax(initial, controls, sample_period):
         axis=-1,
     )
     return jnp.concatenate(
-        (pose, controls, jnp.broadcast_to(initial[7:], (len(controls), 78))), axis=-1
+        (pose, controls, jnp.broadcast_to(initial[7:], (len(controls), 96))), axis=-1
     )

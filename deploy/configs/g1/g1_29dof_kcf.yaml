@@ -1,40 +1,143 @@
-# KCF on hardware with the 29dof velocity policy (g1_29dof_vel): KCF sends the twist, this policy walks.
-# KCF's model is 23-joint: the feedback drops the 6 extra joints (see deploy/hardware/g1/control_29dof_kcf.py).
-kcf_policy_profile: walking   # KCF profile (NOT kcf_profile: kcf_mpc needs exactly one kcf_profile yaml)
-xml_path: "g1/g1_29dof_mode11_scene.xml"
-policy_path: "g1_29dof_vel.onnx"
-
-# interpolate to default position duration
-home_pos_duration: 3.0  # [sec]
-
-# PD gains per joint (same as g1_29dof_vel.yaml)
-Kp: [40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
-     40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
-     40.179, 28.501, 28.501,  # Warning: ACTIVE WAIST, normal gains (mechanical lock OFF)
-     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
-     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
-Kd: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-     2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-     2.558, 1.814, 1.814,    # Warning: ACTIVE WAIST
-     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
-     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
-
-# home positions (same as g1_29dof_vel.yaml; hardware ramps here during the 'home' FSM state)
-home_base_pos: [0, 0, 0.78, 1, 0, 0, 0]
-home_joint_pos: [-0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
-                 -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
-                  0.0, 0.0, 0.0,
-                  0.35,  0.18, 0.0, 0.87, 0.0, 0.0, 0.0,
-                  0.35, -0.18, 0.0, 0.87, 0.0, 0.0, 0.0]
-
-# policy timing (must match KCF's: checked by the control node)
+# Complete 29-DoF policy/model profile for simulation and hardware.
+kcf_profile: walking
+xml_path: g1/g1_29dof_mode11_scene.xml
+policy_path: g1_29dof_vel.onnx
+home_pos_duration: 3.0
+Kp:
+- 40.179
+- 99.098
+- 40.179
+- 99.098
+- 28.501
+- 28.501
+- 40.179
+- 99.098
+- 40.179
+- 99.098
+- 28.501
+- 28.501
+- 40.179
+- 28.501
+- 28.501
+- 14.251
+- 14.251
+- 14.251
+- 14.251
+- 14.251
+- 16.778
+- 16.778
+- 14.251
+- 14.251
+- 14.251
+- 14.251
+- 14.251
+- 16.778
+- 16.778
+Kd:
+- 2.558
+- 6.309
+- 2.558
+- 6.309
+- 1.814
+- 1.814
+- 2.558
+- 6.309
+- 2.558
+- 6.309
+- 1.814
+- 1.814
+- 2.558
+- 1.814
+- 1.814
+- 0.907
+- 0.907
+- 0.907
+- 0.907
+- 0.907
+- 1.068
+- 1.068
+- 0.907
+- 0.907
+- 0.907
+- 0.907
+- 0.907
+- 1.068
+- 1.068
+home_base_pos:
+- 0
+- 0
+- 0.78
+- 1
+- 0
+- 0
+- 0
+home_joint_pos:
+- -0.312
+- 0.0
+- 0.0
+- 0.669
+- -0.363
+- 0.0
+- -0.312
+- 0.0
+- 0.0
+- 0.669
+- -0.363
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.2
+- 0.2
+- 0.0
+- 0.6
+- 0.0
+- 0.0
+- 0.0
+- 0.2
+- -0.2
+- 0.0
+- 0.6
+- 0.0
+- 0.0
+- 0.0
 control_dt: 0.02
 gait_period: 0.6
-stand_cmd_threshold: 0.05   # [m/s, rad/s] norm of the physical twist below which the gait clock is zeroed
-
-# commands are physical body twists (kcf_ros reads cmd_scale from this config to scale the operator stream)
-cmd_scale: [1.0, 1.0, 1.0]
-command_limits: [0.7, 0.7, 1.0]   # [m/s, m/s, rad/s] largest twist accepted; kcf.twist_limits must fit inside
-
-# KCF feedback: re-centre the 23 joints from this policy's default pose onto the KCF policy's (its training pose)
-kcf_joint_shift: true
+stand_cmd_threshold: 0.1
+cmd_scale:
+- 1.0
+- 1.0
+- 1.0
+command_limits:
+- 0.5
+- 0.5
+- 1.0
+kcf_enabled: true
+kcf:
+  state_source: simulation
+  twist_limits:
+  - 0.5
+  - 0.5
+  - 1.0
+  version: 1
+  state_dim: 103
+  input_dim: 3
+  nH: 256
+  joint_count: 29
+  recurrent_state_dim: 0
+  state_schema: g1_kcf_policy_sincos_window_v2
+  results_dir: policy/g1/kcf/walking
+  checkpoint: final
+  runtime_factory: kcf_mpc.controller:create_profile_controller
+  state_adapter: kcf_mpc.robot:state_from_feedback
+  state_encoder: kcf_mpc.state.encoder:g1_closed_loop_state
+  heading_encoder: kcf_mpc.state.encoder:g1_world_heading
+  feedback_decoder: deploy.kcf.kcf_interface:Feedback.unpack
+  robot_config_factory: kcf_mpc.robot_config:G1Config
+  mpc_settings_factory: kcf_mpc.config.mpc_config:get_default_mpc_config
+  artifact_sha256:
+    policy/g1/kcf/walking/model_final.pt: 2734a056f563d7b7232d68510a3c16651dca408c7c5121f73a214bab08d93ee3
+    policy/g1/kcf/walking/normalization.npz: dec9c28caedbd8df34e8d5c9509cf9bd9ec70047062b9050defc17e0ecd0572c
+    policy/g1/kcf/walking/config.json: e6ab9f829105a0e8d60980b3e7a6661cdcf34e69a9408e91776fb862c6807e6b
+    policy/g1/g1_29dof_vel.onnx: 5b1aa771cf03b463ff5d477d9b8e19bbf8232d07d901b68f63b059edbdddcc15
+    models/g1/g1_29dof_mode11_scene.xml: 593866d46223feaf4768a7fa91385c9653927473e489f5b46a8adfe303746377

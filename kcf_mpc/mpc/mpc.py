@@ -34,7 +34,7 @@ class KoopmanMPC:
                 "and use the supported bounded iCEM MPC formulation."
             )
         if not is_projected_g1(model):
-            raise ValueError("MPC requires the native projected 85-state G1 checkpoint")
+            raise ValueError("MPC requires the native projected 103-state G1 checkpoint")
         self.model = model.eval().requires_grad_(False)
         self.device = model.normalizer.state_mean.device
         self.dtype = model.normalizer.state_mean.dtype
@@ -382,7 +382,7 @@ def create_mpc_controller(
         mpc_config["checkpoint"],
     )
     if not is_projected_g1(model):
-        raise ValueError("G1 MPC requires the native 85-state projected KCF checkpoint")
+        raise ValueError("G1 MPC requires the native 103-state projected KCF checkpoint")
 
     if "dtype" in mpc_config:
         dtypes = {"float32": torch.float32, "float64": torch.float64}

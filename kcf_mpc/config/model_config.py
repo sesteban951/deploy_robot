@@ -17,7 +17,7 @@ class ModelConfig:
     layer_norm: bool = True
     initialize_transition_as_identity: bool = True
     command_mode_feature: bool = False
-    stand_cmd_threshold: float = 0.05
+    stand_cmd_threshold: float = 0.1
 
     def __post_init__(self) -> None:
         if self.state_dim < 1 or self.input_dim < 1:
@@ -31,10 +31,10 @@ class ModelConfig:
         if any(width < 1 for width in self.transition_hidden_dims):
             raise ValueError("transition hidden dimensions must be positive")
         if self.command_mode_feature:
-            if self.state_dim != 85 or self.input_dim != 3 or self.L_embed != 0:
-                raise ValueError("command mode feature requires the 85-state G1 model with three commands and no delay")
-            if self.stand_cmd_threshold != 0.05:
-                raise ValueError("command mode feature uses the recorded controller threshold 0.05")
+            if self.state_dim != 103 or self.input_dim != 3 or self.L_embed != 0:
+                raise ValueError("command mode feature requires the 103-state G1 model with three commands and no delay")
+            if self.stand_cmd_threshold != 0.1:
+                raise ValueError("command mode feature uses the recorded controller threshold 0.1")
 
     @property
     def lifting_input_dim(self) -> int:
@@ -66,5 +66,5 @@ def model_config_from_mapping(config: Mapping[str, Any]) -> ModelConfig:
             config["initialize_transition_as_identity"]
         ),
         command_mode_feature=bool(config.get("command_mode_feature", False)),
-        stand_cmd_threshold=float(config.get("stand_cmd_threshold", 0.05)),
+        stand_cmd_threshold=float(config.get("stand_cmd_threshold", 0.1)),
     )
