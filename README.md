@@ -1,5 +1,5 @@
 # Deploy Robot in Simulation and on Hardware
-<p align="center"><img src="utils/img/masih_kcf_2.png" width="50%"/></p>
+<p align="center"><img src="utils/img/masih_kcf.png" width="50%"/></p>
 
 Asynchronous policy deployment for Unitree G1 and Go2. Walking KCF-MPC is
 self-contained in this repository and currently validated in G1 simulation.
