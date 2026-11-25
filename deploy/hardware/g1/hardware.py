@@ -102,6 +102,9 @@ LOW_LEVEL_CONTROL_DT = 0.01  # [sec]
 # max allowable pelvis roll/pitch before forcing damp (when you fall)
 SAFETY_MAX_TILT = np.radians(60.0)  # [rad]
 
+# max allowable silence on rt/lowstate before forcing damp (when the link to the robot drops)
+LOW_LEVEL_COMM_TIMEOUT = 0.05  # [sec]
+
 
 ########################################################################
 # CONTROL
@@ -195,8 +198,12 @@ class ControlNode(Node):
         self.fsm_start_q = np.zeros(G1_NUM_MOTOR)
         self.fsm_time = 0.0
 
-        # safety flags
+        # safety latch: once set (tilt or link loss), only damp is written until restart
         self.safety_triggered = False
+
+        # link watchdog: arrival time of the last rt/lowstate, and when the link was declared lost
+        self.last_low_state_time = None
+        self.comm_lost_time = None
 
         # hardware time: wall clock since the first control loop tick
         self.time_ = 0.0          # [sec]
@@ -472,6 +479,7 @@ class ControlNode(Node):
     def read_low_state(self):
         msg = self.take_latest(self.lowstate_reader)
         if msg is not None:
+            self.last_low_state_time = time.monotonic()
             self.LowStateHandler(msg)
 
 
@@ -580,6 +588,21 @@ class ControlNode(Node):
         # read FSM state under lock
         with self.fsm_lock:
             fsm_state = self.fsm_state
+
+        # link watchdog: rt/lowstate silent for too long -> damp until restart, even if it returns
+        silence = now - self.last_low_state_time
+        if silence > LOW_LEVEL_COMM_TIMEOUT and not self.safety_triggered:
+            self.safety_triggered = True
+            self.comm_lost_time = now
+            print()
+            print("*" * 70)
+            print(f"SAFETY: no robot state for {1e3 * silence:.0f} ms in [{fsm_state}] -> LOW-LEVEL COMM LOST. "
+                  f"FORCING DAMP. PLEASE RESTART!")
+            print("*" * 70)
+        elif self.comm_lost_time is not None and self.last_low_state_time > self.comm_lost_time:
+            print(f"SAFETY: robot state is back after {self.last_low_state_time - self.comm_lost_time:.2f} sec. "
+                  f"STAYING IN DAMP. PLEASE RESTART!")
+            self.comm_lost_time = None
 
         # detect state transition
         if fsm_state != self.prev_fsm_state:

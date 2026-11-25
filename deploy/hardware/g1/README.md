@@ -2,15 +2,17 @@
 
 ## Open issues on the G1
 
-1. **No link-loss watchdog.**
+1. **Link-loss watchdog: added 2026-11-25, not yet run on the robot.**
    - On 2026-11-15 the ethernet link dropped twice (a loose cable), and once the robot fell mid-pivot.
-     When `rt/lowstate` stops arriving, `hardware.py` keeps publishing the last state as if it were new, and
-     the policy keeps stepping on it. Nothing is printed.
-   - While the link is down, the robot can't receive commands either, so the PC can't prevent that fall.
-     The dangerous part is **reconnection**: `hardware.py` immediately resumes sending policy commands
-     computed from stale state.
-   - Fix: if no new `lowstate` arrives for ~50 ms in `control`/`track`, latch damp until restart (like
-     the tilt safety). Port the Go2's command timeout too (damp if the controller stops sending).
+     When `rt/lowstate` stopped arriving, `hardware.py` kept publishing the last state as if it were new,
+     and on **reconnection** it resumed sending policy commands (the robot "came back to life").
+   - Now: if no new `lowstate` arrives for `LOW_LEVEL_COMM_TIMEOUT` (50 ms), in any FSM state,
+     `hardware.py` sets the same latch as the tilt safety, prints a SAFETY banner and writes damp until
+     it is restarted, even after the link returns. In 156 min of logs the state never froze for more
+     than 25 ms, so 50 ms should not trip on a healthy link.
+   - While the link is down, the robot can't receive commands either, so the PC still can't prevent
+     the fall itself.
+   - Still open: port the Go2's command timeout (damp if the controller stops sending).
 2. **A stale command is written on `control` re-entry.**
    - `hardware.py` applies the last stored command on the first tick of `control`/`track`. After
      `control → damp → home → control`, the first tick wrote a **14.3 s old** command (measured on the
