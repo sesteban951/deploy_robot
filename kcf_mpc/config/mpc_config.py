@@ -12,7 +12,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_MODES = (
-    "fixed", "lissajous", "waypoints", "rounded_square", "hairpin", "slalom", "stop_turn_go"
+    "fixed", "lissajous", "waypoints", "rounded_square", "hairpin", "slalom", "stop_turn_go", "star"
 )
 
 
@@ -219,7 +219,14 @@ def get_default_mpc_config(
             "heading_gain": 3.0,
             "yaw_rate_damping": 0.2,
         },
-        "reference_mode": "stop_turn_go",  # fixed waypoints lissajous hairpin slalom stop_turn_go rounded_square
+        "reference_mode": "stop_turn_go",  # See REFERENCE_MODES above.
+        # World-frame room dimensions. Keep pelvis references 0.5 m inside
+        # the walls; this validates paths, not the robot's physical footprint.
+        "reference_workspace": {
+            "center_xy": [0.0, 0.0],
+            "size_xy": [5.0, 5.0],
+            "margin": 0.5,
+        },
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
         "reference": (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
         "reference_startup": {
@@ -231,6 +238,7 @@ def get_default_mpc_config(
             "initial_pose": None,
         },
         "lissajous_reference": {
+            "center_xy": [0.0, 0.0],
             "half_width": 1.5,
             "half_height": 0.75,
             "omega": 0.20, # works within the current MPC input constraints
@@ -254,26 +262,29 @@ def get_default_mpc_config(
         # radius, not a circular-arc radius. Peak yaw rate = speed / turn_radius.
         # Quintic heading ramps make yaw rate and acceleration zero at joins.
         "rounded_square_reference": {
-            "start_pose": [0.0, 0.0, 0.0],
+            "start_pose": [-0.5, -1.3, 0.0],
             "speed": 0.3,
             "turn_radius": 0.5,
             "straight_length": 1.0,
             "clockwise": False,
         },
         "hairpin_reference": {
-            "start_pose": [0.0, 0.0, 0.0],
+            "start_pose": [-0.6, -0.6, 0.0],
             "speed": 0.3,
             "turn_radius": 0.5,
             "straight_length": 1.2,
             "clockwise": False,
         },
         "slalom_reference": {
-            "start_pose": [0.0, 0.0, 0.0],
+            "start_pose": [-1.6, -0.4, 0.0],
             "speed": 0.3,
             "turn_radius": 0.5,
-            "straight_length": 0.5,
+            "straight_length": 0.3,
             "heading_amplitude": math.pi / 4.0,
             "clockwise": False,
+            # A repeating slalom advances forever; finish and hold instead.
+            "cycles": 1,
+            "stop_seconds": 1.0,
         },
         # Translate, stand, turn in place, stand, then resume. Radians for turns.
         # speed and yaw_rate are peak reference values for the quintic segments.
@@ -284,6 +295,16 @@ def get_default_mpc_config(
             "yaw_rate": 0.6,
             "dwell_seconds": 1.0,
             "turn_angles": [math.pi / 2.0, -math.pi / 2.0, math.pi],
+        },
+        # Five crossing legs with separate stand/pivot phases at the tips.
+        "star_reference": {
+            "center_xy": [0.0, 0.0],
+            "radius": 1.5,
+            "rotation": math.pi / 2.0,
+            "speed": 0.3,
+            "yaw_rate": 0.6,
+            "dwell_seconds": 0.5,
+            "clockwise": False,
         },
         # Physical body commands: walking epoch-3240 training split 0.5/99.5
         # Collection limits are +/-[0.5 m/s, 0.5 m/s, 1.0 rad/s].

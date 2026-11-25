@@ -108,17 +108,17 @@ class Policy:
     Control policy class for ONNX policies (with embedded deployment metadata).
     """
 
-    def __init__(self, policy_path):
+    def __init__(self, policy_path, *, session_options=None):
 
         # load the policy
-        self._load_policy(policy_path)
+        self._load_policy(policy_path, session_options=session_options)
 
         # compute important properties of the policy
         self._get_policy_properties()
 
 
     # load an onnx policy given the path
-    def _load_policy(self, policy_path):
+    def _load_policy(self, policy_path, *, session_options=None):
 
         # metadata embedded in the policy
         self.metadata = {}
@@ -129,7 +129,8 @@ class Policy:
 
         self.policy = onnx.load(policy_path)
         self._onnx_session = ort.InferenceSession(
-            self.policy.SerializeToString(), providers=["CPUExecutionProvider"]
+            self.policy.SerializeToString(), sess_options=session_options,
+            providers=["CPUExecutionProvider"]
         )
         self._policy_type = "onnx"
 

@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / 'deploy/kcf'))
 
 MODELS = ('kcf', 'single_integrator')
 REFERENCES = ('fixed', 'turn_180', 'lissajous', 'waypoints', 'rounded_square',
-              'hairpin', 'slalom', 'stop_turn_go')
+              'hairpin', 'slalom', 'stop_turn_go', 'star')
 
 
 def write_json(path, value):

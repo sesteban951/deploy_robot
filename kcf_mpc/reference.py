@@ -57,10 +57,21 @@ class PlanarReference:
                     ).all()
                     or min(self.half_width, self.half_height, self.omega) <= 0.0):
                 raise ValueError("Lissajous dimensions and omega must be finite and positive")
+            try:
+                self.lissajous_center = np.asarray(trajectory.get('center_xy', [0., 0.]), dtype=float)
+            except (TypeError, ValueError) as error:
+                raise ValueError('lissajous_reference center_xy must be finite [x, y]') from error
+            if (self.lissajous_center.shape != (2,) or not np.isfinite(self.lissajous_center).all()
+                    or any(isinstance(value, (bool, np.bool_))
+                           for value in np.asarray(trajectory.get('center_xy', [0., 0.]), dtype=object).flat)):
+                raise ValueError('lissajous_reference center_xy must be finite [x, y]')
         if self.mode == "waypoints":
             self._configure_waypoints(settings.get("waypoint_reference"))
         if self.mode in ("rounded_square", "hairpin", "slalom", "stop_turn_go"):
             self._configure_maneuver(settings.get(f"{self.mode}_reference"))
+        if self.mode == "star":
+            self._configure_star(settings.get("star_reference"))
+        self._configure_workspace(settings.get("reference_workspace"))
         startup = settings.get("reference_startup")
         self.startup = None
         self._initial_pose = None
@@ -89,6 +100,7 @@ class PlanarReference:
         pose = np.asarray(pose, dtype=float)
         if pose.shape != (3,) or not np.isfinite(pose).all():
             raise ValueError('Startup initial_pose must be a finite [x, y, yaw]')
+        self._check_workspace(pose[None, :2], 'Startup initial_pose')
         self._initial_pose = pose.copy()
         if self.startup is None:
             return
@@ -108,6 +120,8 @@ class PlanarReference:
             return self.waypoints_reference(t)
         if self.mode == 'stop_turn_go':
             return self.waypoints_reference(t)
+        if self.mode == 'star':
+            return self.star_reference(t)
         if self.mode in ('rounded_square', 'hairpin', 'slalom'):
             return self.turning_reference(t)
         shape = np.shape(t) + (3,)
@@ -123,8 +137,10 @@ class PlanarReference:
     @property
     def duration(self):
         """Finite path-clock duration, or None for indefinitely repeating paths."""
+        if self.mode == 'slalom' and self._turn_cycles is not None:
+            return float(self._turn_cycles * self.period + .5 * self._turn_stop_seconds)
         return (float(self.waypoint_times[-1])
-                if self.mode in ('waypoints', 'stop_turn_go') else None)
+                if self.mode in ('waypoints', 'stop_turn_go', 'star') else None)
 
     def path_time(self, t):
         """Saved path clock, used also to align waypoint completion/dwell checks."""
@@ -136,6 +152,85 @@ class PlanarReference:
         phase = np.clip(elapsed / duration, 0., 1.)
         integral = phase**4 * (2.5 + phase * (-3. + phase))
         return np.where(elapsed >= duration, elapsed - duration / 2., duration * integral)
+
+    def _configure_workspace(self, configuration):
+        """Validate the entire path, including curve extrema, without clipping it.
+
+        Missing/None preserves saved historical runs and unrestricted experiments.
+        Startup is a convex pose blend, so an in-bounds initial pose also fits.
+        """
+        self.workspace_bounds = None
+        if configuration is None:
+            return
+        if not isinstance(configuration, dict) or set(configuration) != {'center_xy', 'size_xy', 'margin'}:
+            raise ValueError('reference_workspace requires exactly center_xy, size_xy and margin')
+        try:
+            center = np.asarray(configuration['center_xy'], dtype=float)
+            size = np.asarray(configuration['size_xy'], dtype=float)
+            margin = float(configuration['margin'])
+            raw = [*np.asarray(configuration['center_xy'], dtype=object).flat,
+                   *np.asarray(configuration['size_xy'], dtype=object).flat, configuration['margin']]
+        except (TypeError, ValueError) as error:
+            raise ValueError('reference_workspace dimensions, center and margin must be numeric') from error
+        if (center.shape != (2,) or size.shape != (2,) or not np.isfinite(center).all()
+                or not np.isfinite(size).all() or not np.isfinite(margin) or margin < 0.
+                or np.any(size <= 2. * margin)
+                or any(isinstance(value, (bool, np.bool_)) for value in raw)):
+            raise ValueError('reference_workspace needs finite center_xy, positive size_xy and '
+                             '0 <= margin < half each side length')
+        half = .5 * size - margin
+        self.workspace_bounds = np.stack((center - half, center + half))
+        if not np.isfinite(self.workspace_bounds).all():
+            raise ValueError('reference_workspace bounds must be finite')
+        if self.mode == 'lissajous':
+            extent = np.array([self.half_width, self.half_height])
+            points = self.lissajous_center + np.stack((-extent, extent))
+        elif self.mode in ('waypoints', 'stop_turn_go', 'star'):
+            points = self.waypoint_poses[:, :2]
+        elif self.mode in ('rounded_square', 'hairpin', 'slalom'):
+            if self.mode == 'slalom' and self._turn_cycles is None:
+                raise ValueError('A workspace-confined slalom requires finite cycles and stop_seconds')
+            points = self._turn_extrema()
+        else:
+            points = self.state[None, :2]
+        self._check_workspace(points, f'{self.mode} reference')
+
+    def _check_workspace(self, points, description):
+        if self.workspace_bounds is None:
+            return
+        lower, upper = self.workspace_bounds
+        if (not np.isfinite(points).all()
+                or np.any(points < lower - 1e-9) or np.any(points > upper + 1e-9)):
+            raise ValueError(f'{description} exceeds reference_workspace usable box '
+                             f'{lower.tolist()} to {upper.tolist()}; adjust path size/position or workspace')
+
+    def _turn_extrema(self):
+        # A monotone heading ramp has x/y extrema where sin/cos(yaw)=0.
+        # Invert its quintic blend by bisection, avoiding a sampled bounds check
+        # that could miss a boundary excursion between samples.
+        points = []
+        for index, angle in enumerate(self._turn_angles):
+            phases = [0., 1.]
+            if angle:
+                heading = np.arctan2(np.sin(self._turn_headings[index]), np.cos(self._turn_headings[index]))
+                low, high = sorted((heading, heading + angle))
+                for multiple in range(int(np.ceil(low / (np.pi / 2.))), int(np.floor(high / (np.pi / 2.))) + 1):
+                    target = (multiple * np.pi / 2. - heading) / angle
+                    left, right = 0., 1.
+                    for _ in range(52):
+                        middle = .5 * (left + right)
+                        blend = middle**3 * (10. + middle * (-15. + 6. * middle))
+                        if blend < target:
+                            left = middle
+                        else:
+                            right = middle
+                    phases.append(.5 * (left + right))
+            points.extend(self._turn_positions[index] + self._turn_displacement(index, np.array(phases)))
+        points = np.asarray(points)
+        if self._turn_cycles is not None:
+            last_offset = (self._turn_cycles - 1) * self._cycle_displacement
+            points = np.vstack((points, points + last_offset))
+        return points
 
     def _configure_waypoints(self, configuration):
         if not isinstance(configuration, dict) or set(configuration) != {"times_s", "poses"}:
@@ -169,7 +264,8 @@ class PlanarReference:
                  {'turn_radius', 'straight_length', 'clockwise'})
         if self.mode == 'slalom':
             extra = extra | {'heading_amplitude'}
-        if not isinstance(configuration, dict) or set(configuration) != common | extra:
+        optional = {'cycles', 'stop_seconds'} if self.mode == 'slalom' else set()
+        if not isinstance(configuration, dict) or set(configuration) - optional != common | extra:
             raise ValueError(f'{self.mode}_reference requires exactly {sorted(common | extra)}')
 
         def number(key, *, allow_zero=False):
@@ -261,6 +357,17 @@ class PlanarReference:
         self.period = float(self._turn_times[-1])
         self._cycle_displacement = delta.sum(axis=0) if self.mode == 'slalom' else np.zeros(2)
         self._cycle_heading = 0. if self.mode == 'slalom' else direction * 2. * np.pi
+        self._turn_cycles, self._turn_stop_seconds = None, 0.
+        if self.mode == 'slalom' and optional & set(configuration):
+            count = configuration.get('cycles')
+            if (set(configuration) & optional != optional or isinstance(count, (bool, np.bool_))
+                    or not isinstance(count, (int, np.integer)) or count < 1):
+                raise ValueError('Finite slalom requires positive integer cycles and positive stop_seconds')
+            self._turn_cycles = int(count)
+            self._turn_stop_seconds = number('stop_seconds')
+            if (not np.isfinite(self._turn_cycles * self.period)
+                    or self._turn_stop_seconds > 2. * self._turn_cycles * self.period):
+                raise ValueError('slalom stop_seconds cannot exceed twice its moving path duration')
 
     def _turn_displacement(self, index, phase):
         s = phase[..., None] * self._turn_nodes
@@ -278,6 +385,14 @@ class PlanarReference:
             raise ValueError('Turning reference times must be finite')
         active = t >= 0.
         t = np.maximum(t, 0.)
+        clock_rate = np.ones_like(t)
+        if self._turn_cycles is not None:
+            stop = self._turn_stop_seconds
+            begin = self._turn_cycles * self.period - .5 * stop
+            phase = np.clip((t - begin) / stop, 0., 1.)
+            clock_rate = 1. - phase**3 * (10. + phase * (-15. + 6. * phase))
+            integral = phase**4 * (2.5 + phase * (-3. + phase))
+            t = np.minimum(t, begin + stop) - stop * integral
         cycles = np.floor(t / self.period)
         local = np.remainder(t, self.period)
         index = np.minimum(np.searchsorted(self._turn_times, local, side='right') - 1,
@@ -291,7 +406,8 @@ class PlanarReference:
               + cycles[..., None] * self._cycle_displacement)
         twist = np.stack((self._path_speed * np.cos(heading), self._path_speed * np.sin(heading),
                           self._turn_angles[index] * rate), axis=-1)
-        return np.concatenate((xy, heading[..., None]), axis=-1), np.where(active[..., None], twist, 0.)
+        return (np.concatenate((xy, heading[..., None]), axis=-1),
+                np.where(active[..., None], twist * clock_rate[..., None], 0.))
 
     def reference(self, t):
         """Reference pose and world twist at scalar/array controller time ``t``.
@@ -342,7 +458,8 @@ class PlanarReference:
         """Baseline Lissajous pose/twist in the world frame, with tangent heading."""
         a, b, w = self.half_width, self.half_height, self.omega
         t = np.asarray(t, dtype=np.float64)
-        px, py = a * np.sin(w * t), b * np.sin(2 * w * t)
+        px = self.lissajous_center[0] + a * np.sin(w * t)
+        py = self.lissajous_center[1] + b * np.sin(2 * w * t)
         vx, vy = a * w * np.cos(w * t), 2 * b * w * np.cos(2 * w * t)
         ax, ay = -a * w**2 * np.sin(w * t), -4 * b * w**2 * np.sin(2 * w * t)
         theta = np.arctan2(vy, vx)
@@ -355,6 +472,55 @@ class PlanarReference:
         theta = np.where(reverse_branch, theta - 2 * np.pi, theta)
         wz = (vx * ay - vy * ax) / (vx**2 + vy**2)
         return np.stack([px, py, theta], axis=-1), np.stack([vx, vy, wz], axis=-1)
+
+    def _configure_star(self, configuration):
+        keys = {'center_xy', 'radius', 'rotation', 'speed', 'yaw_rate', 'dwell_seconds', 'clockwise'}
+        if not isinstance(configuration, dict) or set(configuration) != keys:
+            raise ValueError(f'star_reference requires exactly {sorted(keys)}')
+        numeric_keys = ('radius', 'rotation', 'speed', 'yaw_rate', 'dwell_seconds')
+        try:
+            center = np.asarray(configuration['center_xy'], dtype=float)
+            radius, rotation, speed, yaw_rate, dwell = values = np.asarray(
+                [configuration[key] for key in numeric_keys], dtype=float)
+            raw = [*np.asarray(configuration['center_xy'], dtype=object).flat,
+                   *[configuration[key] for key in numeric_keys]]
+        except (TypeError, ValueError) as error:
+            raise ValueError('star_reference requires numeric dimensions, speeds and center_xy') from error
+        if (center.shape != (2,) or values.shape != (5,)
+                or not np.isfinite(center).all() or not np.isfinite(values).all()
+                or any(isinstance(value, (bool, np.bool_)) for value in raw)
+                or min(radius, speed, yaw_rate) <= 0. or dwell < 0.
+                or not isinstance(configuration['clockwise'], (bool, np.bool_))):
+            raise ValueError('star_reference needs finite center_xy/rotation, positive radius/speed/yaw_rate, '
+                             'nonnegative dwell_seconds and boolean clockwise')
+        direction = -1. if configuration['clockwise'] else 1.
+        angles = rotation + direction * 4. * np.pi / 5. * np.arange(5)
+        vertices = center + radius * np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+        vertices = np.vstack((vertices, vertices[0]))
+        edge = vertices[1] - vertices[0]
+        heading = float(np.arctan2(edge[1], edge[0]))
+        times, poses = [0.], [np.r_[vertices[0], heading]]
+
+        def append(pose, duration):
+            if duration > 0.:
+                times.append(times[-1] + duration)
+                poses.append(pose.copy())
+
+        turn = direction * 4. * np.pi / 5.
+        for first, second in zip(vertices[:-1], vertices[1:]):
+            pose = np.r_[second, heading]
+            append(pose, 1.875 * np.linalg.norm(second - first) / speed)
+            append(pose, dwell)
+            heading += turn
+            pose = np.r_[second, heading]
+            append(pose, 1.875 * abs(turn) / yaw_rate)
+            append(pose, dwell)
+        self._configure_waypoints(dict(times_s=times, poses=poses))
+        self.waypoint_poses[:, 2] = np.asarray(poses)[:, 2]
+
+    def star_reference(self, t):
+        """A finite five-point crossing star with separate forward legs and pivots."""
+        return self.waypoints_reference(t)
 
     def track(self, q_ref, v_ref):
         """Build ten MPC [world position, heading sine/cosine, twist, gravity] targets."""
