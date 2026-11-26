@@ -521,7 +521,7 @@ class ControlNode(Node):
             q_new, dq_new, joint_lost = self.joint_guard.step(self.time_, q_new, dq_new, temps)
         if joint_lost.any():
             if self.joint_lost_count == 0:
-                print("WARNING: joint state packet lost. Extrapolating at the last good velocity.")
+                print("WARNING: joint state packet lost. Extrapolating at the last good velocity (100 ms max).")
             self.joint_lost_count += 1
             self.joint_lost_mask |= joint_lost
         elif self.joint_lost_count > 0:
@@ -725,7 +725,7 @@ def main(args=None):
         '--joint-guard',
         action=argparse.BooleanOptionalAction,
         default=True,
-        help='Fill in a lost motor record: position advances at the last good velocity.'
+        help='Fill in a lost motor record: position advances at the last good velocity for at most 100 ms, then stops.'
     )
     # joint sign flip argument
     # WARNING: on by default for now; pass --no-flip-waist-pitch to disable

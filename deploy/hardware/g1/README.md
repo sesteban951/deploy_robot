@@ -2,7 +2,7 @@
 
 ## Open issues on the G1
 
-1. **Link-loss watchdog: added 2026-11-25, not yet run on the robot.**
+1. **Link-loss watchdog: added 2026-11-25. Unplug test passed on the robot in `init`; not yet tried in `control`.**
    - On 2026-11-15 the ethernet link dropped twice (a loose cable), and once the robot fell mid-pivot.
      When `rt/lowstate` stopped arriving, `hardware.py` kept publishing the last state as if it were new,
      and on **reconnection** it resumed sending policy commands (the robot "came back to life").
@@ -132,9 +132,10 @@ Across 155,510 ticks of logs this flagged exactly the lost samples and nothing e
 ### Filling it in
 With $q_0$, $\dot q_0$ the last good reading of that joint, taken at time $t_0$:
 
-$$\hat q(t) = \mathrm{clip}\big(q_0 + \dot q_0\,(t - t_0),\; q_{min},\; q_{max}\big) \qquad \hat{\dot q}(t) = \dot q_0$$
+$$\hat q(t) = \mathrm{clip}\big(q_0 + \dot q_0\,\min(t - t_0,\, T),\; q_{min},\; q_{max}\big) \qquad \hat{\dot q}(t) = \dot q_0 \text{ while } t - t_0 \le T, \text{ then } 0$$
 
-The limits come from the model named by the config's `xml_path`.
+with $T$ = `MAX_EXTRAPOLATION` = 100 ms: the joint keeps its last velocity for at most 100 ms, then
+stops where it is. The limits come from the model named by the config's `xml_path`.
 
 ### How well it works (measured on logs, 2026-11-20)
 110 real leg and waist-yaw dropouts, compared with the first fresh reading when each ends:
@@ -145,6 +146,6 @@ The limits come from the model named by the config's `xml_path`.
 | Hold the last reading | 0.190 | 4.46 |
 | This guard (constant velocity) | 0.134 | 4.46 |
 
-It beats holding up to about 100 ms and is worse beyond that (the joint has reversed by then); the
-longest joint dropout seen so far is 90 ms. There is no time limit on the extrapolation other than
-the joint-limit clamp. Not yet run on the robot.
+Constant velocity beats holding up to about 100 ms and is worse beyond that (the joint has reversed by
+then), which is why it stops at 100 ms. The longest joint dropout seen so far is 90 ms, so the stop
+has not changed any of these numbers. Not yet run on the robot.

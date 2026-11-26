@@ -83,8 +83,12 @@ class JointDropoutGuard:
     A motor record counts as lost when both its temperature sensors read 0 degC, once that motor
     has reported a real temperature (so a dead sensor never triggers it). A lost joint keeps its
     last good velocity, and its position advances at that velocity, clamped to the joint limits.
+    After MAX_EXTRAPOLATION the position stops where it is and the velocity reads 0.
     Call step() once per hardware tick with every joint's raw reading.
     """
+
+    # longest time [sec] a lost joint keeps moving at its last good velocity
+    MAX_EXTRAPOLATION = 0.1
 
     def __init__(self, num_joints, q_min=None, q_max=None):
         self.q_min = None if q_min is None else np.asarray(q_min, dtype=np.float64)
@@ -108,12 +112,13 @@ class JointDropoutGuard:
         good = ~lost
         self.last_q[good], self.last_dq[good], self.last_t[good] = q[good], dq[good], t
 
-        # lost joints: constant velocity from the last good reading
+        # lost joints: constant velocity from the last good reading, then stopped in place
         if lost.any():
-            q[lost] = self.last_q[lost] + self.last_dq[lost] * (t - self.last_t[lost])
+            age = t - self.last_t[lost]
+            q[lost] = self.last_q[lost] + self.last_dq[lost] * np.minimum(age, self.MAX_EXTRAPOLATION)
             if self.q_min is not None:
                 q[lost] = np.clip(q[lost], self.q_min[lost], self.q_max[lost])
-            dq[lost] = self.last_dq[lost]
+            dq[lost] = np.where(age <= self.MAX_EXTRAPOLATION, self.last_dq[lost], 0.0)
         return q, dq, lost
 
 
