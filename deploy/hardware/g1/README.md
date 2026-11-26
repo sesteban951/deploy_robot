@@ -59,6 +59,33 @@
    - **To check after calibrating:** hang the robot in `home` and compare both soles with an inclinometer.
      In the logs, the standing right/left sole roll should match within about 1°.
 
+## Logged robot status
+
+`hardware.py` publishes `deploy_robot/robot_status` every tick and the logger stores it as the
+`robot_status` dataset (float64, so the 32-bit tick and status words are exact). All values are passed
+through as the robot reports them, so a blank motor record shows up here as zeros.
+
+| Columns | Field | Notes |
+|---|---|---|
+| 0 | `tick` | the robot's own clock [ms], 1000 counts per second |
+| 1 | pelvis IMU temperature | about 80 at idle |
+| 2-30 | motor `mode` | 0 at idle with nothing commanding |
+| 31-59 | motor `vol` [V] | 52.0-52.5 at idle, in 0.5 V steps |
+| 60-88 | motor `motorstate` | status word; 0 on every motor at idle |
+
+`hardware.py` also publishes `deploy_robot/dropout`, stored as the `dropout` dataset: which readings
+the guards filled in on that tick (1 = lost). The guards replace the lost values before they are
+logged, so for the IMUs these flags are the only record that a dropout happened.
+
+| Columns | Field |
+|---|---|
+| 0 | pelvis IMU lost |
+| 1 | torso IMU lost |
+| 2-30 | joint lost, one per motor |
+
+The flags come from the guards, so they stay 0 under `--no-imu-guard` / `--no-joint-guard`; the blank
+values then reach the log as they are.
+
 ## Pelvis IMU backup
 
 When a pelvis IMU packet is lost (zero quaternion), `hardware.py` fills in the pelvis orientation and

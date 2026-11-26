@@ -19,7 +19,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Float32MultiArray, String
+from std_msgs.msg import Float64, Float32MultiArray, Float64MultiArray, String
 
 # directory imports
 import os
@@ -169,6 +169,13 @@ class ControlNode(Node):
         self.tau_est = np.zeros(G1_NUM_MOTOR)         # estimated joint torques
         self.motor_temp = np.zeros((G1_NUM_MOTOR, 2)) # motor temps [degC], 2 sensors/motor
 
+        # extra robot state, only logged: passed through exactly as the robot reports it
+        self.robot_tick = 0                           # robot clock [ms]
+        self.pelvis_imu_temp = 0                      # pelvis IMU temperature
+        self.motor_mode = np.zeros(G1_NUM_MOTOR)      # motor mode
+        self.motor_vol = np.zeros(G1_NUM_MOTOR)       # motor voltage [V]
+        self.motor_status = np.zeros(G1_NUM_MOTOR)    # motor status word (uint32)
+
         # joint dropout guard
         self.joint_guard = None
         if self.enable_joint_guard:
@@ -177,6 +184,7 @@ class ControlNode(Node):
             self.joint_guard = JointDropoutGuard(G1_NUM_MOTOR, q_min, q_max)
         self.joint_lost_count = 0
         self.joint_lost_mask = np.zeros(G1_NUM_MOTOR, dtype=bool)
+        self.joint_lost_now = np.zeros(G1_NUM_MOTOR, dtype=bool)   # joints lost in the latest packet
 
         # command arrays
         self.q_cmd = np.array(self.home_joint_pos, dtype=np.float64)
@@ -302,6 +310,8 @@ class ControlNode(Node):
         self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/pelvis_imu_state", 1)
         self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, "deploy_robot/torso_imu_state", 1)
         self.motor_temp_pub = self.create_publisher(Float32MultiArray, "deploy_robot/motor_temperature", 1)
+        self.robot_status_pub = self.create_publisher(Float64MultiArray, "deploy_robot/robot_status", 1)
+        self.dropout_pub = self.create_publisher(Float32MultiArray, "deploy_robot/dropout", 1)
 
         # ROS2 subscribers
         self.command_sub = self.create_subscription(Float32MultiArray, "deploy_robot/command", self.command_callback, 1)
@@ -426,10 +436,13 @@ class ControlNode(Node):
             ddq = self.ddq.copy()
             tau_est = self.tau_est.copy()
             motor_temp = self.motor_temp.copy()
+            robot_status = np.concatenate([[self.robot_tick, self.pelvis_imu_temp],
+                                           self.motor_mode, self.motor_vol, self.motor_status])
             # dropout state (the backup needs both IMUs to have reported at least once)
             pelvis_lost = self.pelvis_imu_lost_count > 0
             imus_ready = self.pelvis_imu_quaternion is not None and self.torso_imu_quaternion is not None
             torso_ok = self.torso_imu_lost_count == 0
+            dropout = np.concatenate([[pelvis_lost, not torso_ok], self.joint_lost_now]).astype(np.float64)
 
         # pelvis IMU backup: track it while healthy, publish it while lost
         if self.imu_backup is not None and imus_ready and torso_ok:
@@ -458,6 +471,16 @@ class ControlNode(Node):
         motor_temp_msg = Float32MultiArray()
         motor_temp_msg.data = np.concatenate([motor_temp[:, 0], motor_temp[:, 1]]).tolist()
 
+        # robot_status: [tick(1) [ms], pelvis IMU temp(1), mode(29), vol(29) [V], motorstate(29)] = 89
+        # float64, so the uint32 tick and motorstate words stay exact
+        robot_status_msg = Float64MultiArray()
+        robot_status_msg.data = robot_status.tolist()
+
+        # dropout: [pelvis IMU lost(1), torso IMU lost(1), joint lost(29)] = 31 floats, 1 = lost
+        # set by the guards, so these stay 0 under --no-imu-guard / --no-joint-guard
+        dropout_msg = Float32MultiArray()
+        dropout_msg.data = dropout.tolist()
+
         # hardware_time: single float
         time_msg = Float64()
         time_msg.data = self.time_
@@ -471,6 +494,8 @@ class ControlNode(Node):
         self.torso_imu_state_pub.publish(torso_imu_msg)
         self.joint_state_pub.publish(joint_msg)
         self.motor_temp_pub.publish(motor_temp_msg)
+        self.robot_status_pub.publish(robot_status_msg)
+        self.dropout_pub.publish(dropout_msg)
         self.hardware_time_pub.publish(time_msg)
         self.fsm_time_pub.publish(fsm_time_msg)
 
@@ -559,6 +584,12 @@ class ControlNode(Node):
                 self.ddq[i] = self.joint_sign[i] * self.low_state.motor_state[i].ddq
                 self.tau_est[i] = self.joint_sign[i] * self.low_state.motor_state[i].tau_est
                 self.motor_temp[i] = self.low_state.motor_state[i].temperature
+                self.motor_mode[i] = self.low_state.motor_state[i].mode
+                self.motor_vol[i] = self.low_state.motor_state[i].vol
+                self.motor_status[i] = self.low_state.motor_state[i].motorstate
+            self.joint_lost_now[:] = joint_lost
+            self.robot_tick = self.low_state.tick
+            self.pelvis_imu_temp = imu.temperature
 
 
     # process a torso IMU message
