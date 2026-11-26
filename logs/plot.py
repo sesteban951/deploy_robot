@@ -9,6 +9,7 @@ import glob
 import json
 import math
 import os
+import sys
 import h5py
 import yaml
 import numpy as np
@@ -278,6 +279,61 @@ def plot_log(file_path: str):
     else:
         print("[SKIP] 'motor_temp' not in log, skipping temperature figure")
 
+    # robot status as the robot reported it -- only if logged
+    if "robot_status" in data:
+        rs = data["robot_status"]
+        Ns = (rs.shape[1] - 2) // 3    # layout: [tick, imu temp, mode(Ns), vol(Ns), motorstate(Ns)]
+        mode, vol, status = rs[:, 2:2+Ns], rs[:, 2+Ns:2+2*Ns], rs[:, 2+2*Ns:2+3*Ns]
+        new = np.r_[True, np.diff(t) > 0]    # one row per hardware tick (the logger can repeat a tick)
+
+        has_dropout = "dropout" in data
+        fig, axes = plt.subplots(6 if has_dropout else 5, 1, figsize=(14, 10), sharex=True, layout="constrained")
+        fig.suptitle(f"robot status\n{exp_label}" if exp_label else "robot status")
+        axes[0].fill_between(t, vol.min(axis=1), vol.max(axis=1), color="tab:blue", alpha=0.25, linewidth=0,
+                             label="lowest to highest motor")
+        axes[0].plot(t, vol.mean(axis=1), color="tab:blue", linewidth=1.5, label="mean of all motors")
+        axes[0].set_ylabel("motor voltage [V]")
+        axes[0].legend(loc="upper right")
+        axes[1].plot(t, (mode != 1).sum(axis=1), color="tab:blue", linewidth=1.5)
+        axes[1].set_ylabel("motors not in\nmode 1 [count]")
+        axes[2].plot(t, (status != 0).sum(axis=1), color="tab:blue", linewidth=1.5)
+        axes[2].set_ylabel("motors with a non-zero\nstatus word [count]")
+        axes[3].plot(t[new][1:], np.diff(rs[new, 0]), color="tab:blue", linewidth=1.0)
+        axes[3].set_ylabel("robot clock step per\nhardware tick [ms]")
+        axes[4].plot(t, rs[:, 1], color="tab:blue", linewidth=1.5)
+        axes[4].set_ylabel("pelvis IMU\ntemperature")
+        # readings the guards filled in; layout: [pelvis IMU lost, torso IMU lost, joint lost(Ns)], 1 = lost
+        if has_dropout:
+            dr = data["dropout"]
+            axes[5].plot(t, dr[:, 2:].sum(axis=1), color="tab:blue", linewidth=1.5, label="joints")
+            axes[5].plot(t, dr[:, 0], color="tab:orange", linewidth=1.5, label="pelvis IMU")
+            axes[5].plot(t, dr[:, 1], color="tab:green", linewidth=1.5, label="torso IMU")
+            axes[5].set_ylabel("readings lost\n[count]")
+            axes[5].set_ylim(-0.5, max(1.0, axes[5].get_ylim()[1]) + 0.5)
+            axes[5].legend(loc="upper right")
+        axes[-1].set_xlabel("time [s]")
+        for ax in axes[1:3]:
+            ax.set_ylim(-0.5, max(1.0, ax.get_ylim()[1]) + 0.5)
+        for ax in axes:
+            ax.grid(True)
+
+        # the figure shows counts; name the motors here
+        print("\nRobot status:")
+        print(f"    motor voltage [V]: min {vol.min():.1f}, mean {vol.mean():.2f}, max {vol.max():.1f}")
+        for label, bad in (("not in mode 1", mode != 1), ("with a non-zero status word", status != 0)):
+            hits = {joint_title(i, Ns): int(bad[:, i].sum()) for i in range(Ns) if bad[:, i].any()}
+            print(f"    log rows per motor {label}: {hits if hits else 'none'}")
+        words = np.unique(status[status != 0]).astype(np.int64)
+        if len(words):
+            print(f"    status words seen: {[hex(w) for w in words]}")
+        if has_dropout:
+            lost = dr[new] > 0.5
+            hits = {joint_title(i, Ns): int(lost[:, 2 + i].sum()) for i in range(Ns) if lost[:, 2 + i].any()}
+            print(f"    hardware ticks lost: pelvis IMU {int(lost[:, 0].sum())}, torso IMU {int(lost[:, 1].sum())}, "
+                  f"per joint {hits if hits else 'none'}")
+    else:
+        print("[SKIP] 'robot_status' not in log, skipping robot status figure")
+
     plt.show()
 
 
@@ -306,7 +362,8 @@ def main():
 
     # replay in mujoco (imported lazily so plotting does not need mujoco), or plot
     if args.replay:
-        from log_replay import replay_log
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from utils.log_replay_utils import replay_log
         data, meta = load_log(file_path)
         if data is not None:
             replay_log(data, meta, os.path.basename(file_path))

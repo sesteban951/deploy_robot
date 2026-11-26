@@ -1,6 +1,7 @@
 ##
 #
-# Kinematic MuJoCo replay of an HDF5 deploy log (run via: python logs/plot.py --replay).
+# Kinematic MuJoCo replay of an HDF5 deploy log. Not a script: run it with
+#   python logs/plot.py --replay
 #
 ##
 
