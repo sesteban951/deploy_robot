@@ -374,6 +374,19 @@ class ControlNode(Node):
                 self.lowcmd_publisher_.Write(self.low_cmd)
 
 
+    # restart the stored policy command from the command last sent to the robot,
+    # so the robot holds that until the policy's first new command arrives
+    def reset_policy_cmd(self):
+        with self.write_lock, self.cmd_lock:
+            for i in range(G1_NUM_MOTOR):
+                sent = self.low_cmd.motor_cmd[i]
+                self.q_cmd[i] = self.joint_sign[i] * sent.q
+                self.dq_cmd[i] = self.joint_sign[i] * sent.dq
+                self.Kp_cmd[i] = sent.kp
+                self.Kd_cmd[i] = sent.kd
+                self.tau_ff_cmd[i] = self.joint_sign[i] * sent.tau
+
+
     # fill low_cmd from the latest policy command (caller holds write_lock)
     def fill_policy_cmd(self):
         with self.cmd_lock:
@@ -610,6 +623,9 @@ class ControlNode(Node):
             self.fsm_start_time = self.time_
             with self.sensor_lock:
                 self.fsm_start_q = self.q.copy()
+            # entering control/track: drop the stored policy command, it is from an earlier visit
+            if fsm_state in ("control", "track") and self.prev_fsm_state not in ("control", "track"):
+                self.reset_policy_cmd()
             self.prev_fsm_state = fsm_state
 
         # update fsm time

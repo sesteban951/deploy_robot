@@ -13,12 +13,17 @@
    - While the link is down, the robot can't receive commands either, so the PC still can't prevent
      the fall itself.
    - Still open: port the Go2's command timeout (damp if the controller stops sending).
-2. **A stale command is written on `control` re-entry.**
-   - `hardware.py` applies the last stored command on the first tick of `control`/`track`. After
+2. **Stale command on `control` re-entry: fixed 2026-11-25. Checked on the suspended robot (damped
+   mid-pivot, controller stopped, re-entered `control`: it held the home pose).**
+   - `hardware.py` applied the last stored command on the first tick of `control`/`track`. After
      `control → damp → home → control`, the first tick wrote a **14.3 s old** command (measured on the
-     robot).
-   - Harmless if you left `control` while standing, but **not if you pressed damp mid-stride**, which is
-     the usual emergency case. Fix: reset the stored command to the current pose on each FSM transition.
+     robot). Harmless if you left `control` while standing, but **not if you pressed damp mid-stride**,
+     which is the usual emergency case.
+   - Now: on entering `control`/`track` from any other state, the stored command restarts from the
+     command last sent to the robot (from `home`: the home pose at the home gains), and the robot holds
+     that until the policy's first new command arrives. `control ↔ track` does not reset it.
+   - It restarts from the last sent command, not the measured pose: a standing robot carries its weight
+     on the gap between the two, so the measured pose would drop that support for a tick.
 3. **`control_29dof_vel.py` runs the policy before `control`.**
    - It has no FSM subscription, so it steps in every state and feeds back its own unapplied actions. On
      the robot its first `control` command was **2.67 rad** off the measured pose (right ankle pitch).
