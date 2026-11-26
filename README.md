@@ -130,9 +130,9 @@ To visualize a logged run, use `logs/plot.py`. With no arguments it plots the mo
 ```bash
 python logs/plot.py
 ```
-To plot a specific log, pass its path:
+To plot a specific log, pass its name (with or without `.h5`); it is looked up under `logs/hardware/` and `logs/simulation/`:
 ```bash
-python logs/plot.py --filename logs/hardware/<your-log>.h5
+python logs/plot.py <your-log>
 ```
 This brings up joint positions and velocities (measured vs commanded), estimated joint torques, the pelvis and torso IMUs, joystick commands, and motor temperatures — whichever of these datasets the log contains.
 

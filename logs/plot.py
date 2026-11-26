@@ -362,11 +362,11 @@ def main():
 
     # parse command line args
     parser = argparse.ArgumentParser(description="Plot HDF5 deploy logs.")
-    parser.add_argument("--filename", 
-                        type=str, 
+    parser.add_argument("filename",
+                        nargs="?",
                         default=None,
-                        help="Path to .h5 log file. If omitted, plots the most recent log "
-                             "under logs/simulation/ or logs/hardware/.")
+                        help="Log file name, with or without .h5; looked up under logs/hardware/ and "
+                             "logs/simulation/ (a path also works). If omitted, plots the most recent log.")
     parser.add_argument("--replay", action="store_true",
                         help="Replay the log in a MuJoCo viewer instead of plotting.")
     args = parser.parse_args()
@@ -374,12 +374,19 @@ def main():
     # if no file provided, search for the most recent .h5 log
     if args.filename is None:
         file_path = find_latest_log()
-        print(f"No --filename provided, using latest: {file_path}")
-    # otherwise, use the provided file path
+        print(f"No filename provided, using latest: {file_path}")
+    # otherwise, take it as a path, else as a file name under logs/hardware or logs/simulation
     else:
-        file_path = args.filename
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"No such file: {file_path}")
+        name = args.filename if args.filename.endswith(".h5") else args.filename + ".h5"
+        logs_root = os.path.dirname(os.path.abspath(__file__))
+        found = [c for c in (name,
+                             os.path.join(logs_root, "hardware", os.path.basename(name)),
+                             os.path.join(logs_root, "simulation", os.path.basename(name)))
+                 if os.path.exists(c)]
+        if not found:
+            raise FileNotFoundError(f"No log named {os.path.basename(name)} under {logs_root}/hardware "
+                                    f"or {logs_root}/simulation.")
+        file_path = found[0]
 
     # replay in mujoco (imported lazily so plotting does not need mujoco), or plot
     if args.replay:
