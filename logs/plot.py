@@ -331,6 +331,27 @@ def plot_log(file_path: str):
             hits = {joint_title(i, Ns): int(lost[:, 2 + i].sum()) for i in range(Ns) if lost[:, 2 + i].any()}
             print(f"    hardware ticks lost: pelvis IMU {int(lost[:, 0].sum())}, torso IMU {int(lost[:, 1].sum())}, "
                   f"per joint {hits if hits else 'none'}")
+
+        # per-motor dropout view: one subplot per motor so you can see *which* motors
+        # drop out and when (the figure above only shows counts summed over all motors).
+        # each trace is a binary indicator stepped over time: lost reading (if logged),
+        # not in mode 1, and a non-zero status word.
+        _, axes = _joint_grid(Ns, f"motor dropouts ({Ns} motors)", suptitle_extra=exp_label)
+        not_mode1  = (mode != 1).astype(float)
+        bad_status = (status != 0).astype(float)
+        for i, ax in enumerate(axes):
+            if has_dropout:
+                ax.plot(t, dr[:, 2 + i], color="tab:red", linewidth=1.3,
+                        drawstyle="steps-post", label="reading lost")
+            ax.plot(t, not_mode1[:, i], color="tab:orange", linewidth=1.0,
+                    drawstyle="steps-post", label="mode != 1")
+            ax.plot(t, bad_status[:, i], color="tab:purple", linewidth=1.0,
+                    drawstyle="steps-post", label="status != 0")
+            ax.set_title(joint_title(i, Ns))
+            ax.set_ylim(-0.1, 1.2)
+            ax.set_yticks([0, 1])
+            ax.grid(True)
+        axes[0].legend(loc="upper right", fontsize="small")
     else:
         print("[SKIP] 'robot_status' not in log, skipping robot status figure")
 
