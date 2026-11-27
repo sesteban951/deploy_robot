@@ -17,7 +17,7 @@ import h5py
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray, Float64, String
+from std_msgs.msg import Float32MultiArray, Float64MultiArray, Float64, String
 
 # directory imports
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
@@ -41,7 +41,7 @@ TARGET_FSM_STATES = ("control", "track")
 ROBOT_DATASETS = {
     "g1": {
         "required": ["joint_state", "pelvis_imu", "torso_imu", "time"],
-        "optional": ["command", "joystick", "motor_temp"],
+        "optional": ["command", "joystick", "motor_temp", "robot_status", "dropout"],
     },
     "go2": {
         "required": ["joint_state", "imu", "time"],
@@ -60,7 +60,12 @@ DATASET_TOPICS = {
     "power":       "deploy_robot/power",
     "command":     "deploy_robot/command",
     "joystick":    "deploy_robot/joystick",
+    "robot_status": "deploy_robot/robot_status",
+    "dropout":     "deploy_robot/dropout",
 }
+
+# datasets published and stored as float64 (Float64MultiArray); every other one is float32
+FLOAT64_DATASETS = ("robot_status",)
 
 # per-mode config: everything that differs between sim and hardware
 MODE_CONFIG = {
@@ -114,13 +119,14 @@ class LogNode(Node):
         self._last_discovery_attempt = 0.0
         self._last_missing_key: tuple = ()
 
-        # ROS subscribers: one per Float32MultiArray dataset of this robot, plus the time topic
+        # ROS subscribers: one per dataset of this robot, plus the time topic
         self._subs = []
         for name in self.required + self.optional:
             if name == "time":
                 continue
+            msg_type = Float64MultiArray if name in FLOAT64_DATASETS else Float32MultiArray
             self._subs.append(self.create_subscription(
-                Float32MultiArray, DATASET_TOPICS[name], self._make_callback(name), 5))
+                msg_type, DATASET_TOPICS[name], self._make_callback(name), 5))
         self.time_sub = self.create_subscription(Float64, self.cfg["time_topic"], self.time_callback, 5)
 
         # FSM subscription only in hardware mode
@@ -171,12 +177,14 @@ class LogNode(Node):
     def _handle_msg(self, dataset_name: str, data: np.ndarray):
         self._latest[dataset_name] = data
         if dataset_name not in self._loggers:
-            self._loggers[dataset_name] = Logger(self.output_path, data.shape[0], dataset_name=dataset_name)
+            self._loggers[dataset_name] = Logger(self.output_path, data.shape[0], dataset_name=dataset_name,
+                                                 dtype=data.dtype)
 
-    # callback that caches a Float32MultiArray message under the given dataset name
+    # callback that caches a multi-array message under the given dataset name
     def _make_callback(self, dataset_name: str):
-        def callback(msg: Float32MultiArray):
-            self._handle_msg(dataset_name, np.array(msg.data, dtype=np.float32))
+        dtype = np.float64 if dataset_name in FLOAT64_DATASETS else np.float32
+        def callback(msg):
+            self._handle_msg(dataset_name, np.array(msg.data, dtype=dtype))
         return callback
 
     def time_callback(self, msg: Float64):
