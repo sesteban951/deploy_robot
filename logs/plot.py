@@ -9,6 +9,7 @@ import glob
 import json
 import math
 import os
+import sys
 import h5py
 import yaml
 import numpy as np
@@ -132,8 +133,8 @@ def experiment_label(meta: dict) -> str:
     return "   |   ".join(bits)
 
 
-# load and log all avilable data from the log
-def plot_log(file_path: str):
+# load a log: (data, meta), stale leading rows dropped and time zeroed; data is None if no rows
+def load_log(file_path: str):
 
     print(f"Loading {file_path}")
     with h5py.File(file_path, "r") as f:
@@ -142,13 +143,11 @@ def plot_log(file_path: str):
 
     # experiment metadata (config / policy / motion) recorded as root attributes
     print_experiment_info(meta)
-    exp_label = experiment_label(meta)
 
-    # a log may contain only experiment metadata (e.g. a run that never entered the
-    # control/track FSM state, so no data rows were logged) -- nothing to plot then
+    # a log may contain only experiment metadata
     if "time" not in data or "joint_state" not in data:
-        print("No time-series data in this log (only experiment metadata) -- nothing to plot.")
-        return
+        print("No time-series data in this log (only experiment metadata) -- nothing to show.")
+        return None, meta
 
     # drop stale leading rows of time when fsm is in not in right state
     t_raw = data["time"][:, 0]
@@ -159,8 +158,18 @@ def plot_log(file_path: str):
         data = {name: arr[start:] for name, arr in data.items()}
 
     # time axis (zeroed so runs always start at 0)
+    data["time"] = data["time"] - data["time"][0]
+    return data, meta
+
+
+# plot all available data from the log
+def plot_log(file_path: str):
+
+    data, meta = load_log(file_path)
+    if data is None:
+        return
+    exp_label = experiment_label(meta)
     t = data["time"][:, 0]
-    t = t - t[0]
 
     # infer joint count from joint_state width: [q, dq, ddq, tau_est]
     N = data["joint_state"].shape[1] // 4
@@ -270,6 +279,82 @@ def plot_log(file_path: str):
     else:
         print("[SKIP] 'motor_temp' not in log, skipping temperature figure")
 
+    # robot status as the robot reported it -- only if logged
+    if "robot_status" in data:
+        rs = data["robot_status"]
+        Ns = (rs.shape[1] - 2) // 3    # layout: [tick, imu temp, mode(Ns), vol(Ns), motorstate(Ns)]
+        mode, vol, status = rs[:, 2:2+Ns], rs[:, 2+Ns:2+2*Ns], rs[:, 2+2*Ns:2+3*Ns]
+        new = np.r_[True, np.diff(t) > 0]    # one row per hardware tick (the logger can repeat a tick)
+
+        has_dropout = "dropout" in data
+        fig, axes = plt.subplots(6 if has_dropout else 5, 1, figsize=(14, 10), sharex=True, layout="constrained")
+        fig.suptitle(f"robot status\n{exp_label}" if exp_label else "robot status")
+        axes[0].fill_between(t, vol.min(axis=1), vol.max(axis=1), color="tab:blue", alpha=0.25, linewidth=0,
+                             label="lowest to highest motor")
+        axes[0].plot(t, vol.mean(axis=1), color="tab:blue", linewidth=1.5, label="mean of all motors")
+        axes[0].set_ylabel("motor voltage [V]")
+        axes[0].legend(loc="upper right")
+        axes[1].plot(t, (mode != 1).sum(axis=1), color="tab:blue", linewidth=1.5)
+        axes[1].set_ylabel("motors not in\nmode 1 [count]")
+        axes[2].plot(t, (status != 0).sum(axis=1), color="tab:blue", linewidth=1.5)
+        axes[2].set_ylabel("motors with a non-zero\nstatus word [count]")
+        axes[3].plot(t[new][1:], np.diff(rs[new, 0]), color="tab:blue", linewidth=1.0)
+        axes[3].set_ylabel("robot clock step per\nhardware tick [ms]")
+        axes[4].plot(t, rs[:, 1], color="tab:blue", linewidth=1.5)
+        axes[4].set_ylabel("pelvis IMU\ntemperature")
+        # readings the guards filled in; layout: [pelvis IMU lost, torso IMU lost, joint lost(Ns)], 1 = lost
+        if has_dropout:
+            dr = data["dropout"]
+            axes[5].plot(t, dr[:, 2:].sum(axis=1), color="tab:blue", linewidth=1.5, label="joints")
+            axes[5].plot(t, dr[:, 0], color="tab:orange", linewidth=1.5, label="pelvis IMU")
+            axes[5].plot(t, dr[:, 1], color="tab:green", linewidth=1.5, label="torso IMU")
+            axes[5].set_ylabel("readings lost\n[count]")
+            axes[5].set_ylim(-0.5, max(1.0, axes[5].get_ylim()[1]) + 0.5)
+            axes[5].legend(loc="upper right")
+        axes[-1].set_xlabel("time [s]")
+        for ax in axes[1:3]:
+            ax.set_ylim(-0.5, max(1.0, ax.get_ylim()[1]) + 0.5)
+        for ax in axes:
+            ax.grid(True)
+
+        # the figure shows counts; name the motors here
+        print("\nRobot status:")
+        print(f"    motor voltage [V]: min {vol.min():.1f}, mean {vol.mean():.2f}, max {vol.max():.1f}")
+        for label, bad in (("not in mode 1", mode != 1), ("with a non-zero status word", status != 0)):
+            hits = {joint_title(i, Ns): int(bad[:, i].sum()) for i in range(Ns) if bad[:, i].any()}
+            print(f"    log rows per motor {label}: {hits if hits else 'none'}")
+        words = np.unique(status[status != 0]).astype(np.int64)
+        if len(words):
+            print(f"    status words seen: {[hex(w) for w in words]}")
+        if has_dropout:
+            lost = dr[new] > 0.5
+            hits = {joint_title(i, Ns): int(lost[:, 2 + i].sum()) for i in range(Ns) if lost[:, 2 + i].any()}
+            print(f"    hardware ticks lost: pelvis IMU {int(lost[:, 0].sum())}, torso IMU {int(lost[:, 1].sum())}, "
+                  f"per joint {hits if hits else 'none'}")
+
+        # per-motor dropout view: one subplot per motor so you can see *which* motors
+        # drop out and when (the figure above only shows counts summed over all motors).
+        # each trace is a binary indicator stepped over time: lost reading (if logged),
+        # not in mode 1, and a non-zero status word.
+        _, axes = _joint_grid(Ns, f"motor dropouts ({Ns} motors)", suptitle_extra=exp_label)
+        not_mode1  = (mode != 1).astype(float)
+        bad_status = (status != 0).astype(float)
+        for i, ax in enumerate(axes):
+            if has_dropout:
+                ax.plot(t, dr[:, 2 + i], color="tab:red", linewidth=1.3,
+                        drawstyle="steps-post", label="reading lost")
+            ax.plot(t, not_mode1[:, i], color="tab:orange", linewidth=1.0,
+                    drawstyle="steps-post", label="mode != 1")
+            ax.plot(t, bad_status[:, i], color="tab:purple", linewidth=1.0,
+                    drawstyle="steps-post", label="status != 0")
+            ax.set_title(joint_title(i, Ns))
+            ax.set_ylim(-0.1, 1.2)
+            ax.set_yticks([0, 1])
+            ax.grid(True)
+        axes[0].legend(loc="upper right", fontsize="small")
+    else:
+        print("[SKIP] 'robot_status' not in log, skipping robot status figure")
+
     plt.show()
 
 
@@ -277,25 +362,41 @@ def main():
 
     # parse command line args
     parser = argparse.ArgumentParser(description="Plot HDF5 deploy logs.")
-    parser.add_argument("--filename", 
-                        type=str, 
+    parser.add_argument("filename",
+                        nargs="?",
                         default=None,
-                        help="Path to .h5 log file. If omitted, plots the most recent log "
-                             "under logs/simulation/ or logs/hardware/.")
+                        help="Log file name, with or without .h5; looked up under logs/hardware/ and "
+                             "logs/simulation/ (a path also works). If omitted, plots the most recent log.")
+    parser.add_argument("--replay", action="store_true",
+                        help="Replay the log in a MuJoCo viewer instead of plotting.")
     args = parser.parse_args()
 
     # if no file provided, search for the most recent .h5 log
     if args.filename is None:
         file_path = find_latest_log()
-        print(f"No --filename provided, using latest: {file_path}")
-    # otherwise, use the provided file path
+        print(f"No filename provided, using latest: {file_path}")
+    # otherwise, take it as a path, else as a file name under logs/hardware or logs/simulation
     else:
-        file_path = args.filename
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"No such file: {file_path}")
+        name = args.filename if args.filename.endswith(".h5") else args.filename + ".h5"
+        logs_root = os.path.dirname(os.path.abspath(__file__))
+        found = [c for c in (name,
+                             os.path.join(logs_root, "hardware", os.path.basename(name)),
+                             os.path.join(logs_root, "simulation", os.path.basename(name)))
+                 if os.path.exists(c)]
+        if not found:
+            raise FileNotFoundError(f"No log named {os.path.basename(name)} under {logs_root}/hardware "
+                                    f"or {logs_root}/simulation.")
+        file_path = found[0]
 
-    # load and plot the log
-    plot_log(file_path)
+    # replay in mujoco (imported lazily so plotting does not need mujoco), or plot
+    if args.replay:
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from utils.log_replay_utils import replay_log
+        data, meta = load_log(file_path)
+        if data is not None:
+            replay_log(data, meta, os.path.basename(file_path))
+    else:
+        plot_log(file_path)
 
 
 if __name__ == "__main__":
