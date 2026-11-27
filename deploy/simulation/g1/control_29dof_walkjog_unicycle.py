@@ -39,25 +39,14 @@ TRIGGER_OFFSET = 1e-6  # [sec] only absorbs float rounding (sim time has no jitt
 ############################################################################
 
 class ControlNode(Node):
-    """
-    Asynchronous control node for the unicycle walk + jog policy (G1-WalkJog-Unicycle).
+    """Asynchronous control node for the unicycle walk + jog policy (G1-WalkJog-Unicycle).
 
-    Same observation contract as the walk / jog library policies: proprioception (pelvis
-    gyro, joint pos relative to the default = standing idle pose, joint vel, last action), a
-    gait phase clock, the commanded planar twist [vx, vy, wz], and projected gravity from the
-    pelvis IMU. No reference motion is loaded at runtime; a zero action is the standing idle.
-
-    What is new: the policy was trained on ONE library holding two strides -- walk clips
-    (T = 70 frames = 1.4 s) and jog clips (T = 43 frames = 0.86 s) -- so the phase clock's
-    period is not a constant. Every tick the twist is snapped to its nearest library clip
-    (utils/locomotion/gait_library.py, mirroring mjlab's LibraryMotionCommand), the phase is
-    t / n of THAT clip, and crossing the walk/jog cut remaps the frame to the same phase of the
-    new cycle. The idle clip zeroes both the twist and the phase observations, as in training.
-
-    The joystick is shaped by utils/locomotion/jog_modes.py over the merged ranges: forward
-    vx 0.50..1.50 (walk up to ~0.9, jog from ~1.0), backward -0.50..-1.00, steer wz up to
-    +-0.50 at the same time, and, drive stick parked, pivots |wz| 0.50..2.00.
-
+    Observation: pelvis gyro, joint pos / vel, last action, phase clock, twist, projected gravity.
+    ONE library holds two strides, walk (70 frames) and jog (43): each tick the twist snaps to
+    its nearest clip (utils/locomotion/gait_library.py), the phase is t / n of THAT clip, and
+    crossing the cut remaps the frame to the same phase. The idle clip zeroes twist and phase.
+    Joystick (utils/locomotion/jog_modes.py), RT = TURBO: released, the walk bands (forward
+    0.50..0.90, backward -0.50..-0.70, pivots 0.50..1.45); pressed, the jog bands.
     No joystick -> default_twist (autonomous, sim only; a hardware node must stand).
     """
 
@@ -95,8 +84,10 @@ class ControlNode(Node):
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.sim_time = 0.0
 
-        # joystick command [vx, vy, wz] sticks in [-1, 1] + connection flag
+        # joystick command [vx, vy, wz] sticks in [-1, 1], RT turbo in [0, 1], connection flag
         self.cmd = np.zeros(3)
+        self.boost = 0.0
+        self._last_boost_print = None
         self.joystick_connected = False
 
         # active mode (idle / forward / backward / pivot) and gait (walk / jog) for logging
@@ -191,6 +182,9 @@ class ControlNode(Node):
         # the sticks must only ever ask for twists the library actually covers
         lib = self.clock.lib_twists
         for name, lo, hi, axis in (("fwd_vx_range", *self.commander.fwd_vx, 0),
+                                   ("fwd_vx_range_boost", *self.commander.forward_band(1.0), 0),
+                                   ("bwd_vx_range_boost", *self.commander.backward_band(1.0), 0),
+                                   ("pivot_wz_range_boost", *self.commander.pivot_wz_band(1.0), 2),
                                    ("bwd_vx_range", *self.commander.bwd_vx, 0),
                                    ("curve_wz_range", *self.commander.curve_wz, 2),
                                    ("pivot_wz_range", *self.commander.pivot_wz, 2)):
@@ -213,11 +207,13 @@ class ControlNode(Node):
     # HELPERS
     #################################################################
 
-    # joystick command: [is_connected, vx, vy, omega] (sticks in [-1, 1])
+    # joystick command: [is_connected, vx, vy, omega, ..., RT at index 9] (sticks in [-1, 1])
     def cmd_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
         self.joystick_connected = (data[0] > 0.5)
         self.cmd = np.array([data[1], data[2], data[3]], dtype=np.float32)
+        # RT is turbo (walk bands -> jog bands); older 9-wide senders mean no turbo
+        self.boost = float(np.clip(data[9], 0.0, 1.0)) if len(data) > 9 else 0.0
 
     # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def pelvis_imu_sensor_callback(self, msg):
@@ -256,7 +252,14 @@ class ControlNode(Node):
             self.mode = "forward" if self.default_twist[0] > 0 else "idle"
             return self.default_twist
 
-        self.mode, twist = self.commander.update(fwd_stick=self.cmd[0], turn_stick=self.cmd[2])
+        self.mode, twist = self.commander.update(fwd_stick=self.cmd[0], turn_stick=self.cmd[2],
+                                                 boost=self.boost)
+        # announce the forward band in 25% RT steps
+        step = int(round(self.boost * 4))
+        if step != self._last_boost_print:
+            lo, hi = self.commander.fwd_band
+            print(f"[RT] turbo {self.boost:.2f} -> forward vx [{lo:+.2f}, {hi:+.2f}] m/s")
+            self._last_boost_print = step
         return twist
 
     # label for a gait period (walk / jog), falling back to the frame count
