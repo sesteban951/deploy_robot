@@ -1,0 +1,57 @@
+# xml_path: "g1/g1_29dof_mode11_scene.xml"
+xml_path: "g1/g1_29dof_mode11_backpack_scene.xml"   # sim only; trained box is 1.47 kg, 5 cm further back
+# policy_path: "2026-11-18_21-54-28_jogrunsprint_v0.onnx"   # mjlab G1-JogRunSprint-Custom
+policy_path: "2026-11-19_12-04-23_jogrunsprint_backpack_v0.onnx"   # mjlab G1-JogRunSprint-Custom-Backpack
+
+home_pos_duration: 3.0   # [sec] ramp into the 'home' pose; hardware.py requires >= 3.0
+
+# NO motion_period_frames: this library mixes three strides (jog T = 43 frames = 0.86 s,
+# run T = 37 = 0.74 s, sprint T = 32 = 0.64 s). The period is the SNAPPED clip's own, read from
+# the policy's library_clips metadata by utils/locomotion/gait_library.py.
+gait_names: {43: jog, 37: run, 32: sprint}   # period [frames] -> label, for printouts only
+
+default_twist: [2.0, 0.0, 0.0]   # twist with no joystick (sim only; hardware stands). 2.0 = run, mjlab's play twist
+
+# joystick -> twist (utils/locomotion/jog_modes.py): UNICYCLE = drive and steer at the same time.
+# drive stick inside the deadband -> exactly zero twist -> idle clip
+stick_deadband:  0.15
+
+# the merged library's span, measured from the policy's library_clips (mjlab
+# jogrunsprint_custom/config/g1/env_cfgs.py). Speed selects the stride:
+#   forward   jog +0.50..+1.40  |  run +1.50..+2.40  |  sprint +2.50..+3.50   (cuts ~1.45, ~2.45)
+#   backward  jog -1.00..-0.50 only
+#   pivot     jog |wz| 1.00..2.00, drive stick parked
+#   arc       every stride sweeps |wz| 0..0.50
+# RT (0 released .. 1 pressed) blends the forward band; the stick maps linearly onto the
+# current band. Endpoints are the mjlab source spans (jog_fwd 0.5-1.5, run_fwd 1.5-2.5,
+# sprint_fwd 2.5-3.5); 2.5 snaps to a sprint clip (the merged library's sprint starts there).
+fwd_vx_range:       [ 0.50,  2.50]   # SLOW, RT released: jog_fwd min .. run_fwd max
+fwd_vx_range_boost: [ 1.50,  3.50]   # FAST, RT pressed: run_fwd min .. sprint_fwd max
+bwd_vx_range:   [-1.00, -0.50]
+curve_wz_range: [-0.50,  0.50]   # body yaw rate while moving, left (+): each stick side maps onto its half
+# In-place pivot MAGNITUDE band (sign from the stick). The library has NO clip between the arcs'
+# 0.5 and the pivots' 1.0, so crossing the drive deadband jumps |wz| across that gap.
+pivot_wz_range: [ 1.00,  2.00]
+
+# mode_machine 11; == the policy's joint_stiffness / joint_damping metadata
+Kp: [99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     99.098, 99.098, 40.179, 99.098, 28.501, 28.501,
+     40.179, 28.501, 28.501,  # waist
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+     14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778]
+Kd: [6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     6.309, 6.309, 2.558, 6.309, 1.814, 1.814,
+     2.558, 1.814, 1.814,  # waist
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+     0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+
+# == the policy's default_joint_pos: the same symmetric standing idle as the walkjog library
+# (g1_29dof_walkjog_unicycle.yaml), NOT the jog's stand_idle_qpos
+home_base_pos: [ 0.000000,  0.000000,  0.783030,  1.000000,  0.000000,  0.000000,  0.000000]
+home_joint_pos: [-0.128308,  0.104720,  0.183473,  0.261799, -0.119329, -0.043625,
+                 -0.128308, -0.104720, -0.183473,  0.261799, -0.119329,  0.043625,
+                  0.000000,  0.000000,  0.000000,
+                  0.000000,  0.329693, -0.739561,  1.073719, -0.032064, -0.003842,  0.053243,
+                  0.000000, -0.329693,  0.739561,  1.073719,  0.032064, -0.003842, -0.053243]
+
+control_dt: 0.02
