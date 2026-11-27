@@ -67,8 +67,9 @@ class ControlNode(WalkingPolicyNode):
 
     def state_callback(self, msg):
         state = np.asarray(msg.data, dtype=float)
-        if (state.shape != (72,) or not np.isfinite(state).all() or state[0] < 0
-                or abs(np.linalg.norm(state[4:8]) - 1) > .01):
+        if (state.shape not in ((72,), (76,)) or not np.isfinite(state).all() or state[0] < 0
+                or abs(np.linalg.norm(state[4:8]) - 1) > .01
+                or (state.size == 76 and not -1e-6 <= state[0] - state[75] <= .10 + 1e-8)):
             self.gate.candidates.clear()
             return
         t = float(state[0])
@@ -92,6 +93,9 @@ class ControlNode(WalkingPolicyNode):
         v = self.kcf_state[37:72].copy()
         self.cmd, self.command_source = self.gate.select(t, monotonic())
         feedback = Feedback(t, t, t, True, q, v, self.action.copy(), self.cmd.copy())
+        if self.kcf_state.size == 76:
+            feedback.obstacle_position = self.kcf_state[72:75].copy()
+            feedback.obstacle_time = float(self.kcf_state[75])
         self.feedback_pub.publish(Float64MultiArray(data=feedback.pack()))
 
 

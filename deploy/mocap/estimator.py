@@ -12,6 +12,8 @@
 
 # standard imports
 import argparse
+from pathlib import Path
+import sys
 import socket
 import struct
 import threading
@@ -26,7 +28,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PointStamped
 from std_msgs.msg import Float32MultiArray
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from kcf_mpc.profiles import load_profile, resolve_obstacle_config
 
 
 ############################################################################
@@ -104,6 +112,7 @@ class MocapClient:
 
         # latest tracked (pos, quat (w, x, y, z), arrival time) and (capture time, pos, quat) history
         self.pose = None
+        self.last_frame = None
         self.history = deque(maxlen=256)
         threading.Thread(target=self.receive_loop, daemon=True).start()
 
@@ -118,6 +127,8 @@ class MocapClient:
                 if struct.unpack_from("<H", data)[0] != NAT_FRAMEOFDATA:
                     continue
                 t_capture = struct.unpack_from("<i", data, 4)[0] / self.capture_hz
+                if t_capture == self.last_frame:
+                    continue  # A retransmitted frame must not refresh measurement age.
 
                 # skip header and frame number, then marker sets and loose markers ([count, size, data] each)
                 off = 8
@@ -136,6 +147,7 @@ class MocapClient:
                                 self.history.clear()
                             self.history.append((t_capture, (px, py, pz), (qw, qx, qy, qz)))
                             self.pose = ((px, py, pz), (qw, qx, qy, qz), t_arrival)
+                            self.last_frame = t_capture
                         break
                     off += RIGID_BODY.size
             except struct.error:
@@ -197,12 +209,16 @@ class EstimatorNode(Node):
     Fuse mocap position/velocity with the pelvis IMU and publish the KCF mocap Odometry.
     """
 
-    def __init__(self, mocap: MocapClient, window: float, rate: float, mode: str = 'robot'):
+    def __init__(self, mocap: MocapClient, window: float, rate: float, mode: str = 'robot',
+                 *, obstacle=None, obstacle_settings=None):
 
         super().__init__('mocap_estimator')
         self.mocap = mocap
         self.window = window
         self.mode = mode
+        self.obstacle = obstacle
+        self.obstacle_settings = resolve_obstacle_config(obstacle_settings)
+        self.last_obstacle_arrival = None
 
         # latest pelvis IMU orientation (w, x, y, z), body-frame gyro, and arrival time
         self.imu_quat = np.array([1.0, 0.0, 0.0, 0.0])
@@ -223,8 +239,30 @@ class EstimatorNode(Node):
         # ROS publisher, subscriber, and publish timer
         self.odom_pub = self.create_publisher(Odometry, ODOM_TOPIC, 1)
         self.raw_pub = self.create_publisher(Float32MultiArray, RAW_TOPIC, 1)
+        self.obstacle_pub = (self.create_publisher(PointStamped, self.obstacle_settings['topic'], 1)
+                             if obstacle is not None else None)
         self.imu_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.imu_callback, 1)
         self.timer = self.create_timer(1.0 / rate, self.publish_callback)
+
+    def publish_obstacle(self):
+        if self.obstacle is None:
+            return
+        # Use one snapshot: its arrival time identifies the sample and its age.
+        pose = self.obstacle.pose
+        if pose is None or pose[2] == self.last_obstacle_arrival:
+            return
+        position, _, arrival = pose
+        age = time.monotonic() - arrival
+        if not 0. <= age <= self.obstacle_settings['max_age_seconds']:
+            return
+        if not np.isfinite(position).all():
+            return
+        msg = PointStamped()
+        msg.header.frame_id = 'world'
+        msg.header.stamp = (self.get_clock().now() - Duration(seconds=age)).to_msg()
+        msg.point.x, msg.point.y, msg.point.z = map(float, position)
+        self.obstacle_pub.publish(msg)
+        self.last_obstacle_arrival = arrival
 
     # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def imu_callback(self, msg):
@@ -236,6 +274,7 @@ class EstimatorNode(Node):
     # publish the latest estimate (nothing while the body is not tracked, so KCF sees mocap as stale)
     def publish_callback(self):
 
+        self.publish_obstacle()  # Independent of pelvis/IMU initialization and loss.
         now = time.monotonic()
 
         # fresh mocap: raw pose, line-fit velocities (kept for the guard), and a recovery warning
@@ -348,10 +387,19 @@ if __name__ == "__main__":
     parser.add_argument('--capture-hz', type=float, default=240.0, help='Motive capture rate [Hz]')
     parser.add_argument('--window', type=float, default=0.04, help='velocity line-fit window [s]')
     parser.add_argument('--rate', type=float, default=100.0, help='publish rate [Hz]')
+    parser.add_argument('--profile', default='walking', help='Existing KCF YAML profile for obstacle settings')
     args = parser.parse_args()
 
+    obstacle_settings = load_profile(args.profile).obstacle
+    if obstacle_settings['enabled'] and obstacle_settings['body'] == args.body:
+        parser.error('Robot and obstacle must be different Motive rigid bodies')
     # connect to Motive and track the body
     mocap = MocapClient(args.server, args.body, args.capture_hz)
+    obstacle = (MocapClient(args.server, obstacle_settings['body'], args.capture_hz)
+                if obstacle_settings['enabled'] else None)
+    if obstacle is not None:
+        print(f"Tracking obstacle [{obstacle_settings['body']}] -> {obstacle_settings['topic']}; "
+              "rigid-body origin must be its center in the robot's world frame.", flush=True)
     print(f"Tracking rigid body [{args.body}] (ID {mocap.body_id}) from Motive [{args.server}].")
     print(f"    Mode [{args.mode}]: orientation and omega from the "
           f"{'pelvis IMU, yaw aligned to mocap' if args.mode == 'robot' else 'mocap (line fit)'}.")
@@ -363,7 +411,8 @@ if __name__ == "__main__":
 
     # run the estimator node
     rclpy.init()
-    node = EstimatorNode(mocap, args.window, args.rate, args.mode)
+    node = EstimatorNode(mocap, args.window, args.rate, args.mode,
+                         obstacle=obstacle, obstacle_settings=obstacle_settings)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

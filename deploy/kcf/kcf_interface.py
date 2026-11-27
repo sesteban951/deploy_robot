@@ -1,7 +1,9 @@
 """Walking KCF contract and command gate.
 
-Feedback Float64MultiArray (107): [policy_time, pose_time, applied_time, valid,
-qpos(36), qvel(35), previous_raw_RL_action(29), current_policy_twist(3)].
+Feedback Float64MultiArray: [policy_time, pose_time, applied_time, valid,
+qpos(36), qvel(35), previous_raw_RL_action(29), current_policy_twist(3)]
+(107 values), optionally followed by obstacle world XYZ and its policy-clock
+measurement time (111 values). Obstacle data stays outside the learned state.
 qpos: world position (m), body-to-world quaternion wxyz, joints (rad).
 qvel: world linear (m/s), BODY angular (rad/s), joints (rad/s).
 
@@ -34,18 +36,29 @@ class Feedback:
     v: np.ndarray
     previous_action: np.ndarray
     applied_command: np.ndarray
+    obstacle_position: np.ndarray | None = None
+    obstacle_time: float | None = None
 
     def pack(self):
-        return np.concatenate((
+        values = [
             [self.time, self.pose_time, self.applied_time, float(self.valid)],
             self.q, self.v, self.previous_action, self.applied_command,
-        )).tolist()
+        ]
+        if self.obstacle_position is not None:
+            center = np.asarray(self.obstacle_position, dtype=float)
+            if (center.shape != (3,) or not np.isfinite(center).all()
+                    or self.obstacle_time is None or not np.isfinite(self.obstacle_time)):
+                raise ValueError('Obstacle feedback requires finite world XYZ and measurement time')
+            values.extend((center, [self.obstacle_time]))
+        elif self.obstacle_time is not None:
+            raise ValueError('Obstacle time requires an obstacle position')
+        return np.concatenate(values).tolist()
 
     @classmethod
     def unpack(cls, data, max_pose_age=0.1):
         a = np.asarray(data, dtype=np.float64)
-        if a.shape != (107,) or not np.isfinite(a).all():
-            raise ValueError("feedback must contain 107 finite values (29 joints)")
+        if a.shape not in ((107,), (111,)) or not np.isfinite(a).all():
+            raise ValueError("feedback must contain 107 or 111 finite values (29 joints)")
         t, pose_t, applied_t, valid = a[:4]
         if valid != 1 or t < 0 or pose_t < 0 or not (-1e-6 <= t - pose_t <= max_pose_age):
             raise ValueError("invalid, future or stale pelvis feedback")
@@ -53,8 +66,56 @@ class Feedback:
             raise ValueError("invalid applied-command timestamp")
         if abs(np.linalg.norm(a[7:11]) - 1.0) > 0.01:
             raise ValueError("pelvis quaternion must be unit wxyz")
+        center, obstacle_time = (a[107:110].copy(), float(a[110])) if a.size == 111 else (None, None)
+        if obstacle_time is not None and not -1e-6 <= t - obstacle_time <= max_pose_age + 1e-8:
+            raise ValueError('Obstacle feedback is stale or from the future')
         return cls(t, pose_t, applied_t, True, a[4:40].copy(),
-                   a[40:75].copy(), a[75:104].copy(), a[104:107].copy())
+                   a[40:75].copy(), a[75:104].copy(), a[104:107].copy(), center, obstacle_time)
+
+
+class ObstacleState:
+    """Retain a stamped world-center measurement and convert it once to policy time."""
+
+    def __init__(self, settings):
+        self.enabled = settings['enabled']
+        self.max_age = settings['max_age_seconds']
+        self.clear()
+        self.last_policy_time = None
+
+    def clear(self):
+        self.measurement = None
+        self.policy_stamp = None
+
+    def update(self, msg):
+        p = msg.point
+        position = np.array([p.x, p.y, p.z], dtype=float)
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if msg.header.frame_id != 'world' or not np.isfinite(position).all() or not np.isfinite(stamp) or stamp < 0:
+            raise ValueError('Obstacle must be a finite stamped center in the world frame')
+        if self.measurement is not None:
+            previous_stamp, previous_position = self.measurement
+            if stamp < previous_stamp or (stamp == previous_stamp and not np.array_equal(position, previous_position)):
+                raise ValueError('Obstacle samples must have consistent increasing timestamps')
+            if stamp == previous_stamp:
+                return
+        self.measurement = (stamp, position)
+        self.policy_stamp = None
+
+    def sample(self, policy_time, ros_time):
+        if self.last_policy_time is not None and policy_time < self.last_policy_time:
+            self.policy_stamp = None
+        self.last_policy_time = policy_time
+        if not self.enabled or self.measurement is None:
+            return None, None
+        stamp, position = self.measurement
+        age = ros_time - stamp
+        if not np.isfinite(age) or not -1e-3 <= age <= self.max_age + 1e-8:
+            return None, None
+        if self.policy_stamp is None:
+            self.policy_stamp = float(policy_time - max(age, 0.))
+        if not -1e-6 <= policy_time - self.policy_stamp <= self.max_age + 1e-8:
+            return None, None
+        return position.copy(), self.policy_stamp
 
 
 class CommandGate:

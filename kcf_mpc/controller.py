@@ -172,6 +172,9 @@ class KCFCommand(CommandSource):
         self.dt = self.cfg.control_dt
         self.gait_period = self.cfg.gait_period
         self.standing_hold = settings.get("standing_hold")
+        self.obstacle_max_age = float(settings.get('obstacle_prediction', {}).get('max_age_seconds', .10))
+        if not np.isfinite(self.obstacle_max_age) or self.obstacle_max_age <= 0:
+            raise ValueError('Obstacle maximum age must be finite and positive')
         if self.standing_hold is not None:
             hold = self.standing_hold
             if (not all(np.isfinite(value) and value > 0 for value in hold.values())
@@ -360,6 +363,8 @@ class KCFCommand(CommandSource):
         self.ref = np.asarray(self.reference(0.0)[0][:2]).copy()
         self.last_state_time = None
         self.last_observation = None
+        self._obstacle_sample = None
+        self._obstacle_velocity = np.zeros(2)
         self.previous_command = np.zeros(3, dtype=np.float32)
         self._standing_hold_active = False
         self._standing_hold_releasing = False
@@ -387,6 +392,39 @@ class KCFCommand(CommandSource):
         else:
             worker.invalidate()
 
+    def _predict_obstacle(self, state, times):
+        """World XY forecast from measured positions on the policy clock."""
+        position = getattr(state, 'obstacle_position', None)
+        if self.mpc.obstacle_cost is None:
+            self._obstacle_required = False
+            self._obstacle_sample, self._obstacle_velocity = None, np.zeros(2)
+            return None
+        if position is None:
+            if getattr(self, '_obstacle_required', False):
+                raise ValueError('Missing obstacle measurement after tracking started')
+            return None
+        position = np.asarray(position, dtype=float)
+        stamp = getattr(state, 'obstacle_time', None)
+        stamp = float(state.t if stamp is None else stamp)
+        if (position.shape != (3,) or not np.isfinite(position).all() or not np.isfinite(stamp)
+                or stamp > state.t + 1e-8
+                or state.t - stamp > getattr(self, 'obstacle_max_age', .10) + 1e-8):
+            raise ValueError('Obstacle position/time is invalid, stale or from the future')
+        previous = getattr(self, '_obstacle_sample', None)
+        velocity = getattr(self, '_obstacle_velocity', np.zeros(2))
+        if previous is not None:
+            elapsed = stamp - previous[0]
+            if elapsed < 0 or (elapsed == 0 and not np.array_equal(position[:2], previous[1])):
+                raise ValueError('Obstacle measurements must have consistent increasing timestamps')
+            if elapsed > 0:
+                velocity = (position[:2] - previous[1]) / elapsed
+        if not np.isfinite(velocity).all():
+            raise ValueError('Obstacle velocity estimate is not finite')
+        self._obstacle_sample = (stamp, position[:2].copy())
+        self._obstacle_required = True
+        self._obstacle_velocity = velocity.copy()
+        return position[:2] + (np.asarray(times) - stamp)[..., None] * velocity
+
     def _request(
         self, state, observation, now, *, plan_start_time=None, prefix_controls=None
     ):
@@ -402,6 +440,16 @@ class KCFCommand(CommandSource):
         previous = np.array(self.previous_command, dtype=np.float32, copy=True)
         previous.flags.writeable = False
         heading = self.theta_prev if observation.shape == (103,) else None
+        start = state.t if plan_start_time is None else plan_start_time
+        centers = self._predict_obstacle(state, start + self.dt * np.arange(1, self.N + 1))
+        obstacle_metadata = {}
+        if centers is not None:
+            centers.flags.writeable = False
+            stamp, position = self._obstacle_sample
+            position, velocity = position.copy(), self._obstacle_velocity.copy()
+            position.flags.writeable = velocity.flags.writeable = False
+            obstacle_metadata = dict(obstacle_sample_time=stamp, obstacle_sample_position=position,
+                                     obstacle_velocity=velocity)
         return SolveRequest(
             self._generation,
             self._request_counter,
@@ -413,6 +461,8 @@ class KCFCommand(CommandSource):
             prefix_controls,
             previous,
             heading_world=heading,
+            obstacle_positions=centers,
+            **obstacle_metadata,
         )
 
     def observe_applied_command(self, application_time, command):
@@ -702,6 +752,13 @@ class KCFCommand(CommandSource):
             self.reset()
         lead = 0 if self.synchronous_feedback else self.application_lead_steps
         application_time = float(state.t + lead * self.dt)
+        try:
+            obstacle_centers = self._predict_obstacle(
+                state, np.r_[state.t, application_time + self.dt * np.arange(self.N + 1)])
+        except ValueError:
+            # Invalidate pending plans as for invalid robot feedback; never use stale obstacle data.
+            self.reset()
+            return np.zeros(3, dtype=np.float32)
         if self.reference_path._initial_pose is None and np.isfinite(state.q).all():
             self.reference_path.set_initial_pose(
                 [state.q[0], state.q[1], g1_world_heading(state)])
@@ -769,6 +826,9 @@ class KCFCommand(CommandSource):
                        and np.linalg.norm(observation[4:6]) < hold["enter_linear_speed_mps"]
                        and abs(observation[6]) < hold["enter_yaw_rate_rps"]
                        and np.linalg.norm(self.previous_command) < self.cfg.stand_cmd_threshold)
+            if obstacle_centers is not None:
+                holding = holding and np.min(np.linalg.norm(
+                    state.q[:2] - obstacle_centers, axis=-1)) >= hold.get('obstacle_distance_m', 0.45)
             if not self._standing_hold_active:
                 if not holding:
                     self._standing_hold_since = None

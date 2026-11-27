@@ -10,11 +10,14 @@ class RobotState:
     q: np.ndarray
     v: np.ndarray
     prev_action: np.ndarray
+    obstacle_position: np.ndarray | None = None
+    obstacle_time: float | None = None
 
 
 def state_from_feedback(feedback):
     """Walking adapter; future recurrent profiles provide their own adapter."""
-    return RobotState(feedback.time, feedback.q, feedback.v, feedback.previous_action)
+    return RobotState(feedback.time, feedback.q, feedback.v, feedback.previous_action,
+                      feedback.obstacle_position, feedback.obstacle_time)
 
 
 def nominal_state(cfg):

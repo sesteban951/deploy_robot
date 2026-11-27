@@ -29,6 +29,10 @@ class SolveRequest:
     prefix_controls: np.ndarray | None = None
     previous_command: np.ndarray | None = None
     heading_world: float | None = None
+    obstacle_positions: np.ndarray | None = None  # world XY centers at the solve horizon's times
+    obstacle_sample_time: float | None = None
+    obstacle_sample_position: np.ndarray | None = None
+    obstacle_velocity: np.ndarray | None = None
 
     @property
     def control_start_time(self):
@@ -150,6 +154,12 @@ class SingleSolveWorker:
             heading = request.heading_world
             if self.trace is not None:
                 trace_arguments = {} if heading is None else {"heading_world": heading}
+                if request.obstacle_positions is not None:
+                    trace_arguments['obstacle_positions'] = request.obstacle_positions
+                    for key in ('obstacle_sample_time', 'obstacle_sample_position', 'obstacle_velocity'):
+                        value = getattr(request, key)
+                        if value is not None:
+                            trace_arguments[key] = value
                 row = self.trace.begin(
                     self.solver,
                     request.observation,
@@ -193,6 +203,8 @@ class SingleSolveWorker:
             arguments = {} if preceding is None else {"preceding_command": preceding}
             if heading is not None:
                 arguments["heading_world"] = heading
+            if request.obstacle_positions is not None:
+                arguments['obstacle_positions'] = request.obstacle_positions.copy()
             if getattr(self.solver, 'solver', None) == 'icem':
                 arguments['warm_start_steps'] = warm_steps
             controls, result = self.solver.solve(

@@ -23,6 +23,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64, Float32MultiArray, Float64MultiArray, String
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PointStamped
 
 # directory imports
 import sys
@@ -34,7 +35,7 @@ sys.path.append(ROOT_DIR)
 from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
 from utils.experiment_utils import publish_experiment_info
-from deploy.kcf.kcf_interface import CommandGate, Feedback, mocap_base, COMMAND_TOPIC, FEEDBACK_TOPIC, MOCAP_TOPIC
+from deploy.kcf.kcf_interface import CommandGate, Feedback, ObstacleState, mocap_base, COMMAND_TOPIC, FEEDBACK_TOPIC, MOCAP_TOPIC
 from kcf_mpc.profiles import load_profile
 
 
@@ -88,6 +89,7 @@ class ControlNode(Node):
         self.qpos_joints = self.qpos_joints_default.copy()
         self.qvel_joints = np.zeros(self.act_size)
         self.mocap = None          # (stamp [s, ROS clock], base [pos, quat], world linear velocity)
+        self.obstacle = ObstacleState(self.kcf_profile.obstacle)
 
         # guards: arrival time [s, monotonic] of the last IMU message, and when each stream was lost
         self.imu_wall = None
@@ -106,6 +108,9 @@ class ControlNode(Node):
         self.mpc_sub = self.create_subscription(Float64MultiArray, COMMAND_TOPIC,
                                                 lambda msg: self.gate.set_mpc(msg.data, monotonic()), 1)
         self.mocap_sub = self.create_subscription(Odometry, MOCAP_TOPIC, self.mocap_callback, 1)
+        if self.obstacle.enabled:
+            self.obstacle_sub = self.create_subscription(
+                PointStamped, self.kcf_profile.obstacle['topic'], self.obstacle_callback, 1)
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 1)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 1)
         self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 1)
@@ -201,6 +206,13 @@ class ControlNode(Node):
         except ValueError:
             print("WARNING: invalid mocap Odometry ignored (keeping the last pose).", flush=True)
 
+    def obstacle_callback(self, msg):
+        try:
+            self.obstacle.update(msg)
+        except (ValueError, TypeError, AttributeError):
+            self.obstacle.clear()
+            self.gate.candidates.clear()
+
     # pelvis IMU data: [rpy(3), quat(4), gyro(3), acc(3)]
     def pelvis_imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
@@ -283,6 +295,10 @@ class ControlNode(Node):
                     self.mocap_expired = True
 
         # twist; missing mocap in track gives zero velocity (never act on a stale pose)
+        obstacle_position, obstacle_time = self.obstacle.sample(
+            t, self.get_clock().now().nanoseconds * 1e-9)
+        if self.obstacle.enabled and obstacle_position is None:
+            self.gate.candidates.clear()
         self.cmd, self.command_source = self.gate.select(t, now)
         if not valid and self.gate.fsm == 'track':
             self.cmd[:] = 0
@@ -290,6 +306,7 @@ class ControlNode(Node):
 
         # Echo the current physical twist and the previous complete raw policy action.
         feedback = Feedback(t, pose_time, t, valid, q, v, self.action.copy(), self.cmd.copy())
+        feedback.obstacle_position, feedback.obstacle_time = obstacle_position, obstacle_time
         self.feedback_pub.publish(Float64MultiArray(data=feedback.pack()))
 
     # build the observation vector for the policy

@@ -53,6 +53,10 @@ and the epoch-3240 model/normalization in `policy/g1/kcf/walking/` with asset ch
 The model uses 103 states, all 29 joints and previous raw policy actions, three
 physical body commands, and a 256-dimensional lift.
 MPC gains, standing hold/release, and trajectory defaults are in `kcf_mpc/config/mpc_config.py`.
+`kcf.obstacle` in the same YAML enables obstacle avoidance for both simulation and
+hardware. It selects the Motive body/topic, physical radius, log-cost multiplier,
+center-distance cutoff and maximum sample age. Simulation uses its `position`,
+`velocity`, and `motion` (`scripted` or repeating `cross`).
 
 # Deployment
 
@@ -111,6 +115,10 @@ On hardware, `deploy/hardware/g1/control_29dof_kcf.py` subscribes to it and
 merges the pose into the KCF feedback, converting the ROS-clock stamp onto the
 policy clock; keep `kcf.state_source: simulation` (feedback used as published).
 Simulation supplies its atomic MuJoCo snapshot directly; it does not need the mocap estimator.
+With obstacle avoidance enabled, the same estimator also tracks `obstacle_1` and
+publishes its center on `/deploy_kcf/obstacle` (`geometry_msgs/PointStamped`). Define
+that rigid-body origin at the obstacle center, in the robot's world frame and metres.
+Obstacle samples keep their original age; missing or stale data blocks KCF tracking.
 
 ## Hardware
 

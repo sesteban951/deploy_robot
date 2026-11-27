@@ -14,7 +14,7 @@ from kcf_mpc.mpc.tracking import TRACKING_LABELS
 
 
 class MPCSolveTrace:
-    FORMAT_VERSION = 12
+    FORMAT_VERSION = 14
     ACTIONS = {"mpc": 0, "held": 1, "zero": 2, "pending": 3, "buffered": 4}
 
     def __init__(
@@ -45,6 +45,11 @@ class MPCSolveTrace:
             "preceding_command": np.full((capacity, input_dim), np.nan),
             "prediction_seconds": np.zeros(capacity),
             "reference": np.zeros((capacity, horizon, tracked_dim), np.float64),
+            "obstacle_positions": np.full((capacity, horizon, 2), np.nan),
+            "obstacle_present": np.zeros(capacity, bool),
+            "obstacle_sample_time": np.full(capacity, np.nan),
+            "obstacle_sample_position": np.full((capacity, 2), np.nan),
+            "obstacle_velocity": np.full((capacity, 2), np.nan),
             "previous_solution": np.full((capacity, horizon, input_dim), np.nan),
             "has_previous": np.zeros(capacity, bool),
             "warm_start_steps": np.ones(capacity, np.int32),
@@ -125,6 +130,10 @@ class MPCSolveTrace:
         preceding_command=None,
         heading_world=None,
         warm_start_steps=1,
+        obstacle_positions=None,
+        obstacle_sample_time=None,
+        obstacle_sample_position=None,
+        obstacle_velocity=None,
     ):
         if self.count == self.capacity:
             self.dropped += 1
@@ -147,6 +156,14 @@ class MPCSolveTrace:
         if preceding_command is not None:
             a["preceding_command"][row] = preceding_command
         a["reference"][row] = reference
+        if obstacle_positions is not None:
+            a['obstacle_positions'][row] = obstacle_positions
+            a['obstacle_present'][row] = True
+            for key, value in (('obstacle_sample_time', obstacle_sample_time),
+                               ('obstacle_sample_position', obstacle_sample_position),
+                               ('obstacle_velocity', obstacle_velocity)):
+                if value is not None:
+                    a[key][row] = value
         a["state_time"][row] = state_time
         a['warm_start_steps'][row] = warm_start_steps
         a["generation"][row] = generation

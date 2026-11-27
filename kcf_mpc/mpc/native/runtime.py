@@ -165,7 +165,8 @@ class NativeRollout:
 
     def _check(self, initial, matrices, weights):
         if (initial.shape != (103,) or len(matrices.shape) != 3
-                or matrices.shape[1:] != (103, 256) or not 1 <= matrices.shape[0] <= 20
+                or matrices.shape[1:] != (103, 256) or matrices.shape[0] < 1
+                or matrices.size > np.iinfo(np.int32).max
                 or weights.shape != (PARAM_FLOATS,)
                 or any(v.dtype != jnp.float32 for v in (initial, matrices, weights))):
             raise ValueError('Native FP32 rollout buffer shape/dtype mismatch')
@@ -180,12 +181,16 @@ class NativeRollout:
                 dt=np.float64(self.dt), balance=np.float64(self.balance))
 
     def __call__(self, initial, matrices):
+        self._check(initial, matrices, self.packed_weights)
+        if matrices.shape[0] <= 8:
+            return self.batched(initial[None, :], matrices[None, ...])[0]
         return self.forward(initial, matrices, self.packed_weights)[0]
 
     def batched(self, initials, matrices):
         """Forward-only independent trajectories; no gradient primitive."""
         if (matrices.ndim != 4 or matrices.shape[0] < 1
-                or not 1 <= matrices.shape[1] <= 20 or matrices.shape[2:] != (103, 256)
+                or matrices.shape[1] < 1 or matrices.shape[2:] != (103, 256)
+                or matrices.size > np.iinfo(np.int32).max
                 or initials.shape != (matrices.shape[0], 103)
                 or any(v.dtype != jnp.float32 for v in (initials, matrices))):
             raise ValueError('Native population rollout shape/dtype mismatch')

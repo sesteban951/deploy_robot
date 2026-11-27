@@ -76,10 +76,10 @@ extern "C" int kcf_rollout_initialize_native(const char* ptx, int* info) {
 }
 
 static int Horizon(ffi::Buffer<ffi::F32> matrices) {
-  if (matrices.dimensions().size() != 3 || matrices.dimensions()[1] != 103 ||
-      matrices.dimensions()[2] != 256) return 0;
-  int horizon = int(matrices.dimensions()[0]);
-  return horizon >= 1 && horizon <= 20 ? horizon : 0;
+  if (matrices.dimensions().size() != 3 || matrices.dimensions()[0] < 1 ||
+      matrices.dimensions()[1] != 103 || matrices.dimensions()[2] != 256 ||
+      matrices.element_count() > INT32_MAX) return 0;
+  return int(matrices.dimensions()[0]);
 }
 
 static ffi::Error Forward(CUstream stream, double timestep, double projection_balance,
@@ -111,7 +111,8 @@ static ffi::Error Batch(CUstream stream, double timestep, double projection_bala
     ffi::Buffer<ffi::F32> initials, ffi::Buffer<ffi::F32> matrices,
     ffi::Buffer<ffi::F32> parameters, ffi::ResultBuffer<ffi::F32> states) {
   const auto dims = matrices.dimensions();
-  if (dims.size() != 4 || dims[0] < 1 || dims[0] > INT32_MAX || dims[1] < 1 || dims[1] > 20
+  if (dims.size() != 4 || dims[0] < 1 || dims[0] > INT32_MAX || dims[1] < 1
+      || matrices.element_count() > INT32_MAX
       || dims[2] != 103 || dims[3] != 256 || initials.element_count() != dims[0] * 103
       || parameters.element_count() != kParameters || states->element_count() != dims[0] * dims[1] * 103
       || !batch_kernel || !(std::isfinite(timestep) && timestep > 0

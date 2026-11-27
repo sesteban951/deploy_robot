@@ -114,7 +114,8 @@ class ProjectedJaxMPCBackend:
         command_change_weights=None,
         terminal_state_weights=None,
         prediction_sample_period=0.02,
-        prediction_model="kcf"
+        prediction_model="kcf",
+        obstacle_cost=None,
     ):
         if not is_projected_g1(model) or prediction_model not in (
             "kcf",
@@ -127,6 +128,7 @@ class ProjectedJaxMPCBackend:
         self.tracking_feature_indices = tuple(int(i) for i in tracking_feature_indices)
         self.model_dt = float(model.dt)
         self.tracked_dim = len(tracking_feature_indices)
+        self.obstacle_cost = obstacle_cost
         if self.horizon < 1 or int(scan_unroll) < 1:
             raise ValueError("JAX horizon and scan_unroll must be positive")
         self.dtype = np.dtype(
@@ -187,8 +189,8 @@ class ProjectedJaxMPCBackend:
         self._icem_host_state = None
         self._native_rollout_kernel = None
         if self.device.platform == "gpu" and prediction_model == "kcf":
-            if self.dtype != np.dtype("float32") or self.horizon > 20 or model.config.nH != 256:
-                raise ValueError("Native GPU KCF requires FP32, lift256 and horizon <= 20")
+            if self.dtype != np.dtype("float32") or model.config.nH != 256:
+                raise ValueError("Native GPU KCF requires FP32 and lift256")
             from .native.runtime import NativeRollout
             self._native_rollout_kernel = NativeRollout(model, array, self.device)
         self.execution_implementation = (
@@ -293,11 +295,36 @@ class ProjectedJaxMPCBackend:
                 + jnp.sum(change * differences**2, axis=(-2, -1))
             )
 
-        def population_cost(initial, controls, reference, preceding, parameters):
-            return trajectory_cost(population_rollout(initial, controls, parameters),
-                                   controls, reference, preceding)
+        def population_cost(initial, controls, reference, preceding, parameters,
+                            obstacle_positions=None, obstacle_active=True):
+            states = population_rollout(initial, controls, parameters)
+            cost = trajectory_cost(states, controls, reference, preceding)
+            if self.obstacle_cost is not None and obstacle_positions is not None:
+                def obstacle_term():
+                    value = jnp.asarray(self.obstacle_cost(states[..., :2], obstacle_positions),
+                                        dtype=cost.dtype)
+                    if value.shape != cost.shape:
+                        raise ValueError('Obstacle penalty must return one cost per candidate trajectory')
+                    return value
+
+                # Keep one fixed-shape compiled executable as the obstacle moves
+                # or appears/disappears. Do not evaluate a singular inactive cost.
+                cost = cost + jax.lax.cond(
+                    obstacle_active,
+                    obstacle_term,
+                    lambda: jnp.zeros_like(cost),
+                )
+            return cost
+
+        def optimizer_cost(initial, controls, reference, preceding, context):
+            parameters, centers, active = context
+            return population_cost(initial, controls, reference, preceding,
+                                   parameters, centers, active)
 
         self._population_cost_function = population_cost
+        self._optimizer_cost_function = (
+            population_cost if self.obstacle_cost is None else optimizer_cost
+        )
         self._population_cost = jax.jit(population_cost, compiler_options=self.compiler_options or None)
         self._population_rollout = jax.jit(population_rollout, compiler_options=self.compiler_options or None)
         options = dict(compiler_options=self.compiler_options or None)
@@ -347,7 +374,7 @@ class ProjectedJaxMPCBackend:
         self._icem_state = (self._array(mean), self._array(elites))
 
     def solve_icem(self, observation, reference, preceding, rng, options, lower, upper,
-                   *, previous_solution=None, warm_start_steps=1):
+                   *, previous_solution=None, warm_start_steps=1, obstacle_positions=None):
         from .icem import ICEMResult
         from .icem import build_optimizer, reference_initial_mean
         if self._icem_optimizer is None:
@@ -358,7 +385,7 @@ class ProjectedJaxMPCBackend:
                 pose_columns = tuple(self.tracking_feature_indices.index(i) for i in range(4))
                 cold_mean = lambda initial, target: reference_initial_mean(
                     initial, target, self.horizon, self.model_dt, pose_columns, lo, hi)
-            self._icem_optimizer = build_optimizer(self._population_cost_function,
+            self._icem_optimizer = build_optimizer(self._optimizer_cost_function,
                 self.horizon, lo, hi, options,
                 compiler_options=self.compiler_options,
                 pinned_host_output=self.pinned_host_output, device=self.device, cold_mean=cold_mean,
@@ -387,12 +414,22 @@ class ProjectedJaxMPCBackend:
         if (previous.shape != (self.horizon, 3) or not np.isfinite(previous).all()
                 or np.any(previous < lower - 1e-7) or np.any(previous > upper + 1e-7)):
             raise ValueError('iCEM previous solution must be a finite bounded horizon plan')
+        parameters = self.parameters
+        if self.obstacle_cost is not None:
+            centers = (np.zeros((self.horizon, 2), dtype=self.dtype)
+                       if obstacle_positions is None else np.asarray(obstacle_positions, dtype=self.dtype))
+            if centers.shape != (self.horizon, 2) or not np.isfinite(centers).all():
+                raise ValueError('obstacle_positions must contain finite local XY centers [H, 2]')
+            parameters = (parameters, self._array(centers),
+                          jax.device_put(np.asarray(obstacle_positions is not None), self.device))
+        elif obstacle_positions is not None:
+            raise ValueError('Enable obstacle_cost before supplying obstacle_positions')
         # NumPy's captured RNG is the sole seed source; warmup/replay can restore it.
         key = jax.device_put(rng.integers(0, 2**32, size=2, dtype=np.uint32), self.device)
         packed, next_mean, next_elites = self._icem_optimizer(self._array(observation),
             self._array(reference), self._array(preceding), mean, elites,
             jax.device_put(np.asarray(has_memory), self.device), self._array(previous),
-            jax.device_put(np.asarray(has_previous), self.device), key, self.parameters,
+            jax.device_put(np.asarray(has_previous), self.device), key, parameters,
             jax.device_put(np.asarray(shift, dtype=np.int32), self.device))
         host = np.asarray(packed) if self.pinned_host_output else np.asarray(jax.device_get(packed))
         length = self.horizon * 3
@@ -410,8 +447,12 @@ class ProjectedJaxMPCBackend:
                 np.vstack((preceding, warm)), axis=0))
                 <= np.asarray(options.command_rate_limits) * self.model_dt + 1e-7))
             changes = np.diff(np.vstack((preceding, plan)), axis=0)
+            # Match the research runtime: allow float32 rounding at a projected
+            # rate boundary while rejecting actual command-rate violations.
+            rate_slack = max(1e-7, 4 * np.finfo(self.dtype).eps * max(
+                1., float(np.max(np.abs(np.r_[lower, upper, preceding])))))
             rate_feasible = bool(np.all(np.abs(changes)
-                <= np.asarray(options.command_rate_limits) * self.model_dt + 1e-7))
+                <= np.asarray(options.command_rate_limits) * self.model_dt + rate_slack))
         competitive = (cost <= mean_cost and cost <= sampled_cost
                        and (not warm_feasible or cost <= warm_cost))
         success = bool(host[-1] == 1 and np.isfinite(cost) and np.isfinite(plan).all()

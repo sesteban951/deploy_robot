@@ -16,6 +16,7 @@ from kcf_mpc.state.frame import G1KCFSinCosFrame
 from kcf_mpc.models.projected import ProjectedG1KCF, is_projected_g1
 from kcf_mpc.mpc.tracking import TRACKING_LABELS
 from kcf_mpc.mpc.icem import ICEMConfig, ICEMResult
+from kcf_mpc.mpc.tracking import build_obstacle_cost
 
 
 class KoopmanMPC:
@@ -141,6 +142,7 @@ class KoopmanMPC:
         self.command_change_weights = torch.as_tensor(
             change_weights, dtype=self.dtype, device=self.device
         )
+        self.obstacle_cost = build_obstacle_cost(config.get("obstacle_cost"))
 
         self.solver = str(config.get("solver", "icem"))
         if self.solver != "icem":
@@ -295,6 +297,7 @@ class KoopmanMPC:
                 scan_unroll=self.jax_scan_unroll,
                 prediction_sample_period=self.prediction_sample_period,
                 prediction_model=self.prediction_model,
+                obstacle_cost=self.obstacle_cost,
             )
         return self._jax_backend
 
@@ -321,8 +324,15 @@ class KoopmanMPC:
         preceding_command: np.ndarray | torch.Tensor | None = None,
         heading_world: float | None = None,
         warm_start_steps: int = 1,
+        obstacle_positions: np.ndarray | torch.Tensor | None = None,
     ) -> tuple[np.ndarray, ICEMResult]:
-        """Optimize one horizon and return the complete input sequence."""
+        """Optimize one horizon and return the complete input sequence.
+
+        obstacle_positions, when supplied, contains world XY obstacle centers
+        of shape [H, 2], at the same future times as the predicted states and
+        reference. None explicitly represents no obstacle for this solve.
+        The obstacle is external to the trained 103-state model.
+        """
         def host_array(value):
             if isinstance(value, torch.Tensor):
                 value = value.detach().cpu().numpy()
@@ -346,6 +356,16 @@ class KoopmanMPC:
             observation, heading_world=heading_world
         )
         target = self.reference_to_prediction_frame(target, fixed_frame)
+        obstacles = None
+        if obstacle_positions is not None:
+            if self.obstacle_cost is None:
+                raise ValueError('Enable obstacle_cost before supplying obstacle_positions')
+            centers = host_array(obstacle_positions)
+            if centers.shape != (self.horizon, 2) or not np.isfinite(centers).all():
+                raise ValueError('obstacle_positions must contain finite world XY centers [H, 2]')
+            xyz = np.zeros((self.horizon, 3), dtype=self.numpy_dtype)
+            xyz[:, :2] = centers
+            obstacles = fixed_frame.frame.position_to_local(xyz)[:, :2]
         if preceding_command is None:
             if self.has_command_change_cost or self.icem_config.command_rate_limits is not None:
                 raise ValueError(
@@ -360,7 +380,8 @@ class KoopmanMPC:
         controls, result = self._get_jax_backend().solve_icem(
             observation, target, preceding, self.rng, self.icem_config,
             self.lower_bounds, self.upper_bounds,
-            previous_solution=self.previous_solution, warm_start_steps=warm_start_steps)
+            previous_solution=self.previous_solution, warm_start_steps=warm_start_steps,
+            obstacle_positions=obstacles)
         self.previous_solution = controls.copy() if result.success else None
         return controls, result
 

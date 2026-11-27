@@ -11,15 +11,55 @@ import json
 from pathlib import Path
 import re
 
+import numpy as np
 import yaml
 
 DEPLOY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def resolve_obstacle_config(values=None):
+    """One obstacle contract shared by the estimator, policy feedback and MPC."""
+    defaults = dict(enabled=False, body='obstacle_1', topic='/deploy_kcf/obstacle',
+                    radius=0.07, position=[0.7, -0.4, 0.15], velocity=[0., 0., 0.],
+                    motion='scripted', alpha=25., avoidance_radius=0.30,
+                    max_age_seconds=0.10)
+    if values is None:
+        values = {}
+    if not isinstance(values, dict) or set(values) - defaults.keys():
+        raise ValueError('kcf.obstacle must contain only supported obstacle settings')
+    settings = {**defaults, **values}
+    if not isinstance(settings['enabled'], bool):
+        raise ValueError('kcf.obstacle.enabled must be boolean')
+    if not isinstance(settings['body'], str) or not settings['body'].strip():
+        raise ValueError('kcf.obstacle.body must name a Motive rigid body centered on the obstacle')
+    if (not isinstance(settings['topic'], str) or not settings['topic'].startswith('/')
+            or settings['topic'] == '/deploy_kcf/mocap'):
+        raise ValueError('kcf.obstacle.topic must be a separate absolute ROS topic')
+    if settings['motion'] not in ('scripted', 'cross'):
+        raise ValueError('kcf.obstacle.motion must be scripted or cross')
+    for key in ('radius', 'avoidance_radius', 'max_age_seconds', 'alpha'):
+        value = settings[key]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not np.isfinite(value) or value < 0 or (key != 'alpha' and value == 0)):
+            raise ValueError(f'kcf.obstacle.{key} must be finite and positive (alpha may be zero)')
+    for key in ('position', 'velocity'):
+        value = np.asarray(settings[key], dtype=float)
+        if value.shape != (3,) or not np.isfinite(value).all():
+            raise ValueError(f'kcf.obstacle.{key} must contain three finite world coordinates')
+        settings[key] = value.tolist()
+    if settings['enabled'] and settings['avoidance_radius'] <= settings['radius']:
+        raise ValueError('kcf.obstacle.avoidance_radius must exceed the physical obstacle radius')
+    return settings
 
 
 @dataclass(frozen=True)
 class ModelProfile:
     name: str
     values: dict
+
+    @property
+    def obstacle(self):
+        return resolve_obstacle_config(self.values.get('obstacle'))
 
     def path(self, relative):
         path = (DEPLOY_ROOT / relative).resolve()
@@ -63,6 +103,11 @@ class ModelProfile:
         settings = self.symbol('mpc_settings_factory')(prediction_model=prediction_model)
         settings['results_dir'] = str(self.path(self.values['results_dir']))
         settings['checkpoint'] = self.values['checkpoint']
+        obstacle = self.obstacle
+        settings['obstacle_cost']['enabled'] = obstacle['enabled']
+        settings['obstacle_cost']['parameters'].update(
+            alpha=obstacle['alpha'], radius=obstacle['avoidance_radius'])
+        settings['obstacle_prediction']['max_age_seconds'] = obstacle['max_age_seconds']
         if reference_mode is not None:
             from .config.mpc_config import REFERENCE_MODES
             if reference_mode not in REFERENCE_MODES:

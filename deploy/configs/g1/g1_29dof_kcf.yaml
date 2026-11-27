@@ -135,6 +135,18 @@ kcf:
   feedback_decoder: deploy.kcf.kcf_interface:Feedback.unpack
   robot_config_factory: kcf_mpc.robot_config:G1Config
   mpc_settings_factory: kcf_mpc.config.mpc_config:get_default_mpc_config
+  obstacle:
+    enabled: true
+    body: obstacle_1
+    topic: /deploy_kcf/obstacle
+    radius: 0.07
+    avoidance_radius: 0.75
+    alpha: 600.0
+    max_age_seconds: 0.10
+    # Simulation only; hardware uses the Motive rigid-body center in world metres.
+    position: [0.0, 0.0, 0.15]
+    velocity: [0.0, 0.0, 0.0]
+    motion: cross
   artifact_sha256:
     policy/g1/kcf/walking/model_final.pt: 2734a056f563d7b7232d68510a3c16651dca408c7c5121f73a214bab08d93ee3
     policy/g1/kcf/walking/normalization.npz: dec9c28caedbd8df34e8d5c9509cf9bd9ec70047062b9050defc17e0ecd0572c

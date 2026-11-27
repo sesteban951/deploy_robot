@@ -119,19 +119,19 @@ def get_default_mpc_config(
         "backend": "jax",
         "solver": "icem",
         "icem": {
-            "population": 42,
-            "iterations": 3,
-            "elites": 10,
-            "decay": 6.0,
-            "noise_beta": 3.0,
+            "population": 16,
+            "iterations": 1,
+            "elites": 2,
+            "decay": 2.0,
+            "noise_beta": 2.0,
             "initial_std": 0.25,
-            "warm_std": 0.03,
+            "warm_std": 0.2,
             "reference_initialization": True,
             "momentum": 0.1,
             "reuse_fraction": 0.3,
             # Tuned body command rates: m/s², m/s², rad/s²; enforced inside iCEM.
             # These are controller choices, not limits inferred from training data.
-            "command_rate_limits": [1.5, 1.5, 2.0],
+            "command_rate_limits": [6.0, 6.0, 6.0],
         },
         "jax": {
             "platform": "gpu",
@@ -150,7 +150,7 @@ def get_default_mpc_config(
         },
         "dtype": "float32",
         "num_threads": 4,
-        "cpu_affinity": (0, 2, 4, 6),
+        "cpu_affinity": (8, 10, 12, 14),
         "warmup": True,
         "freeze_gc_after_warmup": True,
         "wait_for_first_state": True,
@@ -173,16 +173,16 @@ def get_default_mpc_config(
             "directory": str(PROJECT_ROOT / "logs" / "kcf" / "live_traces"),
         },
         # Receding-horizon problem
-        "horizon": 20,
+        "horizon": 50,  # Supplied moving-obstacle profile: 1.0 s at 20 ms per step.
         "tracking_feature_indices": tuple(range(10)),
         # KCF gains; SI selects the independent block below.
         # [px, py, sin(theta), cos(theta), vx_body, vy_body, wz_body, gravity_xyz].
-        "state_weights": (400.0, 400.0, 180.0, 180.0, 5.0, 5.0, 5.0, 100.0, 100.0, 20.0),
+        "state_weights": (400.0, 400.0, 540.0, 540.0, 5.0, 5.0, 5.0, 100.0, 100.0, 20.0),
         "terminal_state_weights": (
             1200.0,
             1200.0,
-            1800.0,
-            1800.0,
+            5400.0,
+            5400.0,
             10.0,
             10.0,
             15.0,
@@ -195,6 +195,12 @@ def get_default_mpc_config(
         "prediction_sample_period": 0.02,
         # S = diag(s_vx, s_vy, s_wz).
         "command_change_weights": (10.0, 10.0, 10.0),
+        "obstacle_cost": {
+            "enabled": True,
+            "factory": "kcf_mpc.mpc.tracking:InverseDistanceCost",
+            "parameters": {"alpha": 600.0, "rho": 5.5, "radius": 0.75},
+        },
+        "obstacle_prediction": {"max_age_seconds": 0.10},
         # Q/Q_terminal order: [px, py, sin(theta), cos(theta), vx, vy, wz, gx, gy, gz].
         "single_integrator_gains": {
             "state_weights": (150.0, 150.0, 80.0, 80.0, 20.0, 20.0, 5.0, 100.0, 100.0, 20.0),
@@ -203,8 +209,9 @@ def get_default_mpc_config(
             ),
             "input_weight": 0.2,
             "command_change_weights": (10.0, 10.0, 10.0),
-            "icem": {"iterations": 2, "warm_std": 0.1},
-            "standing_hold": {"heading_gain": 1.5},
+            "icem": {"population": 42, "iterations": 2, "elites": 10,
+                     "decay": 6.0, "initial_std": 0.25, "warm_std": 0.1,
+                     "noise_beta": 3.0},
         },
         # Stop correcting small errors once a stationary goal has settled.
         "standing_hold": {
@@ -216,10 +223,11 @@ def get_default_mpc_config(
             "enter_yaw_rate_rps": 0.20,
             "settle_seconds": 0.02,
             # Correct residual yaw during long holds without restarting the gait.
-            "heading_gain": 3.0,
+            "heading_gain": 1.5,
             "yaw_rate_damping": 0.2,
+            "obstacle_distance_m": 1.50,
         },
-        "reference_mode": "stop_turn_go",  # See REFERENCE_MODES above.
+        "reference_mode": "star",  # See REFERENCE_MODES above.
         # World-frame room dimensions. Keep pelvis references 0.5 m inside
         # the walls; this validates paths, not the robot's physical footprint.
         "reference_workspace": {

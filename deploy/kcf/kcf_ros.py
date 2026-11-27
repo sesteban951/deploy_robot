@@ -42,6 +42,7 @@ class KCFNode(Node):
         self.command = np.zeros(3)
         self.command_scale = None
         self.state_provider = StateProvider(state_source)
+        self.obstacle_settings = profile.obstacle
         self.active, self.ready = False, False
         self.status_text = None
 
@@ -162,6 +163,11 @@ class KCFNode(Node):
         try:
             feedback = self.decode_feedback(msg.data, self.timeout)
             feedback = self.state_provider.select(feedback, now, self.timeout)
+            if self.obstacle_settings['enabled'] and (
+                    feedback.obstacle_position is None or feedback.obstacle_time is None
+                    or not -1e-6 <= feedback.time - feedback.obstacle_time
+                    <= self.obstacle_settings['max_age_seconds'] + 1e-8):
+                raise ValueError('waiting_for_fresh_obstacle')
         except ValueError as error:
             self.valid_feedback_wall = -float('inf')
             self.invalidate(str(error))
