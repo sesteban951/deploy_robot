@@ -1,4 +1,4 @@
-"""Encode live MuJoCo feedback in the trained 103-state G1 KCF schema."""
+"""Encode live MuJoCo feedback in the trained 104-state G1 KCF schema."""
 
 from typing import Protocol
 import numpy as np
@@ -11,19 +11,22 @@ class G1State(Protocol):
     t: float
     q: np.ndarray
     v: np.ndarray
+    policy_clock: np.ndarray
     prev_action: np.ndarray
 
 
-def g1_closed_loop_state(state: G1State, gait_period: float) -> np.ndarray:
-    """Build the native 103 channels, with position/heading in world coordinates.
+def g1_closed_loop_state(state: G1State) -> np.ndarray:
+    """Build the native 104 channels, with position/heading in world coordinates.
 
     [px, py, sin(theta), cos(theta)] (4), [vx, vy, wz] (3), pz (1),
     gravity (3), joint q (29),
-    [vz, wx, wy] (3), joint v (29), gait [sin, cos] (2), previous action (29).
-    MPC anchors the complete 103-state vector to one fixed rollout frame.
+    [vz, wx, wy] (3), joint v (29), gait [sin, cos, period_frames] (3), previous action (29).
+    MPC anchors the complete 104-state vector to one fixed rollout frame.
     """
     q = state.q.astype(np.float32)
     v = state.v.astype(np.float32)
+    if q.shape != (36,) or v.shape != (35,) or np.shape(state.prev_action) != (29,):
+        raise ValueError("Running feedback requires all 29 joints and previous actions")
     quat = q[3:7]
     planar_pose = q_to_rom(q).astype(np.float32, copy=False)
     pose = np.array(
@@ -43,10 +46,11 @@ def g1_closed_loop_state(state: G1State, gait_period: float) -> np.ndarray:
     remaining_base_velocity = np.array(
         [linear_body[2], angular_body[0], angular_body[1]], dtype=np.float32
     )
-    phase = np.remainder(state.t, gait_period) / gait_period
-    gait = np.array(
-        [np.sin(2 * np.pi * phase), np.cos(2 * np.pi * phase)], dtype=np.float32
-    )
+    gait = np.asarray(state.policy_clock, dtype=np.float32)
+    if gait.shape != (3,) or not np.isfinite(gait).all() or gait[2] not in (37., 43.):
+        raise ValueError("Running feedback requires actual gait [sin, cos, period_frames]")
+    if not np.isclose(np.linalg.norm(gait[:2]), 1., atol=1e-5):
+        raise ValueError("KCF requires the ungated unit gait clock before the outgoing command")
     return np.concatenate(
         [
             pose,

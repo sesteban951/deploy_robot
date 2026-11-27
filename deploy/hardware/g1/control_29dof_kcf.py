@@ -1,7 +1,7 @@
 ##
 #
-# Hardware control node for KCF: the 29dof velocity policy walks, kcf_ros.py sends the twist (FSM 'track').
-# The native-103 KCF model receives all 29 joints and previous raw policy actions directly.
+# Hardware control node for KCF: the 29dof running policy runs, kcf_ros.py sends the twist (FSM 'track').
+# The native-104 KCF model receives all 29 joints and previous raw policy actions directly.
 # Pelvis pose/velocity come from deploy/mocap/estimator.py. Policy clock: steps * control_dt, never reset;
 # mocap stamps (ROS clock) are moved onto it by their age at each policy step.
 # Guards: a lost IMU or mocap stream is held at its last value (mocap for HOLD_TIME), with warnings.
@@ -14,7 +14,6 @@ import argparse
 from time import monotonic
 
 # other imports
-import math
 import numpy as np
 import yaml
 
@@ -31,11 +30,14 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.unitree_utils import get_gravity_orientation
 from utils.policy import Policy
 from utils.experiment_utils import publish_experiment_info
 from deploy.kcf.kcf_interface import CommandGate, Feedback, mocap_base, COMMAND_TOPIC, FEEDBACK_TOPIC, MOCAP_TOPIC
 from kcf_mpc.profiles import load_profile
+from kcf_mpc.robot_config import G1Config, COMMAND_BANDS
+from kcf_mpc.state.math_utils import gravity_from_quat
+from utils.locomotion.gait_library import GaitLibraryClock
+import onnxruntime as ort
 
 
 TRIGGER_OFFSET = 0.005  # [sec] half a hardware.py tick, so tick jitter can't move a policy step
@@ -49,7 +51,7 @@ HOLD_TIME = 0.5         # [sec] a lost mocap Odometry is held this long, then th
 
 class ControlNode(Node):
     """
-    Run the 29dof velocity policy with KCF twists and publish complete native-103 model feedback.
+    Run the 29dof velocity policy with KCF twists and publish complete native-104 model feedback.
     """
 
     def __init__(self, config_path: str):
@@ -74,7 +76,7 @@ class ControlNode(Node):
         self.feedback_pub = self.create_publisher(Float64MultiArray, FEEDBACK_TOPIC, 1)
 
         # KCF command gate: operator twist in control (zero from kcf_ros), timed MPC twist in track, else zero
-        self.gate = CommandGate(dt=self.ctrl_dt, limits=self.command_limits)
+        self.gate = CommandGate(dt=self.ctrl_dt, limits=self.command_limits, command_bands=self.command_bands)
         self.fsm = "init"
 
         # policy step trigger state and the never-reset policy clock (see time_callback)
@@ -130,57 +132,47 @@ class ControlNode(Node):
 
         return config
 
-    # Initialize the 29dof policy and validate the complete policy/model contract.
+    # Initialize the running policy and validate the complete policy/model contract.
     def init_policy(self):
-
-        # PD gains, timing, and command params
-        self.Kp = np.array(self.config["Kp"], dtype=np.float32)
-        self.Kd = np.array(self.config["Kd"], dtype=np.float32)
-        self.ctrl_dt = self.config["control_dt"]
-        self.gait_period = self.config["gait_period"]
-        self.stand_cmd_threshold = self.config["stand_cmd_threshold"]
-        self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
-
-        # load the policy
-        policy_path_full = ROOT_DIR + "/policy/g1/" + self.config['policy_path']
-        self.policy = Policy(policy_path_full)
-        self.obs_size = self.policy.input_size
-        self.act_size = self.policy.output_size
-
-        # deployment params embedded in the policy
+        cfg = G1Config()
+        profile = self.kcf_profile
+        if (profile.values['state_dim'], profile.values['joint_count'],
+                profile.values['nH'], profile.values['recurrent_state_dim']) != (104, 29, 256, 0):
+            raise ValueError('Running requires the native-104, 29-joint, lift-256 profile')
+        self.ctrl_dt = float(self.config['control_dt'])
+        if self.ctrl_dt != cfg.control_dt:
+            raise ValueError('Running policy control_dt must be 0.02 seconds')
+        self.Kp = np.asarray(self.config['Kp'], dtype=np.float32)
+        self.Kd = np.asarray(self.config['Kd'], dtype=np.float32)
+        self.cmd_scale = np.asarray(self.config['cmd_scale'], dtype=np.float32)
+        self.command_limits = np.asarray(self.config['command_limits'], dtype=np.float32)
+        if not np.array_equal(self.cmd_scale, [1., 1., 1.]) or not np.array_equal(self.command_limits, cfg.cmd_scale):
+            raise ValueError('Running uses physical commands with limits [2, 0, 2] and unit wire scaling')
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = options.inter_op_num_threads = 1
+        self.policy = Policy(str(profile.path(profile.values['policy_path'])), session_options=options)
+        self.obs_size, self.act_size = self.policy.input_size, self.policy.output_size
+        if (self.obs_size, self.act_size) != (98, 29) or len(self.policy.inputs) != 1:
+            raise ValueError('Running requires one 98-input, 29-output actor')
         self.qpos_joints_default = self.policy.get_param('default_joint_pos')
         self.action_scale = self.policy.get_param('action_scale')
-        if (self.obs_size, self.act_size) != (98, 29):
-            raise ValueError('Walking requires the 98-input, 29-output policy.')
-        if (self.kcf_profile.values['state_dim'], self.kcf_profile.values['joint_count']) != (103, 29):
-            raise ValueError('Walking requires the native-103, 29-joint KCF profile.')
-        cfg = self.kcf_profile.symbol('robot_config_factory')()
-        for name in ('control_dt', 'gait_period', 'stand_cmd_threshold'):
-            if not np.isclose(getattr(cfg, name), self.config[name], atol=1e-9, rtol=0):
-                raise ValueError(f'{name} must match the trained walking model ({getattr(cfg, name)}).')
-        for label, actual, expected in (
+        for name, actual, expected in (
+            ('Kp', self.Kp, cfg.Kp), ('Kd', self.Kd, cfg.Kd),
+            ('home_joint_pos', self.config['home_joint_pos'], cfg.default_joint_pos),
             ('default_joint_pos', self.qpos_joints_default, cfg.default_joint_pos),
             ('action_scale', self.action_scale, cfg.action_scale),
-            ('Kp', self.Kp, self.policy.get_param('joint_stiffness')),
-            ('Kd', self.Kd, self.policy.get_param('joint_damping')),
         ):
             if np.shape(actual) != (29,) or not np.allclose(actual, expected, atol=1e-6, rtol=0):
-                raise ValueError(f'{label} does not match the 29-joint policy/model contract.')
-        if not np.array_equal(self.cmd_scale, [1, 1, 1]):
-            raise ValueError('cmd_scale must be [1, 1, 1] for physical body commands.')
-        self.command_limits = np.asarray(self.config['command_limits'], dtype=float)
-        settings = self.kcf_profile.settings()
-        if (self.command_limits.shape != (3,) or not np.isfinite(self.command_limits).all()
-                or np.any(self.command_limits <= 0)
-                or np.any(np.asarray(settings['input_lower_bounds']) < -self.command_limits - 1e-9)
-                or np.any(np.asarray(settings['input_upper_bounds']) > self.command_limits + 1e-9)):
-            raise ValueError('MPC input bounds must fit the policy command_limits.')
-
-        print(f"Loading policy from [{policy_path_full}].")
-        print(f"    Input size: {self.obs_size}, output size: {self.act_size}")
-        print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
-        print('    KCF feedback: all 29 joints and previous raw actions; native-103 state')
-        print(f"    KCF twist bounds: {settings['input_lower_bounds']} to {settings['input_upper_bounds']}")
+                raise ValueError(f'{name} does not match the running actor')
+        settings = profile.settings()
+        if (np.any(np.asarray(settings['input_lower_bounds']) < -self.command_limits)
+                or np.any(np.asarray(settings['input_upper_bounds']) > self.command_limits)
+                or settings['icem']['command_bands'] != COMMAND_BANDS):
+            raise ValueError('Running MPC bounds/bands must match the actor contract')
+        self.command_bands = COMMAND_BANDS
+        self.clock = GaitLibraryClock(self.policy)
+        if not {37, 43}.issubset(self.clock.periods) or self.clock.idle_idx is None or self.clock.period != 43:
+            raise ValueError('Running actor requires idle and 37/43-frame gait clips')
 
 
     #################################################################
@@ -191,6 +183,7 @@ class ControlNode(Node):
     def fsm_callback(self, msg):
         if msg.data in ("control", "track") and self.fsm not in ("control", "track"):
             self.action[:] = 0.0
+            self.clock.reset()
         self.fsm = msg.data
         self.gate.set_fsm(msg.data, monotonic())
 
@@ -229,6 +222,9 @@ class ControlNode(Node):
             return
         self.last_step = step
         self.policy_time = round(self.policy_time / self.ctrl_dt + advance) * self.ctrl_dt
+        if self.fsm in ('control', 'track'):
+            for _ in range(max(0, advance - 1)):
+                self.clock.advance()
         self.control_callback()
 
 
@@ -289,42 +285,19 @@ class ControlNode(Node):
             self.gate.candidates.clear()
 
         # Echo the current physical twist and the previous complete raw policy action.
-        feedback = Feedback(t, pose_time, t, valid, q, v, self.action.copy(), self.cmd.copy())
+        feedback = Feedback(t, pose_time, t, valid, q, v, self.action.copy(), self.cmd.copy(), self.clock.state.copy())
         self.feedback_pub.publish(Float64MultiArray(data=feedback.pack()))
 
     # build the observation vector for the policy
     def build_observation(self):
-
-        # base orientation state
-        gravity_orientation = get_gravity_orientation(self.quat)
-
-        # joint position and velocity errors
-        qj = self.qpos_joints - self.qpos_joints_default
-        dqj = self.qvel_joints
-
-        # gait phase clock from the policy time (zeroed when the twist is below the threshold)
-        phase = (self.policy_time % self.gait_period) / self.gait_period
-        two_pi = 2.0 * math.pi
-        gait_phase = np.array([
-            math.sin(two_pi * phase),
-            math.cos(two_pi * phase),
-        ], dtype=np.float32)
-        if np.linalg.norm(self.cmd) < self.stand_cmd_threshold:
-            gait_phase[:] = 0.0
-
-        # build the observation vector
-        # ['base_ang_vel', 'projected_gravity', 'command', 'phase', 'joint_pos', 'joint_vel', 'actions']
-        n = len(qj)
-        obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[0:3]              = self.omega
-        obs[3:6]              = gravity_orientation
-        obs[6:9]              = self.cmd * self.cmd_scale
-        obs[9:11]             = gait_phase
-        obs[11:11+n]          = qj
-        obs[11+n:11+2*n]      = dqj
-        obs[11+2*n:11+3*n]    = self.action
-
-        return obs
+        self.clock.update(self.cmd)
+        # Trained running order: gyro, relative joint positions, velocities,
+        # previous raw action, physical twist, clip phase, projected gravity.
+        return np.concatenate((
+            self.omega, self.qpos_joints - self.qpos_joints_default,
+            self.qvel_joints, self.action, self.cmd, self.clock.phase_obs(),
+            gravity_from_quat(np.asarray(self.quat, dtype=np.float32)),
+        )).astype(np.float32)
 
     # control published at the control frequency
     def control_callback(self):
@@ -333,8 +306,13 @@ class ControlNode(Node):
         self.prepare_kcf_feedback()
 
         # run the policy (29dof action)
-        obs = self.build_observation()
-        self.action = self.policy.inference(obs)
+        if self.fsm not in ('control', 'track'):
+            self.action[:] = 0.0
+            self.clock.reset()
+        else:
+            obs = self.build_observation()
+            self.action = self.policy.inference(obs)
+            self.clock.advance()
 
         # build the command: [q_des, dq_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
@@ -358,7 +336,7 @@ def main(args=None):
 
     # parse arguments
     parser = argparse.ArgumentParser(
-        description='Hardware control node: 29dof walking policy with native-103 KCF feedback.'
+        description='Hardware control node: 29dof running policy with native-104 KCF feedback.'
     )
     # config path argument
     parser.add_argument(

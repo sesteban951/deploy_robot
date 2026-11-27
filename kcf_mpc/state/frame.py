@@ -1,10 +1,10 @@
-"""Fixed ground/yaw frame for the native 103-state G1 schema."""
+"""Fixed ground/yaw frame for the native 104-state G1 schema."""
 
 from dataclasses import dataclass
 import numpy as np
 from kcf_mpc.state.relative_frame import RelativeFrame
 
-G1_SINCOS_STATE_DIM = 103
+G1_SINCOS_STATE_DIM = 104
 G1_RELATIVE_SINCOS_SCHEMA = "g1_kcf_policy_sincos_window_v2"
 
 
@@ -55,7 +55,7 @@ class G1KCFSinCosFrame:
     def from_state(cls, anchor_state_world, *, heading_world=None):
         anchor = _values(anchor_state_world, "anchor_state_world", G1_SINCOS_STATE_DIM)
         if anchor.shape != (G1_SINCOS_STATE_DIM,):
-            raise ValueError("anchor_state_world must have shape (103,)")
+            raise ValueError("anchor_state_world must have shape (104,)")
         if not np.isclose(np.linalg.norm(anchor[2:4]), 1.0, atol=1e-5):
             raise ValueError("heading sine/cosine must have unit norm")
         half_yaw = 0.5 * np.arctan2(anchor[2], anchor[3])

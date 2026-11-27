@@ -1,4 +1,4 @@
-"""Visible, simulation-only KCF/SI trials using the contained epoch-3240 profile.
+"""Visible, simulation-only KCF/unicycle trials using the contained epoch-5460 running profile.
 
 Run from deploy_robot with the deploy Conda environment active. A dedicated
 localhost ROS domain separates these automated trials from deployment nodes.
@@ -28,7 +28,7 @@ os.environ['ROS_LOCALHOST_ONLY'] = '1'
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'deploy/kcf'))
 
-MODELS = ('kcf', 'single_integrator')
+MODELS = ('kcf', 'unicycle')
 REFERENCES = ('fixed', 'turn_180', 'lissajous', 'waypoints', 'rounded_square',
               'hairpin', 'slalom', 'stop_turn_go', 'star')
 
@@ -37,11 +37,11 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')
 
 
-def prepare_run(model, directory, initial_xy, initial_yaw, duration, reference='fixed'):
+def prepare_run(model, directory, initial_xy, initial_yaw, duration, reference='fixed', profile_name='running'):
     from kcf_mpc.profiles import load_profile
 
     directory.mkdir(parents=True, exist_ok=False)
-    profile = load_profile('walking')
+    profile = load_profile(profile_name)
     profile.validate_assets()
     config = yaml.safe_load((ROOT / 'deploy/configs/g1' /
                             (profile.values['simulation_config'] + '.yaml')).read_text())
@@ -57,13 +57,14 @@ def prepare_run(model, directory, initial_xy, initial_yaw, duration, reference='
     config['home_base_pos'][:2] = list(initial_xy)
     config['home_base_pos'][3:7] = [float(np.cos(initial_yaw / 2)), 0., 0.,
                                       float(np.sin(initial_yaw / 2))]
-    label = 'KCF MPC' if model == 'kcf' else 'Single-integrator MPC'
-    config['simulation_label'] = f'{label} | {reference} | epoch 3240, 29 DoF'
+    label = 'KCF MPC' if model == 'kcf' else 'Unicycle MPC'
+    epoch = json.loads((profile.path(profile.values['results_dir']) / 'provenance.json').read_text())['checkpoint_epoch']
+    config['simulation_label'] = f'{label} | {reference} | {profile_name}, epoch {epoch}, 29 DoF'
     (directory / 'simulation.yaml').write_text(yaml.safe_dump(config, sort_keys=False))
     write_json(directory / 'mpc_settings.json', settings)
     assets = [ROOT / path for path in profile.values['artifact_sha256']]
     manifest = dict(
-        model=model, reference=reference, checkpoint_epoch=3240,
+        model=model, reference=reference, profile=profile_name, checkpoint_epoch=epoch,
         simulation_only=True, ros_domain_id=91, pose_source='MuJoCo ground truth',
         requested_tracking_seconds=duration, initial_xy=list(initial_xy), initial_yaw=initial_yaw,
         asset_sha256={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -87,6 +88,7 @@ def mpc_worker(settings_file, ready_file):
     from kcf_mpc.profiles import load_profile
 
     settings = json.loads(settings_file.read_text())
+    profile_name = json.loads((settings_file.parent / 'manifest.json').read_text()).get('profile', 'running')
 
     def factory(profile_name, reference_mode, prediction_model):
         profile = load_profile(profile_name)
@@ -108,9 +110,9 @@ def mpc_worker(settings_file, ready_file):
     previous_signals = {sig: signal.signal(sig, request_stop)
                         for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        args = SimpleNamespace(profile='walking', reference_mode=settings['reference_mode'], shadow=False,
+        args = SimpleNamespace(profile=profile_name, reference_mode=settings['reference_mode'], shadow=False,
                                state_source='simulation',
-                               single_integrator=settings['prediction_model'] == 'single_integrator')
+                               unicycle=settings['prediction_model'] == 'unicycle')
         node = KCFNode(args, controller_factory=factory)
         write_json(ready_file, dict(ready=True, model=settings['prediction_model']))
         while rclpy.ok() and not stop_requested:
@@ -196,7 +198,7 @@ def visible_trial(directory, duration, settle_seconds):
         actuator_names = [mujoco.mj_id2name(sim.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
                           for i in range(sim.nu)]
         if actuator_names != policy.policy.metadata['joint_names']:
-            raise ValueError('Simulation actuator order differs from the hardware walking policy')
+            raise ValueError('Simulation actuator order differs from the hardware running policy')
         settings = json.loads((directory / 'mpc_settings.json').read_text())
         with sim.viewer.lock():
             mujoco.mjv_initGeom(sim.viewer.user_scn.geoms[0], mujoco.mjtGeom.mjGEOM_SPHERE,

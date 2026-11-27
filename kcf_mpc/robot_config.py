@@ -1,55 +1,40 @@
+"""Running policy deployment parameters and audited command support."""
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 import numpy as np
+
+POLICY_PATH = Path(__file__).resolve().parents[1] / "policy" / "g1" / "2026-11-19_12-04-23_jogrunsprint_backpack_v0.onnx"
+# Audited epoch05460 training bands, narrower than the actor's sprint envelope.
+# Commands are already effective body-frame values; do not scale them again.
+COMMAND_BANDS = (
+    ((0., 0., 0.), (0., 0., 0.)),
+    ((.5, 0., -.5), (2., 0., .5)),
+    ((-1., 0., -.5), (-.5, 0., .5)),
+    ((0., 0., 1.), (0., 0., 2.)),
+    ((0., 0., -2.), (0., 0., -1.)),
+)
+
+@lru_cache(maxsize=1)
+def policy_metadata():
+    import onnx
+    return {entry.key: entry.value for entry in onnx.load(str(POLICY_PATH)).metadata_props}
+
+
+def _joint_array(key):
+    value = np.fromstring(policy_metadata()[key], sep=",", dtype=np.float64)
+    if value.shape != (29,) or not np.isfinite(value).all():
+        raise ValueError(f"Invalid running policy metadata: {key}")
+    return value
 
 
 @dataclass
 class G1Config:
-
-    # PD gains per joint
-    Kp: np.ndarray = field(default_factory=lambda: np.array([
-        40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
-        40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
-        40.179, 28.501, 28.501, 14.251, 14.251, 14.251,
-        14.251, 14.251, 16.778, 16.778, 14.251, 14.251,
-        14.251, 14.251, 14.251, 16.778, 16.778,
-    ]))
-    Kd: np.ndarray = field(default_factory=lambda: np.array([
-        2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-        2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-        2.558, 1.814, 1.814, 0.907, 0.907, 0.907,
-        0.907, 0.907, 1.068, 1.068, 0.907, 0.907,
-        0.907, 0.907, 0.907, 1.068, 1.068,
-    ]))
-
-    # default positions
-    default_base_pos: np.ndarray = field(default_factory=lambda: np.array([
-        0, 0, 0.78, 1, 0, 0, 0,
-    ]))
-    default_joint_pos: np.ndarray = field(default_factory=lambda: np.array([
-        -0.312, 0.000, 0.000, 0.669, -0.363, 0.000,
-        -0.312, 0.000, 0.000, 0.669, -0.363, 0.000,
-        0.000, 0.000, 0.000, 0.200, 0.200, 0.000,
-        0.600, 0.000, 0.000, 0.000, 0.200, -0.200,
-        0.000, 0.600, 0.000, 0.000, 0.000,
-    ]))
-
-    # action scale
-    action_scale: np.ndarray = field(default_factory=lambda: np.array([
-        0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
-        0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
-        0.548, 0.439, 0.439, 0.439, 0.439, 0.439,
-        0.439, 0.439, 0.075, 0.075, 0.439, 0.439,
-        0.439, 0.439, 0.439, 0.075, 0.075,
-    ]))
-
-    # control
-    control_dt: float = 0.02
-
-    # gait
-    gait_period: float = 0.6
-    stand_cmd_threshold: float = 0.1 # set to 0.0 to always moving feet
-
-    # Physical body command clipping [vx m/s, vy m/s, omega rad/s].
-    # Walking collection limits; this simulator does not multiply observations by these.
-    cmd_scale: np.ndarray = field(default_factory=lambda: np.array([0.5, 0.5, 1.0]))
+    Kp: np.ndarray = field(default_factory=lambda: _joint_array("joint_stiffness"))
+    Kd: np.ndarray = field(default_factory=lambda: _joint_array("joint_damping"))
+    default_joint_pos: np.ndarray = field(default_factory=lambda: _joint_array("default_joint_pos"))
+    action_scale: np.ndarray = field(default_factory=lambda: _joint_array("action_scale"))
+    default_base_pos: np.ndarray = field(default_factory=lambda: np.array([0., 0., .783030, 1., 0., 0., 0.]))
+    control_dt: float = .02
+    cmd_scale: np.ndarray = field(default_factory=lambda: np.array([2., 0., 2.]))
     cmd: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float32))

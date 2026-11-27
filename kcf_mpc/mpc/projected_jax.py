@@ -2,7 +2,7 @@
 
 GPU KCF uses the fixed cooperative CUDA forward kernels. CPU equations are a
 numerical prediction reference, never an automatic GPU fallback. Both apply
-the trained projection and re-lifting at each step with all 103 physical states.
+the trained projection and re-lifting at each step with all 104 physical states.
 """
 
 import os
@@ -16,7 +16,7 @@ import torch
 from kcf_mpc.mpc.jax_networks import _apply_mlp, _export_mlp
 from kcf_mpc.models.projected import is_projected_g1
 from kcf_mpc.mpc.tracking import tracking_features_jax
-from kcf_mpc.mpc.single_integrator import single_integrator_rollout_jax
+from kcf_mpc.mpc.single_integrator import unicycle_rollout_jax
 
 
 def _unit(value, fallback):
@@ -118,12 +118,12 @@ class ProjectedJaxMPCBackend:
     ):
         if not is_projected_g1(model) or prediction_model not in (
             "kcf",
-            "single_integrator",
+            "unicycle",
         ):
-            raise ValueError("Projected backend requires the projected 103-state G1 KCF")
+            raise ValueError("Projected backend requires the projected 104-state G1 KCF")
         if not np.isclose(model.dt, prediction_sample_period, rtol=0.0, atol=1e-12):
             raise ValueError("MPC timestep must match the projected checkpoint")
-        self.horizon, self.input_dim, self.observation_dim = int(horizon), 3, 103
+        self.horizon, self.input_dim, self.observation_dim = int(horizon), 3, 104
         self.tracking_feature_indices = tuple(int(i) for i in tracking_feature_indices)
         self.model_dt = float(model.dt)
         self.tracked_dim = len(tracking_feature_indices)
@@ -175,7 +175,7 @@ class ProjectedJaxMPCBackend:
         # discarded before re-lifting, so exporting them cannot affect dynamics.
         ts, tp = _export_mlp(
             model.transition_network.matrix_network, array,
-            output_size=103 * model.config.nH,
+            output_size=104 * model.config.nH,
         )
         mean, scale, umean, uscale = [
             array(getattr(model.normalizer, key))
@@ -187,12 +187,12 @@ class ProjectedJaxMPCBackend:
         self._icem_host_state = None
         self._native_rollout_kernel = None
         if self.device.platform == "gpu" and prediction_model == "kcf":
-            if self.dtype != np.dtype("float32") or self.horizon > 20 or model.config.nH != 256:
-                raise ValueError("Native GPU KCF requires FP32, lift256 and horizon <= 20")
+            if self.dtype != np.dtype("float32") or model.config.nH != 256:
+                raise ValueError("Native GPU KCF requires FP32, lift256")
             from .native.runtime import NativeRollout
             self._native_rollout_kernel = NativeRollout(model, array, self.device)
         self.execution_implementation = (
-            "single_integrator" if prediction_model == "single_integrator"
+            "unicycle" if prediction_model == "unicycle"
             else "native32" if self._native_rollout_kernel is not None
             else "jax_cpu_reference"
         )
@@ -233,15 +233,15 @@ class ProjectedJaxMPCBackend:
                 # Same physical command threshold as the frozen Torch model;
                 # the trained binary feature remains unchanged.
                 moving = (
-                    jnp.linalg.norm(controls.reshape(-1, 3), axis=-1, keepdims=True) >= threshold
+                    jnp.linalg.norm(controls.reshape(-1, 3), axis=-1, keepdims=True) > threshold
                 ).astype(features.dtype)
                 features = jnp.concatenate((features, moving), axis=-1)
             return _apply_mlp(features, transition_parameters, ts).reshape(
-                controls.shape[:-1] + (103, nH))
+                controls.shape[:-1] + (104, nH))
 
         def native_rollout(initial, controls, parameters):
-            if prediction_model == "single_integrator":
-                return single_integrator_rollout_jax(
+            if prediction_model == "unicycle":
+                return unicycle_rollout_jax(
                     initial, controls, prediction_sample_period
                 )
             _, _, (mean, scale, _, _) = parameters
@@ -274,10 +274,10 @@ class ProjectedJaxMPCBackend:
             return native_rollout(initial, controls, parameters)
 
         def population_rollout(initial, controls, parameters):
-            if prediction_model == "single_integrator" or self.device.platform == "cpu":
+            if prediction_model == "unicycle" or self.device.platform == "cpu":
                 return jax.vmap(lambda u: native_rollout(initial, u, parameters))(controls)
             matrices = transitions(controls, parameters)
-            initials = jnp.broadcast_to(initial, (controls.shape[0], 103))
+            initials = jnp.broadcast_to(initial, (controls.shape[0], 104))
             return self._native_rollout_kernel.batched(initials, matrices)
 
         def trajectory_cost(states, controls, reference, preceding):
@@ -314,9 +314,9 @@ class ProjectedJaxMPCBackend:
     def lift(self, observation):
         """Prepare the physical carry; re-lifting occurs inside every step."""
         state = self._array(observation)
-        if state.shape != (103,):
+        if state.shape != (104,):
             raise ValueError(
-                "Projected backend requires one native 103-state observation"
+                "Projected backend requires one native 104-state observation"
             )
         return state
 
@@ -412,11 +412,17 @@ class ProjectedJaxMPCBackend:
             changes = np.diff(np.vstack((preceding, plan)), axis=0)
             rate_feasible = bool(np.all(np.abs(changes)
                 <= np.asarray(options.command_rate_limits) * self.model_dt + 1e-7))
+        band_feasible = True
+        if options.command_bands is not None:
+            boxes = np.asarray(options.command_bands)
+            band_feasible = bool(np.all(np.any(np.all(
+                (plan[:, None, :] >= boxes[:, 0] - 1e-7)
+                & (plan[:, None, :] <= boxes[:, 1] + 1e-7), axis=-1), axis=-1)))
         competitive = (cost <= mean_cost and cost <= sampled_cost
                        and (not warm_feasible or cost <= warm_cost))
         success = bool(host[-1] == 1 and np.isfinite(cost) and np.isfinite(plan).all()
                        and np.all(plan >= lower - 1e-7) and np.all(plan <= upper + 1e-7)
-                       and competitive and rate_feasible)
+                       and competitive and rate_feasible and band_feasible)
         if success:
             self._icem_state = (next_mean, next_elites)
             self._icem_host_state = (mean_host, elite_host)

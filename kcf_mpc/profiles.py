@@ -1,7 +1,7 @@
 """Model bundles: local assets, numerical settings and explicit adapter plugins.
 
 A new policy/model family selects its own encoder, feedback decoder and runtime
-factory. Different state dimensions are never coerced into the walking kernel.
+factory. Different state dimensions are never coerced into the running kernel.
 """
 
 from dataclasses import dataclass
@@ -73,14 +73,14 @@ class ModelProfile:
         limits = self.values.get('twist_limits')
         if limits is not None:
             limits = [float(x) for x in limits]
-            if len(limits) != 3 or not all(0 < x < float('inf') for x in limits):
-                raise ValueError('kcf.twist_limits must be three positive numbers [vx, vy, wz]')
+            if len(limits) != 3 or not all(0 <= x < float('inf') for x in limits) or not any(limits):
+                raise ValueError('kcf.twist_limits must be three nonnegative numbers, with an enabled axis')
             settings['input_lower_bounds'] = tuple(max(lo, -lim) for lo, lim in zip(settings['input_lower_bounds'], limits))
             settings['input_upper_bounds'] = tuple(min(hi, lim) for hi, lim in zip(settings['input_upper_bounds'], limits))
         return settings
 
 
-def load_profile(name='walking'):
+def load_profile(name='running'):
     if not isinstance(name, str) or re.fullmatch(r'[A-Za-z0-9_-]+', name) is None:
         raise ValueError('Profile must be a local profile name')
     matches = []

@@ -1,7 +1,7 @@
 # Deploy Robot in Simulation and on Hardware
 <p align="center"><img src="utils/img/masih_kcf.png" width="50%"/></p>
 
-Asynchronous policy deployment for Unitree G1 and Go2. Walking KCF-MPC is
+Asynchronous policy deployment for Unitree G1 and Go2. Running KCF-MPC is
 self-contained in this repository and currently validated in G1 simulation.
 
 - `deploy`: command, policy, simulation and hardware nodes.
@@ -47,11 +47,12 @@ make hardware-setup
 
 ## Policy and MPC configuration
 
-`deploy/configs/g1/g1_29dof_kcf.yaml` is the single `walking` profile for both
-simulation and hardware. It selects `policy/g1/g1_29dof_vel.onnx`, the 29-joint XML,
-and the epoch-3240 model/normalization in `policy/g1/kcf/walking/` with asset checksums.
-The model uses 103 states, all 29 joints and previous raw policy actions, three
-physical body commands, and a 256-dimensional lift.
+`deploy/configs/g1/g1_29dof_kcf.yaml` is the single `running` profile for both
+simulation and hardware. It selects the epoch-5460 model/normalization in
+`policy/g1/kcf/running/`, the matching `2026-11-19_12-04-23_jogrunsprint_backpack_v0.onnx`
+and the 29-joint XML, with asset checksums. Simulation includes the trained 1.4 kg
+backpack. The model uses 104 states, all 29 joints, previous raw policy actions,
+the actual variable gait clock, three physical body commands, and a 256-dimensional lift.
 MPC gains, standing hold/release, and trajectory defaults are in `kcf_mpc/config/mpc_config.py`.
 
 # Deployment
@@ -67,7 +68,7 @@ Terminal 1 — KCF command node (wait for `ready`):
 python deploy/kcf/kcf_ros.py
 ```
 
-Terminal 2 — walking policy:
+Terminal 2 — running policy:
 
 ```bash
 python deploy/simulation/g1/control_29dof_kcf.py --config g1_29dof_kcf.yaml
@@ -118,8 +119,8 @@ Simulation supplies its atomic MuJoCo snapshot directly; it does not need the mo
 set it to `True` for a dry run (every motor gets Kp = Kd = tau = 0, the robot is limp,
 sensors and the KCF pipeline still run). Do not use the simulation launcher on a physical robot.
 
-The hardware controller `deploy/hardware/g1/control_29dof_kcf.py` walks with the
-29-joint velocity policy `g1_29dof_vel.onnx` (mechanical waist lock OFF) and takes
+The hardware controller `deploy/hardware/g1/control_29dof_kcf.py` uses the matching
+29-joint running policy (mechanical waist lock OFF) and takes
 its twist from KCF. All 29 joint positions, velocities and previous raw actions
 are passed directly to the model. Pelvis pose comes from `deploy/mocap/estimator.py`.
 Policy, model and command limits are selected by the same `g1_29dof_kcf.yaml`.
@@ -163,7 +164,7 @@ Terminal 1 — KCF command node:
 
 ```bash
 python deploy/kcf/kcf_ros.py                       # MPC with the learned KCF model
-python deploy/kcf/kcf_ros.py --single-integrator   # MPC with the ideal single integrator (same guards and safety)
+python deploy/kcf/kcf_ros.py --unicycle              # unicycle baseline (same command bands and guards)
 ```
 
 Terminal 2 — hardware policy controller:

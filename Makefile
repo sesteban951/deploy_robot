@@ -20,8 +20,8 @@ hardware-setup:
 			git clone --quiet --depth 1 --branch 0.10.5 https://github.com/eclipse-cyclonedds/cyclonedds.git "$$deploy_sdk_build/dds"; \
 			cmake -S "$$deploy_sdk_build/dds" -B "$$deploy_sdk_build/build" \
 				-DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_BUILD_TYPE=Release \
-				-DCMAKE_INSTALL_PREFIX="$$deploy_sdk_prefix" -DBUILD_EXAMPLES=OFF \
-				-DBUILD_TESTING=OFF -DENABLE_SECURITY=OFF -DENABLE_SSL=NO; \
+				-DCMAKE_INSTALL_PREFIX="$$deploy_sdk_prefix" -DBUILD_EXAMPLES=OFF -DBUILD_DDSPERF=OFF \
+				-DBUILD_TESTING=OFF -DENABLE_SECURITY=OFF -DENABLE_SSL=NO -DENABLE_SHM=OFF; \
 			cmake --build "$$deploy_sdk_build/build" --parallel 4 --target install; \
 		fi; \
 		git clone --quiet https://github.com/unitreerobotics/unitree_sdk2_python.git "$$deploy_sdk_build/sdk"; \

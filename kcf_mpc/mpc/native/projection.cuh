@@ -100,7 +100,7 @@ template<class T,bool CopyState=true,class Storage=T> KCF_HD void forward(
     T value=T(0);for(int j=0;j<3;++j) value+=s.a[3*i+j]*s.velocity[j];
     position[i]=b[i]+value;
   }
-  if constexpr(CopyState) for(int i=0;i<103;++i) following[i]=raw[i];
+  if constexpr(CopyState) for(int i=0;i<104;++i) following[i]=raw[i];
   for(int i=0;i<11;++i) following[geometry_index(i)]=s.normalized_raw[i];
   for(int i=0;i<3;++i) {following[i==2?7:i]=position[i];following[i==2?40:4+i]=s.velocity[i];}
 }

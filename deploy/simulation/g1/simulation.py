@@ -146,7 +146,15 @@ class SimulationNode(Node):
         xml_path = models_path + self.config['xml_path']
 
         # load the mujoco model
-        self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        if self.config.get('kcf_profile') == 'running':
+            spec = mujoco.MjSpec.from_file(xml_path)
+            backpack = spec.body('torso_link').add_body(name='backpack_link', pos=[-.0965, 0., .1775])
+            backpack.add_geom(name='backpack_collision', type=mujoco.mjtGeom.mjGEOM_BOX,
+                              size=[.0275, .0575, .06], mass=1.4, condim=3,
+                              rgba=[.12, .12, .12, 1.])
+            self.mj_model = spec.compile()
+        else:
+            self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
         self.mj_data = mujoco.MjData(self.mj_model)
 
         # simulate at sim_hz (overrides the model's <option timestep>)

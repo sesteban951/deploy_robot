@@ -1,27 +1,31 @@
-"""Controller, iCEM, execution and trajectory settings shared by KCF and SI.
+"""Controller, iCEM, execution and trajectory settings shared by KCF and unicycle.
 
 Select ``reference_mode`` below for pose holding, figure-eight, waypoints,
-or the sharp-turn maneuvers.
-KCF uses the top-level cost gains; SI uses ``single_integrator_gains``.
+the sharp-turn maneuvers or a star.
+KCF uses the top-level cost gains; unicycle uses ``unicycle_gains``.
 """
 
 from pathlib import Path
 from copy import deepcopy
 import math
 from typing import Any
+from kcf_mpc.robot_config import COMMAND_BANDS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_MODES = (
-    "fixed", "lissajous", "waypoints", "rounded_square", "hairpin", "slalom", "stop_turn_go", "star"
+    "fixed", "lissajous", "waypoints", "rounded_square", "hairpin", "slalom", "stop_turn_go",
+    "star",
 )
 
 
 def resolve_mpc_model_config(
     config: dict[str, Any], *, prediction_model: str | None = None
 ) -> dict[str, Any]:
-    """Select a predictor and its tuning before applying explicit run overrides.
+    """Select a predictor and its gains before applying explicit run overrides.
 
-    KCF keeps the top-level gains. SI uses its dedicated gain block when present.
+    KCF keeps the top-level gains. unicycle uses its dedicated gain block when present.
+    Saved, fully resolved run settings must not be passed through this again:
+    they may contain intentional per-run gain overrides.
     """
     resolved = deepcopy(config)
     model = (
@@ -29,25 +33,20 @@ def resolve_mpc_model_config(
         if prediction_model is None
         else prediction_model
     )
-    if model not in ("kcf", "single_integrator"):
-        raise ValueError("prediction_model must be 'kcf' or 'single_integrator'")
+    if model not in ("kcf", "unicycle"):
+        raise ValueError("prediction_model must be 'kcf' or 'unicycle'")
     resolved["prediction_model"] = model
-    if model == "single_integrator" and "single_integrator_gains" in resolved:
-        gains = resolved["single_integrator_gains"]
+    if model == "unicycle" and "unicycle_gains" in resolved:
+        gains = resolved["unicycle_gains"]
         keys = {
             "state_weights", "terminal_state_weights", "input_weight", "command_change_weights"
         }
-        if (not isinstance(gains, dict) or not keys.issubset(gains)
-                or set(gains) - keys - {"icem", "standing_hold"}):
+        if not isinstance(gains, dict) or set(gains) != keys:
             raise ValueError(
-                "single_integrator_gains must contain only state_weights, "
-                "terminal_state_weights, input_weight and command_change_weights, "
-                "with optional iCEM sampling and standing-hold overrides"
+                "unicycle_gains must contain only state_weights, "
+                "terminal_state_weights, input_weight and command_change_weights"
             )
-        resolved.update({key: deepcopy(gains[key]) for key in keys})
-        resolved["icem"].update(deepcopy(gains.get("icem", {})))
-        if resolved.get("standing_hold") is not None:
-            resolved["standing_hold"].update(deepcopy(gains.get("standing_hold", {})))
+        resolved.update(deepcopy(gains))
     return resolved
 
 
@@ -113,25 +112,30 @@ def get_default_mpc_config(
 ) -> dict[str, Any]:
     settings = {
         # Saved Trained Model checkpoint
-        "results_dir": str(PROJECT_ROOT / "policy" / "g1" / "kcf" / "walking"),
+        "results_dir": str(PROJECT_ROOT / "policy" / "g1" / "kcf" / "running"),
         "checkpoint": "final",
         "device": "cpu",  # Checkpoint loading; JAX execution device is selected below.
         "backend": "jax",
         "solver": "icem",
         "icem": {
-            "population": 42,
-            "iterations": 3,
-            "elites": 10,
+            "population": 10,
+            "iterations": 1,
+            "elites": 4,
             "decay": 6.0,
             "noise_beta": 3.0,
-            "initial_std": 0.25,
-            "warm_std": 0.03,
+            "initial_std": 0.3,
+            "warm_std": 0.2,
             "reference_initialization": True,
+            "stopping_candidate": True,
+            "stopping_switch_seconds": (0.0, 0.04, 0.12, 0.24),
+            # Reuse duplicate idle stop slots for short drive/pivot corrections.
+            "idle_recovery_candidates": True,
             "momentum": 0.1,
             "reuse_fraction": 0.3,
-            # Tuned body command rates: m/s², m/s², rad/s²; enforced inside iCEM.
-            # These are controller choices, not limits inferred from training data.
-            "command_rate_limits": [1.5, 1.5, 2.0],
+            # Mode changes cross real gaps in training support; allow command steps.
+            # Every sampled plan is projected onto this union BEFORE prediction.
+            "command_rate_limits": None,
+            "command_bands": COMMAND_BANDS,
         },
         "jax": {
             "platform": "gpu",
@@ -150,7 +154,7 @@ def get_default_mpc_config(
         },
         "dtype": "float32",
         "num_threads": 4,
-        "cpu_affinity": (0, 2, 4, 6),
+        "cpu_affinity": None,
         "warmup": True,
         "freeze_gc_after_warmup": True,
         "wait_for_first_state": True,
@@ -173,152 +177,123 @@ def get_default_mpc_config(
             "directory": str(PROJECT_ROOT / "logs" / "kcf" / "live_traces"),
         },
         # Receding-horizon problem
-        "horizon": 20,
+        "horizon": 50,  # 1 s; 100 steps / 2 s is supported but exceeded live 20 ms tests.
         "tracking_feature_indices": tuple(range(10)),
-        # KCF gains; SI selects the independent block below.
+        # KCF gains; unicycle selects the independent block below.
         # [px, py, sin(theta), cos(theta), vx_body, vy_body, wz_body, gravity_xyz].
-        "state_weights": (400.0, 400.0, 180.0, 180.0, 5.0, 5.0, 5.0, 100.0, 100.0, 20.0),
-        "terminal_state_weights": (
-            1200.0,
-            1200.0,
-            1800.0,
-            1800.0,
-            10.0,
-            10.0,
-            15.0,
-            300.0,
-            300.0,
-            60.0,
-        ),
-        "input_weight": 0.2,  # S smooths command changes.
+        "state_weights": (6000, 6000, 1800, 1800, 80, 80, 30, 100, 100, 20),
+        "terminal_state_weights": (60000, 60000, 21600, 21600, 300, 300, 100, 300, 300, 60),
+        "input_weight": 3,
         "prediction_model": "kcf",
         "prediction_sample_period": 0.02,
         # S = diag(s_vx, s_vy, s_wz).
-        "command_change_weights": (10.0, 10.0, 10.0),
+        "command_change_weights": (15.0, 15.0, 5.0),
         # Q/Q_terminal order: [px, py, sin(theta), cos(theta), vx, vy, wz, gx, gy, gz].
-        "single_integrator_gains": {
-            "state_weights": (150.0, 150.0, 80.0, 80.0, 20.0, 20.0, 5.0, 100.0, 100.0, 20.0),
+        "unicycle_gains": {
+            "state_weights": (600.0, 600.0, 200.0, 200.0, 30.0, 30.0, 10.0, 100.0, 100.0, 20.0),
             "terminal_state_weights": (
-                450.0, 450.0, 600.0, 600.0, 50.0, 50.0, 10.0, 300.0, 300.0, 60.0,
+                1800.0, 1800.0, 600.0, 600.0, 60.0, 60.0, 20.0, 300.0, 300.0, 60.0,
             ),
-            "input_weight": 0.2,
-            "command_change_weights": (10.0, 10.0, 10.0),
-            "icem": {"iterations": 2, "warm_std": 0.1},
-            "standing_hold": {"heading_gain": 1.5},
+            "input_weight": 1.0,
+            "command_change_weights": (15.0, 15.0, 5.0),
         },
-        # Stop correcting small errors once a stationary goal has settled.
+        # Latch exact idle only after a stationary target has been reached and
+        # the optimizer has already commanded zero; release on measured drift.
         "standing_hold": {
             "enter_position_m": 0.025,
-            "exit_position_m": 0.045,
+            "exit_position_m": 0.06,
             "enter_heading_rad": math.radians(2.0),
-            "exit_heading_rad": math.radians(3.0),
-            "enter_linear_speed_mps": 0.10,
-            "enter_yaw_rate_rps": 0.20,
+            "exit_heading_rad": math.radians(5.0),
+            "enter_linear_speed_mps": 0.2,
+            "enter_yaw_rate_rps": 0.5,
             "settle_seconds": 0.02,
-            # Correct residual yaw during long holds without restarting the gait.
-            "heading_gain": 3.0,
-            "yaw_rate_damping": 0.2,
         },
-        "reference_mode": "stop_turn_go",  # See REFERENCE_MODES above.
-        # World-frame room dimensions. Keep pelvis references 0.5 m inside
-        # the walls; this validates paths, not the robot's physical footprint.
-        "reference_workspace": {
-            "center_xy": [0.0, 0.0],
-            "size_xy": [5.0, 5.0],
-            "margin": 0.5,
-        },
+        "reference_mode": "rounded_square",  # Any REFERENCE_MODES entry, including star.
+        # Running references retain their larger validated geometry and speeds.
+        # Optional WORLD-frame bounds: {center_xy: [0,0], size_xy: [5,5], margin: 0.5}.
+        "reference_workspace": None,
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
-        "reference": (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        "reference": (3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
         "reference_startup": {
             "hold_seconds": 0.5,
             "transition_seconds": 3.0,
-            "maximum_linear_speed": 0.4,
-            "maximum_yaw_rate": 0.6,
+            "maximum_linear_speed": 1.0,
+            "maximum_yaw_rate": 1.5,
             # Bind to the first measured pose; leave None for live operation.
             "initial_pose": None,
         },
         "lissajous_reference": {
+            # Tangent speed 0.529--1.131 m/s; peak driving yaw rate 0.317 rad/s.
             "center_xy": [0.0, 0.0],
-            "half_width": 1.5,
-            "half_height": 0.75,
-            "omega": 0.20, # works within the current MPC input constraints
+            "half_width": 8.0,
+            "half_height": 4.0,
+            "omega": 0.1,
         },
         # Smooth start/stop path. Repeated poses create standing dwells;
         # each pose is [world X (m), world Y (m), yaw (rad)].
         "waypoint_reference": {
-            "times_s": [0.0, 2.0, 6.0, 8.0, 12.0, 14.0, 18.0, 20.0],
+            "times_s": [0.0, 1.0, 5.0, 6.0, 8.0, 9.0, 13.0, 14.0, 18.0, 19.0],
             "poses": [
                 [0.0, 0.0, 0.0],
                 [0.0, 0.0, 0.0],
-                [0.6, 0.0, 0.0],
-                [0.6, 0.0, 0.0],
-                [0.6, 0.4, 0.4],
-                [0.6, 0.4, 0.4],
-                [0.0, 0.4, 0.0],
-                [0.0, 0.4, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 0.0, math.pi / 2.0],
+                [2.0, 0.0, math.pi / 2.0],
+                [2.0, 2.0, math.pi / 2.0],
+                [2.0, 2.0, math.pi / 2.0],
+                [2.0, 0.0, math.pi / 2.0],
+                [2.0, 0.0, math.pi / 2.0],
             ],
         },
         # Continuous-forward paths: turn_radius is the MINIMUM instantaneous
         # radius, not a circular-arc radius. Peak yaw rate = speed / turn_radius.
         # Quintic heading ramps make yaw rate and acceleration zero at joins.
         "rounded_square_reference": {
-            "start_pose": [-0.5, -1.3, 0.0],
-            "speed": 0.3,
-            "turn_radius": 0.5,
-            "straight_length": 1.0,
+            "start_pose": [0.0, 0.0, 0.0],
+            "speed": 1.6,
+            "turn_radius": 4.0,
+            "straight_length": 4.0,
             "clockwise": False,
         },
         "hairpin_reference": {
-            "start_pose": [-0.6, -0.6, 0.0],
-            "speed": 0.3,
-            "turn_radius": 0.5,
-            "straight_length": 1.2,
+            "start_pose": [0.0, 0.0, 0.0],
+            "speed": 0.8,
+            "turn_radius": 2.0,
+            "straight_length": 2.0,
             "clockwise": False,
         },
         "slalom_reference": {
-            "start_pose": [-1.6, -0.4, 0.0],
-            "speed": 0.3,
-            "turn_radius": 0.5,
-            "straight_length": 0.3,
+            "start_pose": [0.0, 0.0, 0.0],
+            "speed": 0.8,
+            "turn_radius": 2.0,
+            "straight_length": 1.0,
             "heading_amplitude": math.pi / 4.0,
             "clockwise": False,
-            # A repeating slalom advances forever; finish and hold instead.
-            "cycles": 1,
-            "stop_seconds": 1.0,
         },
         # Translate, stand, turn in place, stand, then resume. Radians for turns.
         # speed and yaw_rate are peak reference values for the quintic segments.
         "stop_turn_go_reference": {
             "start_pose": [0.0, 0.0, 0.0],
-            "speed": 0.3,
-            "distance": 0.6,
-            "yaw_rate": 0.6,
+            "speed": 0.8,
+            "distance": 1.5,
+            "yaw_rate": 1.5,
             "dwell_seconds": 1.0,
             "turn_angles": [math.pi / 2.0, -math.pi / 2.0, math.pi],
         },
-        # Five crossing legs with separate stand/pivot phases at the tips.
+        # Star: five crossing edges, stop/pivot at each tip, then hold at start.
         "star_reference": {
-            "center_xy": [0.0, 0.0],
-            "radius": 1.5,
-            "rotation": math.pi / 2.0,
-            "speed": 0.3,
-            "yaw_rate": 0.6,
+            "center_xy": [0.0, 0.0],  # World metres; shift for another mocap origin.
+            "radius": 1.5,  # Entire star lies within center_xy +/- radius.
+            "rotation": math.pi / 2.0,  # First tip direction, radians.
+            "speed": 0.8,  # Peak translation speed, m/s.
+            "yaw_rate": 1.5,  # Peak pivot rate, rad/s.
             "dwell_seconds": 0.5,
             "clockwise": False,
         },
-        # Physical body commands: walking epoch-3240 training split 0.5/99.5
-        # Collection limits are +/-[0.5 m/s, 0.5 m/s, 1.0 rad/s].
-        # The checkpoint applies its own normalization
-        "input_lower_bounds": (
-            -0.459801,
-            -0.462779,
-            -0.944198,
-        ),
-        "input_upper_bounds": (
-            0.487012,
-            0.461249,
-            0.955684,
-        ),
+        # Bounding box plus the iCEM command_bands union above; vy is exactly zero.
+        "input_lower_bounds": (-1.0, 0.0, -2.0),
+        "input_upper_bounds": (2.0, 0.0, 2.0),
         "seed": 42,
     }
     if horizon is not None:

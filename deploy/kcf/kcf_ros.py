@@ -1,4 +1,4 @@
-"""ROS front end for the unchanged walking KCF-iCEM controller.
+"""ROS front end for the running KCF-iCEM controller.
 """
 
 import argparse
@@ -20,7 +20,7 @@ from utils.experiment_utils import EXPERIMENT_INFO_TOPIC, experiment_info_qos
 
 class KCFNode(Node):
     def __init__(self, args, *, keyboard=None, controller_factory=None):
-        profile = load_profile(getattr(args, 'profile', 'walking'))
+        profile = load_profile(getattr(args, 'profile', 'running'))
         decoder = profile.symbol('feedback_decoder')
         state_source = getattr(args, 'state_source', None)
         if state_source is None:
@@ -64,8 +64,8 @@ class KCFNode(Node):
         
         self.source = None
         self.profile, self.decode_feedback = profile, decoder
-        # MPC prediction model: learned KCF (default) or the ideal single integrator (--single-integrator)
-        self.prediction_model = 'single_integrator' if getattr(args, 'single_integrator', False) else 'kcf'
+        # MPC prediction model: learned KCF (default) or the unicycle baseline (--unicycle)
+        self.prediction_model = 'unicycle' if getattr(args, 'unicycle', False) else 'kcf'
         print(f"MPC prediction model: {self.prediction_model}", flush=True)
         self.status("warming_up; shadow" if not self.enabled else "warming_up; kcf_control")
         try:
@@ -290,11 +290,10 @@ class KCFNode(Node):
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default=os.environ.get('KCF_MODEL_PROFILE', 'walking'), help="Model profile declared in deploy/configs/g1 (default: walking)")
+    parser.add_argument("--profile", default=os.environ.get('KCF_MODEL_PROFILE', 'running'), help="Model profile declared in deploy/configs/g1 (default: running)")
     parser.add_argument("--reference-mode", help="Optional reference selection; MPC gains/settings remain unchanged")
     parser.add_argument('--shadow', action='store_true', help='Compute only; never publish actuation or FSM enable messages')
-    parser.add_argument('--single-integrator', action='store_true',
-                        help='MPC predicts with the ideal single integrator (robot follows the twist) instead of the KCF model')
+    parser.add_argument('--unicycle', action='store_true', help='Use the running unicycle baseline instead of KCF')
     parser.add_argument('--state-source', choices=('simulation', 'mocap'),
                         help='Override kcf.state_source in the deployment YAML for this run')
     args, ros_args = parser.parse_known_args(argv)

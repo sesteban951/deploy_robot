@@ -674,23 +674,23 @@ def main(args=None):
         parser.error('--network is required when connecting to the robot')
     rclpy.init()
     if args.preflight:
-        from deploy.hardware.g1.control_29dof_kcf import ControlNode as WalkingPolicyNode
+        from deploy.hardware.g1.control_29dof_kcf import ControlNode as RunningPolicyNode
         hardware_node = policy_node = None
         try:
             hardware_node = ControlNode(args.config, flip_waist_pitch=args.flip_waist_pitch,
                                         enable_max_tilt=args.max_tilt, enable_imu_guard=args.imu_guard)
-            policy_node = WalkingPolicyNode(args.config)
+            policy_node = RunningPolicyNode(args.config)
             observation = policy_node.build_observation()
             action = policy_node.policy.inference(observation)
             if action.shape != (29,) or not np.isfinite(action).all():
-                raise ValueError('Walking policy did not produce 29 finite actions')
+                raise ValueError('Policy did not produce 29 finite actions')
             command = np.concatenate((action * policy_node.action_scale + policy_node.qpos_joints_default,
                                       np.zeros(29), policy_node.Kp, policy_node.Kd, np.zeros(29)))
             hardware_node.command_callback(Float32MultiArray(data=command.tolist()))
             hardware_node.fill_policy_cmd()
             checksum = hardware_node.crc.Crc(hardware_node.low_cmd)
-            print(json.dumps(dict(preflight='passed', checkpoint_epoch=3240,
-                                  model_state_dim=103, policy_input_size=observation.size,
+            print(json.dumps(dict(preflight='passed', checkpoint_epoch=5460,
+                                  model_state_dim=104, policy_input_size=observation.size,
                                   policy_action_size=action.size, motor_command_size=command.size,
                                   sdk_crc=int(checksum), robot_connected=False), indent=2))
         finally:

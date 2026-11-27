@@ -27,7 +27,7 @@ class KeyboardOperator:
         self.fsm.step(JoystickState(LB=1))
 
     def hold(self):
-        # lost/invalid feedback: track -> control (zero twist), the walking policy keeps balancing
+        # lost/invalid feedback: track -> control (zero twist), the running policy keeps balancing
         self.fsm.step(JoystickState(LMB=1))
 
     def update(self, keys, *, feedback_ready):

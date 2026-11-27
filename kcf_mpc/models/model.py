@@ -2,9 +2,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 from kcf_mpc.config.model_config import ModelConfig
-from .lifting import StateInclusiveLifting
-from .normalization import FixedAffineNormalizer
-from .transition import ControlTransition
+from kcf_mpc.models.lifting import StateInclusiveLifting
+from kcf_mpc.models.normalization import FixedAffineNormalizer
+from kcf_mpc.models.transition import ControlTransition
 
 
 class ControlledLiftedModel(nn.Module):
@@ -43,8 +43,9 @@ class ControlledLiftedModel(nn.Module):
         """Compute A(u), including the checkpoint's derived controller mode."""
         features = self.normalizer.normalize_control(control)
         if self.config.command_mode_feature:
+            # The running checkpoint uses threshold zero: exact zero is idle.
             moving = (torch.norm(control, dim=-1, keepdim=True)
-                      >= self.config.stand_cmd_threshold).to(features.dtype)
+                      > self.config.stand_cmd_threshold).to(features.dtype)
             features = torch.cat((features, moving), dim=-1)
         return self.transition_network(features)
 

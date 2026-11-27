@@ -1,7 +1,8 @@
-"""Walking KCF contract and command gate.
+"""Running KCF contract and command gate.
 
-Feedback Float64MultiArray (107): [policy_time, pose_time, applied_time, valid,
-qpos(36), qvel(35), previous_raw_RL_action(29), current_policy_twist(3)].
+Feedback Float64MultiArray (110): [policy_time, pose_time, applied_time, valid,
+qpos(36), qvel(35), previous_raw_RL_action(29), current_policy_twist(3),
+ungated gait sin/cos/period_frames(3)].
 qpos: world position (m), body-to-world quaternion wxyz, joints (rad).
 qvel: world linear (m/s), BODY angular (rad/s), joints (rad/s).
 
@@ -34,18 +35,19 @@ class Feedback:
     v: np.ndarray
     previous_action: np.ndarray
     applied_command: np.ndarray
+    policy_clock: np.ndarray
 
     def pack(self):
         return np.concatenate((
             [self.time, self.pose_time, self.applied_time, float(self.valid)],
-            self.q, self.v, self.previous_action, self.applied_command,
+            self.q, self.v, self.previous_action, self.applied_command, self.policy_clock,
         )).tolist()
 
     @classmethod
     def unpack(cls, data, max_pose_age=0.1):
         a = np.asarray(data, dtype=np.float64)
-        if a.shape != (107,) or not np.isfinite(a).all():
-            raise ValueError("feedback must contain 107 finite values (29 joints)")
+        if a.shape != (110,) or not np.isfinite(a).all():
+            raise ValueError("feedback must contain 110 finite values (29 joints and running gait clock)")
         t, pose_t, applied_t, valid = a[:4]
         if valid != 1 or t < 0 or pose_t < 0 or not (-1e-6 <= t - pose_t <= max_pose_age):
             raise ValueError("invalid, future or stale pelvis feedback")
@@ -53,8 +55,10 @@ class Feedback:
             raise ValueError("invalid applied-command timestamp")
         if abs(np.linalg.norm(a[7:11]) - 1.0) > 0.01:
             raise ValueError("pelvis quaternion must be unit wxyz")
+        if a[109] not in (37., 43.) or not np.isclose(np.linalg.norm(a[107:109]), 1., atol=1e-5):
+            raise ValueError('running requires the ungated unit gait clock and period 37 or 43')
         return cls(t, pose_t, applied_t, True, a[4:40].copy(),
-                   a[40:75].copy(), a[75:104].copy(), a[104:107].copy())
+                   a[40:75].copy(), a[75:104].copy(), a[104:107].copy(), a[107:110].copy())
 
 
 class CommandGate:
@@ -63,13 +67,19 @@ class CommandGate:
     Zero velocity is NOT an emergency stop.
     """
 
-    def __init__(self, timeout=0.1, limits=(0.5, 0.5, 1.0), dt=0.02):
+    def __init__(self, timeout=0.1, limits=(2.0, 0.0, 2.0), dt=0.02, command_bands=None):
         self.timeout, self.dt = float(timeout), float(dt)
         self.limits = np.asarray(limits, dtype=np.float64)
         if (not math.isfinite(timeout) or timeout <= 0 or not math.isfinite(dt) or dt <= 0
                 or self.limits.shape != (3,) or not np.isfinite(self.limits).all()
-                or np.any(self.limits <= 0)):
+                or np.any(self.limits < 0) or not np.any(self.limits > 0)):
             raise ValueError("invalid command gate configuration")
+        self.bands = None if command_bands is None else np.asarray(command_bands, dtype=float)
+        if self.bands is not None and (self.bands.ndim != 3 or self.bands.shape[1:] != (2, 3)
+                or not len(self.bands) or not np.isfinite(self.bands).all()
+                or np.any(self.bands[:, 0] > self.bands[:, 1])
+                or np.any(np.abs(self.bands) > self.limits + 1e-6)):
+            raise ValueError('invalid command bands')
         self.fsm, self.fsm_wall = "init", -math.inf
         self.manual, self.manual_wall = None, -math.inf
         self.candidates, self.last_slot = {}, None
@@ -92,6 +102,10 @@ class CommandGate:
                 or a[5] < 0 or not (0 <= a[4] - a[5] <= 0.04 + 1e-6)):
             self.candidates.clear()
             return False
+        if self.bands is not None and not np.any(np.all(
+                (a[1:4] >= self.bands[:, 0] - 1e-6) & (a[1:4] <= self.bands[:, 1] + 1e-6), axis=1)):
+            self.candidates.clear()
+            return False
         key = round(a[4] / self.dt)
         self.candidates[key] = (a.copy(), float(now))
         while len(self.candidates) > 8:
@@ -111,7 +125,11 @@ class CommandGate:
             self.candidates.clear()
             return np.zeros(3, dtype=np.float32), "operator_unavailable"
         if self.fsm == "control":
-            return np.clip(self.manual, -self.limits, self.limits).astype(np.float32), "manual"
+            command = np.clip(self.manual, -self.limits, self.limits)
+            if self.bands is not None:
+                choices = np.clip(command, self.bands[:, 0], self.bands[:, 1])
+                command = choices[np.argmin(np.sum((choices - command)**2, axis=1))]
+            return command.astype(np.float32), "manual"
         if self.fsm == "track":
             candidate = self.candidates.pop(slot, None)
             if candidate is not None:

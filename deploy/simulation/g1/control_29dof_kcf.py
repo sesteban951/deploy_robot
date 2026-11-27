@@ -1,4 +1,4 @@
-"""29-joint G1 simulation with the hardware walking policy and full KCF feedback.
+"""29-joint G1 simulation with the hardware running policy and full KCF feedback.
 
 Only MuJoCo's atomic state topic is read. No SDK or mocap process is used.
 Policy inference, observation construction and model-contract checks are inherited
@@ -22,20 +22,20 @@ os.environ.setdefault('DEPLOY_ROOT_DIR', str(ROOT))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from deploy.hardware.g1.control_29dof_kcf import ControlNode as WalkingPolicyNode
+from deploy.hardware.g1.control_29dof_kcf import ControlNode as RunningPolicyNode
 from deploy.kcf.kcf_interface import CommandGate, Feedback, COMMAND_TOPIC, FEEDBACK_TOPIC, SIM_STATE_TOPIC
 from kcf_mpc.profiles import load_profile
 from utils.experiment_utils import publish_experiment_info
 
 
-class ControlNode(WalkingPolicyNode):
+class ControlNode(RunningPolicyNode):
     def __init__(self, config_path):
         Node.__init__(self, 'simulation_29dof_kcf_policy')
         self.config = self.load_config(config_path)
         self.kcf_profile = load_profile(self.config['kcf_profile'])
         self.kcf_profile.validate_assets()
         self.init_policy()
-        self.gate = CommandGate(dt=self.ctrl_dt, limits=self.command_limits)
+        self.gate = CommandGate(dt=self.ctrl_dt, limits=self.command_limits, command_bands=self.command_bands)
         self.fsm = 'init'
         self.policy_time = 0.0
         self.last_state_time = None
@@ -77,6 +77,10 @@ class ControlNode(WalkingPolicyNode):
         if self.last_state_time is not None and t < self.last_state_time:
             self.action[:] = 0
             self.gate.candidates.clear()
+            self.clock.reset()
+        elif self.last_state_time is not None and self.fsm in ('control', 'track'):
+            for _ in range(max(0, round((t - self.last_state_time) / self.ctrl_dt) - 1)):
+                self.clock.advance()
         self.last_state_time = t
         self.kcf_state = state.copy()
         self.policy_time = round(t / self.ctrl_dt) * self.ctrl_dt
@@ -91,7 +95,7 @@ class ControlNode(WalkingPolicyNode):
         q = self.kcf_state[1:37].copy()
         v = self.kcf_state[37:72].copy()
         self.cmd, self.command_source = self.gate.select(t, monotonic())
-        feedback = Feedback(t, t, t, True, q, v, self.action.copy(), self.cmd.copy())
+        feedback = Feedback(t, t, t, True, q, v, self.action.copy(), self.cmd.copy(), self.clock.state.copy())
         self.feedback_pub.publish(Float64MultiArray(data=feedback.pack()))
 
 

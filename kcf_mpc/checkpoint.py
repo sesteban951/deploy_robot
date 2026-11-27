@@ -1,11 +1,11 @@
-"""Load an explicitly selected native-103 projected checkpoint for inference."""
+"""Load an explicitly selected native-104 projected checkpoint for inference."""
 
 import json
 from pathlib import Path
 from typing import Any
 import torch
 import numpy as np
-from kcf_mpc.config import model_config_from_mapping
+from kcf_mpc.config.model_config import model_config_from_mapping
 from kcf_mpc.models.projected import ProjectedG1KCF
 
 def load_saved_model(

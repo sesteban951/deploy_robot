@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from kcf_mpc.config import get_default_mpc_config
+from kcf_mpc.config.mpc_config import get_default_mpc_config
 from kcf_mpc.checkpoint import load_saved_model
 from kcf_mpc.device import resolve_device
 from kcf_mpc.state.frame import G1KCFSinCosFrame
@@ -34,7 +34,7 @@ class KoopmanMPC:
                 "and use the supported bounded iCEM MPC formulation."
             )
         if not is_projected_g1(model):
-            raise ValueError("MPC requires the native projected 103-state G1 checkpoint")
+            raise ValueError("MPC requires the native projected 104-state G1 checkpoint")
         self.model = model.eval().requires_grad_(False)
         self.device = model.normalizer.state_mean.device
         self.dtype = model.normalizer.state_mean.dtype
@@ -151,6 +151,11 @@ class KoopmanMPC:
         self.rng = np.random.default_rng(int(config["seed"]))
         self.previous_solution: np.ndarray | None = None
         self.icem_config = ICEMConfig(**config.get("icem", {}))
+        if self.icem_config.command_bands is not None:
+            boxes = np.asarray(self.icem_config.command_bands)
+            if not np.any(np.all(np.maximum(boxes[:, 0], self.lower_bounds)
+                                 <= np.minimum(boxes[:, 1], self.upper_bounds), axis=-1)):
+                raise ValueError("Input bounds exclude every configured command band")
         self.jax_platform = str(config.get("jax", {}).get("platform", "cpu"))
         self.jax_preallocate = bool(config.get("jax", {}).get("preallocate", False))
         self.jax_pinned_host_output = bool(
@@ -164,16 +169,20 @@ class KoopmanMPC:
         )
         self.jax_scan_unroll = int(config.get("jax", {}).get("scan_unroll", 1))
         self.prediction_model = str(config.get("prediction_model", "kcf"))
-        if self.prediction_model not in ("kcf", "single_integrator"):
-            raise ValueError("prediction_model must be 'kcf' or 'single_integrator'")
-        if self.prediction_model == "single_integrator" and self.input_dim != 3:
+        if self.prediction_model not in ("kcf", "unicycle"):
+            raise ValueError("prediction_model must be 'kcf' or 'unicycle'")
+        if self.prediction_model == "unicycle" and self.input_dim != 3:
             raise ValueError(
-                "single-integrator prediction requires three body-twist inputs"
+                "unicycle prediction requires the [vx, 0, wz] command interface"
             )
+        if self.prediction_model == "unicycle" and (
+            self.lower_bounds[1] != 0.0 or self.upper_bounds[1] != 0.0
+        ):
+            raise ValueError("unicycle lateral command bounds must both be zero")
         if "pose_prediction" in config:
             raise ValueError(
                 "pose_prediction has been removed; KCF predicts the full state directly. "
-                "Use prediction_sample_period for the single-integrator timestep."
+                "Use prediction_sample_period for the unicycle timestep."
             )
         self.prediction_sample_period = float(
             config.get("prediction_sample_period", 0.02)
@@ -382,7 +391,7 @@ def create_mpc_controller(
         mpc_config["checkpoint"],
     )
     if not is_projected_g1(model):
-        raise ValueError("G1 MPC requires the native 103-state projected KCF checkpoint")
+        raise ValueError("G1 MPC requires the native 104-state projected KCF checkpoint")
 
     if "dtype" in mpc_config:
         dtypes = {"float32": torch.float32, "float64": torch.float64}

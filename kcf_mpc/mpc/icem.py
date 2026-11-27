@@ -37,7 +37,11 @@ class ICEMConfig:
     reuse_fraction: float = 0.3
     reference_initialization: bool = False
     mean_each_iteration: bool = False
+    stopping_candidate: bool = False
+    stopping_switch_seconds: tuple[float, ...] = (0.0,)
+    idle_recovery_candidates: bool = False
     command_rate_limits: tuple[float, float, float] | None = None
+    command_bands: tuple | None = None
 
     def __post_init__(self):
         for name in ('population', 'iterations', 'elites'):
@@ -59,6 +63,22 @@ class ICEMConfig:
             raise ValueError('iCEM reference_initialization must be boolean')
         if not isinstance(self.mean_each_iteration, bool):
             raise ValueError('iCEM mean_each_iteration must be boolean')
+        if not isinstance(self.stopping_candidate, bool):
+            raise ValueError("iCEM stopping_candidate must be boolean")
+        times = self.stopping_switch_seconds
+        if (not times or any(isinstance(t, (bool, np.bool_)) for t in times)
+                or any(not math.isfinite(t) or t < 0 for t in times)
+                or times[0] != 0 or any(b <= a for a, b in zip(times, times[1:]))):
+            raise ValueError("Stopping switch times must start at zero and increase")
+        object.__setattr__(self, "stopping_switch_seconds", tuple(map(float, times)))
+        if self.stopping_candidate and len(times) >= min(self.populations):
+            raise ValueError("Stopping candidates must leave a population slot for the mean")
+        if not isinstance(self.idle_recovery_candidates, bool):
+            raise ValueError("iCEM idle_recovery_candidates must be boolean")
+        if (self.idle_recovery_candidates and self.stopping_candidate
+                and self.reference_initialization and self.command_bands is not None
+                and len(times) != 4):
+            raise ValueError("Idle recovery requires four stopping candidates")
         if self.command_rate_limits is not None:
             rates = np.asarray(self.command_rate_limits)
             if (rates.shape != (3,) or rates.dtype.kind not in 'fiu'
@@ -66,6 +86,15 @@ class ICEMConfig:
                     or not np.isfinite(rates).all() or np.any(rates <= 0)):
                 raise ValueError('iCEM command_rate_limits must contain three finite positive rates')
             object.__setattr__(self, 'command_rate_limits', tuple(map(float, rates)))
+
+        if self.command_bands is not None:
+            boxes = np.asarray(self.command_bands, dtype=float)
+            if (boxes.ndim != 3 or boxes.shape[1:] != (2, 3)
+                    or not np.isfinite(boxes).all() or np.any(boxes[:, 0] > boxes[:, 1])):
+                raise ValueError("command_bands must contain finite lower/upper command boxes")
+            if self.command_rate_limits is not None:
+                raise ValueError("Disjoint command bands require explicit command steps; disable slew limits")
+            object.__setattr__(self, "command_bands", tuple(tuple(tuple(row) for row in box) for box in boxes))
 
     @property
     def reuse_count(self):
@@ -131,12 +160,19 @@ def reference_initial_mean(initial, reference, horizon, dt, pose_columns, lower,
     return jnp.clip(proposal, lower, upper)
 
 
-def rate_limit_controls(controls, preceding, lower, upper, step_limits):
+def rate_limit_controls(controls, preceding, lower, upper, step_limits, command_bands=None):
     """Causally map proposals to feasible commands BEFORE model evaluation.
 
     Vectorized over candidate populations; the scan dimension is horizon time.
     The preceding command is the last actually committed command, not zero.
     """
+    if command_bands is not None:
+        boxes = jnp.asarray(command_bands, dtype=controls.dtype)
+        lo, hi = jnp.maximum(boxes[:, 0], lower), jnp.minimum(boxes[:, 1], upper)
+        choices = jnp.clip(controls[..., None, :], lo, hi)
+        distance = jnp.sum((choices - controls[..., None, :])**2, axis=-1)
+        nearest = jnp.argmin(jnp.where(jnp.all(lo <= hi, axis=-1), distance, jnp.inf), axis=-1)
+        return jnp.take_along_axis(choices, nearest[..., None, None], axis=-2)[..., 0, :]
     if step_limits is None:
         return jnp.clip(controls, lower, upper)
     initial = jnp.broadcast_to(preceding, controls.shape[:-2] + (3,))
@@ -164,6 +200,30 @@ def build_optimizer(evaluate, horizon, lower, upper, config, *, compiler_options
     reuse = config.reuse_count
     if not math.isfinite(dt) or dt <= 0:
         raise ValueError('iCEM prediction dt must be finite and positive')
+    stop_steps = tuple(sorted({min(horizon, round(t / dt))
+                              for t in config.stopping_switch_seconds}))
+    idle_recovery = (config.idle_recovery_candidates and config.stopping_candidate
+                     and config.reference_initialization and config.command_bands is not None)
+    if idle_recovery:
+        if cold_mean is None:
+            raise ValueError("Idle recovery requires a reference proposal")
+        boxes = np.asarray(config.command_bands)
+        floors = np.zeros((2, 2))  # forward/backward and pure-pivot minima
+        for row, axis in enumerate((0, 2)):
+            others = [column for column in range(3) if column != axis]
+            zero_others = np.all((boxes[:, 0, others] <= 0)
+                                 & (boxes[:, 1, others] >= 0), axis=-1)
+            for column, sign in enumerate((-1, 1)):
+                bounds = boxes[:, 0 if sign > 0 else 1, axis]
+                choices = bounds[zero_others & (sign * bounds > 0)]
+                if not choices.size:
+                    raise ValueError("Idle recovery requires signed drive and pure-pivot bands")
+                floors[row, column] = choices[np.argmin(np.abs(choices))]
+        floors = jnp.asarray(floors, dtype=dtype)
+        # Keep all four slots even when a short horizon merges switch times.
+        stop_steps = tuple(min(horizon, round(t / dt))
+                           for t in config.stopping_switch_seconds)
+        recovery_steps = tuple(max(1, step) for step in stop_steps[1:3])
     step_limits = (None if config.command_rate_limits is None else
                    jnp.asarray(config.command_rate_limits, dtype=dtype) * dt)
 
@@ -174,7 +234,7 @@ def build_optimizer(evaluate, horizon, lower, upper, config, *, compiler_options
         start = (jnp.broadcast_to(midpoint, (horizon, 3)) if cold_mean is None else
                  cold_mean(initial, reference))
         mean = jnp.where(has_memory, shifted_mean, start)
-        mean = rate_limit_controls(mean, preceding, lower, upper, step_limits)
+        mean = rate_limit_controls(mean, preceding, lower, upper, step_limits, config.command_bands)
         # The last feasible best plan is distinct from the fitted mean/elites.
         # Shift it without noise, repeating its last bounded command as tail.
         warm = previous[indices]
@@ -192,18 +252,43 @@ def build_optimizer(evaluate, horizon, lower, upper, config, *, compiler_options
             noise = jnp.swapaxes(jnp.matmul(white, noise_filter,
                                 precision=jax.lax.Precision.HIGHEST), 1, 2)
             samples = jnp.clip(mean + std * noise[:population], lower, upper)
-            samples = rate_limit_controls(samples, preceding, lower, upper, step_limits)
+            samples = rate_limit_controls(samples, preceding, lower, upper, step_limits, config.command_bands)
             # Optionally compete with the current mean in every batch. This
             # also evaluates the cold reference proposal, not just its noisy
             # neighbours, without increasing the rollout population/budget.
             inject_mean = config.mean_each_iteration or iteration == config.iterations - 1
             if inject_mean:
                 samples = samples.at[0].set(mean)
+            if config.stopping_candidate:
+                # Predict the full physical transient after a command switches
+                # to idle. These compete under the same cost/batch budget.
+                # Retain the mean's prefix to also optimize when braking starts.
+                for slot, switch in enumerate(stop_steps, start=1):
+                    stop = jnp.where((jnp.arange(horizon) < switch)[:, None], mean, 0.)
+                    if idle_recovery:
+                        # An idle mean otherwise makes every stop proposal zero.
+                        # Compete short supported corrections followed by idle;
+                        # never publish one without the unchanged model/cost.
+                        axis = 0 if slot <= 2 else 2
+                        row = 0 if axis == 0 else 1
+                        direction = start[0, axis]
+                        pulse = jnp.zeros(3, dtype=dtype).at[axis].set(
+                            jnp.where(direction == 0, 0.,
+                                      floors[row, (direction > 0).astype(jnp.int32)]))
+                        recovery = jnp.where(
+                            (jnp.arange(horizon) < recovery_steps[(slot - 1) % 2])[:, None],
+                            pulse, 0.)
+                        stationary = ((jnp.max(jnp.abs(reference - reference[0])) < 1e-6)
+                                      & jnp.all(jnp.abs(reference[..., 4:7]) < 1e-6))
+                        stop = jnp.where(jnp.all(mean == 0.) & stationary, recovery, stop)
+                    stop = rate_limit_controls(stop, preceding, lower, upper,
+                                               step_limits, config.command_bands)
+                    samples = samples.at[slot].set(stop)
             if iteration == 0:
                 tails = jnp.clip(mean + std * noise[population:], lower, upper)
                 new_tail = jnp.arange(horizon) >= horizon - shift_steps
                 shifted = jnp.where(new_tail[None, :, None], tails, memory[:, indices])
-                shifted = rate_limit_controls(shifted, preceding, lower, upper, step_limits)
+                shifted = rate_limit_controls(shifted, preceding, lower, upper, step_limits, config.command_bands)
                 candidates = jnp.concatenate((samples, shifted, warm[None]), axis=0)
                 costs = evaluate(initial, candidates, reference, preceding, parameters)
                 memory_slice = slice(population, population + reuse)
@@ -220,8 +305,8 @@ def build_optimizer(evaluate, horizon, lower, upper, config, *, compiler_options
                 warm_cost = jnp.where(warm_feasible, costs[-1], jnp.nan)
             if iteration == config.iterations - 1:
                 final_mean_cost = costs[0]
-            # Include all newly evaluated stochastic candidates, but neither the
-            # deterministic warm plan nor the explicitly injected final mean.
+            # Include newly evaluated candidates (including stop proposals),
+            # excluding the deterministic warm plan and injected final mean.
             begin = 1 if inject_mean else 0
             end = population + (reuse if iteration == 0 else 0)
             best_sampled_cost = jnp.minimum(best_sampled_cost, jnp.min(costs[begin:end]))
@@ -231,7 +316,7 @@ def build_optimizer(evaluate, horizon, lower, upper, config, *, compiler_options
             new_mean = jnp.mean(elite, axis=0)
             new_std = jnp.sqrt(jnp.mean((elite - new_mean) ** 2, axis=0))
             mean = config.momentum * mean + (1 - config.momentum) * new_mean
-            mean = jnp.clip(mean, lower, upper)
+            mean = rate_limit_controls(mean, preceding, lower, upper, step_limits, config.command_bands)
             std = config.momentum * std + (1 - config.momentum) * new_std
             if iteration == 0:
                 best, best_cost = elite[0], elite_costs[0]

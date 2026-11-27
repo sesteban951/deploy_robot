@@ -1,0 +1,13 @@
+{
+  "model_family": "running",
+  "checkpoint_epoch": 5460,
+  "source_simulation_revision": "07fcdc0e1a9e1b95a2d81309ab39a84f3261ce28",
+  "source_model_revision": "3eb3c37bd022fa8da62d6b1cb029aab9d9acc07d",
+  "source_results": "results/g1_kcf_handoff_epoch05460",
+  "checkpoint_modified": false,
+  "normalization_modified": false,
+  "robot_joint_count": 29,
+  "state_dim": 104,
+  "source_model_repository": "https://github.com/StellaKombo/KCF_MPC",
+  "asset_checksums": "deploy/configs/g1/g1_29dof_kcf.yaml"
+}

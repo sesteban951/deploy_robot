@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from kcf_mpc.robot import CommandSource, RobotState, nominal_state
-from kcf_mpc.robot_config import G1Config
+from kcf_mpc.robot_config import G1Config, COMMAND_BANDS
 from kcf_mpc.state.encoder import g1_closed_loop_state, g1_world_heading
 from kcf_mpc.reference import PlanarReference
 
@@ -34,17 +34,6 @@ from kcf_mpc.mpc.mpc_buffered import (
     SolveRequest,
 )
 from kcf_mpc.mpc.mpc_handover import HandoverTiming, predict_handover_state
-
-
-def create_profile_controller(profile, settings, *, quiet=True):
-    """Walking native backend; other families select their own factory plugin."""
-    if (profile.values['state_dim'], profile.values['joint_count'],
-            profile.values['recurrent_state_dim'], profile.values['nH']) != (103, 29, 0, 256):
-        raise ValueError('This runtime factory supports walking 103/29/lift256 only; select matching model adapters and runtime_factory')
-    cfg = profile.symbol('robot_config_factory')()
-    return KCFCommand(cfg.cmd_scale, settings=settings, quiet=quiet, robot_config=cfg,
-                      state_encoder=profile.symbol('state_encoder'),
-                      heading_encoder=profile.symbol('heading_encoder'))
 
 
 def _configure_cpu_affinity(cpus):
@@ -91,8 +80,8 @@ def resolve_mpc_settings(
         if prediction_model is None
         else prediction_model
     )
-    if selected_model not in ("kcf", "single_integrator"):
-        raise ValueError("prediction_model must be 'kcf' or 'single_integrator'")
+    if selected_model not in ("kcf", "unicycle"):
+        raise ValueError("prediction_model must be 'kcf' or 'unicycle'")
     if prediction_model is not None:
         settings = resolve_mpc_model_config(settings, prediction_model=selected_model)
     if reference_mode is not None:
@@ -121,14 +110,9 @@ class KCFCommand(CommandSource):
         quiet: bool = False,
         verbose: bool = False,
         feedback_is_synchronous: bool = False,
-        robot_config=None,
-        state_encoder=None,
-        heading_encoder=None,
     ):
         super().__init__(cmd_scale)
-        self.cfg = G1Config() if robot_config is None else robot_config
-        self._state_encoder = g1_closed_loop_state if state_encoder is None else state_encoder
-        self._heading_encoder = g1_world_heading if heading_encoder is None else heading_encoder
+        self.cfg = G1Config()
         self.cpu_affinity = _configure_cpu_affinity(settings.get("cpu_affinity"))
         threads = int(settings["num_threads"])
         if threads < 1:
@@ -152,25 +136,26 @@ class KCFCommand(CommandSource):
             self.mpc, "observation_dim", self.mpc.model.config.state_dim
         )
         if (
-            observation_dim != 103
-            or self.mpc.model.config.state_dim != 103
+            observation_dim != 104
+            or self.mpc.model.config.state_dim != 104
             or self.mpc.model.config.L_embed != 0
             or self.mpc.input_dim != 3
             or tuple(self.mpc.tracking_feature_indices.cpu().tolist())
             != expected_tracked_indices
         ):
             raise ValueError(
-                "G1 requires the native 103-state model " "with three commands"
+                "G1 requires the native 104-state model " "with three commands"
             )
         if np.any(self.mpc.lower_bounds < -self.cmd_scale) or np.any(
             self.mpc.upper_bounds > self.cmd_scale
         ):
             raise ValueError("MPC input bounds exceed the simulator's command limits")
+        if self.mpc.icem_config.command_bands != COMMAND_BANDS:
+            raise ValueError("Running MPC command bands must match policy/config.py")
         self.tracked_dim = len(expected_tracked_indices)
         self.reference_path = PlanarReference(settings)
         self.N = self.mpc.horizon
         self.dt = self.cfg.control_dt
-        self.gait_period = self.cfg.gait_period
         self.standing_hold = settings.get("standing_hold")
         if self.standing_hold is not None:
             hold = self.standing_hold
@@ -341,7 +326,7 @@ class KCFCommand(CommandSource):
         return self.reference_path.track(*self.reference(times))
 
     def _encode_state(self, state):
-        return self._state_encoder(state, self.gait_period)
+        return g1_closed_loop_state(state)
 
     def reset(self):
         ready = getattr(self, "_ready_outcome", None)
@@ -362,7 +347,6 @@ class KCFCommand(CommandSource):
         self.last_observation = None
         self.previous_command = np.zeros(3, dtype=np.float32)
         self._standing_hold_active = False
-        self._standing_hold_releasing = False
         self._standing_hold_since = None
         self._plan = None
         self._active_outcome = None
@@ -401,7 +385,7 @@ class KCFCommand(CommandSource):
             prefix_controls.flags.writeable = False
         previous = np.array(self.previous_command, dtype=np.float32, copy=True)
         previous.flags.writeable = False
-        heading = self.theta_prev if observation.shape == (103,) else None
+        heading = self.theta_prev if observation.shape == (104,) else None
         return SolveRequest(
             self._generation,
             self._request_counter,
@@ -715,7 +699,7 @@ class KCFCommand(CommandSource):
         ):
             initial_observation = self._encode_state(state)
             if np.isfinite(initial_observation).all():
-                self.theta_prev = self._heading_encoder(state, self.theta_prev)
+                self.theta_prev = g1_world_heading(state, self.theta_prev)
             command = np.zeros(3, dtype=np.float32)
             if not self.synchronous_feedback:
                 # Retain this actually published next-tick zero commitment, so
@@ -745,7 +729,7 @@ class KCFCommand(CommandSource):
         fresh = not duplicate
         if fresh:
             self._last_feedback_wall = now
-            self.theta_prev = self._heading_encoder(state, self.theta_prev)
+            self.theta_prev = g1_world_heading(state, self.theta_prev)
             self.last_state_time = float(state.t)
             self.last_observation = observation.copy()
 
@@ -768,7 +752,7 @@ class KCFCommand(CommandSource):
                        and heading_error < hold["enter_heading_rad"]
                        and np.linalg.norm(observation[4:6]) < hold["enter_linear_speed_mps"]
                        and abs(observation[6]) < hold["enter_yaw_rate_rps"]
-                       and np.linalg.norm(self.previous_command) < self.cfg.stand_cmd_threshold)
+                       and not np.any(self.previous_command))
             if not self._standing_hold_active:
                 if not holding:
                     self._standing_hold_since = None
@@ -776,13 +760,6 @@ class KCFCommand(CommandSource):
                     self._standing_hold_since = state.t
                 holding = (holding and self._standing_hold_since is not None
                            and state.t - self._standing_hold_since >= hold["settle_seconds"])
-            self._standing_hold_releasing = self._standing_hold_active and not holding
-            if self._standing_hold_releasing:
-                rates = self.mpc.icem_config.command_rate_limits
-                limit = np.asarray(rates) * self.dt if rates is not None else np.inf
-                # The first unplanned handover prefix is zero. Reach it at the
-                # configured rate before releasing this nonzero standing input.
-                holding = np.any(np.abs(self.previous_command) > limit + 1e-7)
             if holding != self._standing_hold_active:
                 # Outstanding plans belong to the previous execution state.
                 # Reset only on the solver thread; preserve the reference clock.
@@ -798,25 +775,8 @@ class KCFCommand(CommandSource):
                     self._standing_hold_since = None
         if self._standing_hold_active:
             self._advance_handover(application_time, now, state)
-            rates = self.mpc.icem_config.command_rate_limits
-            limit = np.asarray(rates, dtype=np.float32) * self.dt if rates is not None else np.inf
-            target_heading = self.reference(application_time - self.t_start)[0][2]
-            yaw_error = np.arctan2(np.sin(self.theta_prev - target_heading),
-                                   np.cos(self.theta_prev - target_heading))
-            # Correct slow standing yaw drift without restarting the gait clock.
-            yaw_limit = 0.8 * self.cfg.stand_cmd_threshold
-            target = np.array([0.0, 0.0, np.clip(
-                -self.standing_hold["heading_gain"] * yaw_error
-                - self.standing_hold["yaw_rate_damping"] * observation[6],
-                -yaw_limit, yaw_limit,
-            )], dtype=np.float32)
-            if self._standing_hold_releasing:
-                target[:] = 0.0
-            command = (self.previous_command + np.clip(target - self.previous_command, -limit, limit)
-                       if fresh else self.previous_command.copy())
+            command = np.zeros(3, dtype=np.float32)
             index, age, reason = -1, np.nan, "standing_hold"
-            if self._standing_hold_releasing:
-                reason = "standing_release"
             if now - self._last_feedback_wall >= self.live_feedback_timeout:
                 command = np.zeros(3, dtype=np.float32)
                 reason = "feedback_timeout"
@@ -943,3 +903,10 @@ class KCFCommand(CommandSource):
                 commitment=self._commitment,
             )
         return command.copy()
+
+
+def create_profile_controller(profile, settings, *, quiet=True):
+    if (profile.values['state_dim'], profile.values['joint_count'],
+            profile.values['recurrent_state_dim'], profile.values['nH']) != (104, 29, 0, 256):
+        raise ValueError('Running requires the native-104, 29-joint, lift-256 profile')
+    return KCFCommand(G1Config().cmd_scale, settings=settings, quiet=quiet)

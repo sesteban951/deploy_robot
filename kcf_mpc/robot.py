@@ -1,6 +1,6 @@
 """Backend-independent state and command-source contracts; no simulator imports."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 
@@ -10,11 +10,12 @@ class RobotState:
     q: np.ndarray
     v: np.ndarray
     prev_action: np.ndarray
+    policy_clock: np.ndarray = field(default_factory=lambda: np.array([0., 1., 43.], dtype=np.float32))
 
 
 def state_from_feedback(feedback):
-    """Walking adapter; future recurrent profiles provide their own adapter."""
-    return RobotState(feedback.time, feedback.q, feedback.v, feedback.previous_action)
+    """Preserve the actor clock and raw previous action in MPC feedback."""
+    return RobotState(feedback.time, feedback.q, feedback.v, feedback.previous_action, feedback.policy_clock)
 
 
 def nominal_state(cfg):

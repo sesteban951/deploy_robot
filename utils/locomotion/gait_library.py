@@ -102,6 +102,12 @@ class GaitLibraryClock:
         return int(self.n_frames[self.clip])
 
     @property
+    def state(self):
+        """Ungated pre-command phase and period for the running KCF feedback."""
+        angle = 2.0 * math.pi * self.t / self.period
+        return np.array([math.sin(angle), math.cos(angle), self.period], dtype=np.float32)
+
+    @property
     def clip_twist(self):
         return self.lib_twists[self.clip]
 

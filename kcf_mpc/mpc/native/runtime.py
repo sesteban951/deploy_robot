@@ -20,7 +20,7 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 SITE = Path(sysconfig.get_paths()['purelib'])
-PARAM_FLOATS, FORWARD_WORK_PER_STEP = 660330, 1895
+PARAM_FLOATS, FORWARD_WORK_PER_STEP = 660331, 1896
 SOURCE_NAMES = ('rollout.cu', 'batch.cu', 'rollout_ffi.cc', 'projection.cuh',
                 'projection_rounding.cuh', 'runtime.py')
 
@@ -32,10 +32,10 @@ def packed_lift_parameters(model):
     norm = [layer for layer in network if isinstance(layer, torch.nn.LayerNorm)]
     if (tuple(type(layer).__name__ for layer in network)
             != ('Linear', 'LayerNorm', 'ELU')*3 + ('Linear',)
-            or [layer.in_features for layer in linear] != [103, 512, 512, 512]
-            or [layer.out_features for layer in linear] != [512, 512, 512, 153]
+            or [layer.in_features for layer in linear] != [104, 512, 512, 512]
+            or [layer.out_features for layer in linear] != [512, 512, 512, 152]
             or any(layer.alpha != 1. for layer in network if isinstance(layer, torch.nn.ELU))):
-        raise ValueError('Native GPU inference requires the frozen 103/512/153 LN/ELU architecture')
+        raise ValueError('Native GPU inference requires the frozen 104/512/152 LN/ELU architecture')
     tensors = [layer.weight.T for layer in linear] + [layer.bias for layer in linear]
     tensors += [value for layer in norm for value in (layer.weight, layer.bias)]
     tensors += [model.normalizer.state_mean, model.normalizer.state_scale]
@@ -155,8 +155,8 @@ class NativeRollout:
         packed = packed_lift_parameters(model)
         self.packed_weights = array(packed)
         batch_weights = packed.copy()
-        for offset, inputs, outputs in ((0, 103, 512), (52736, 512, 512),
-                                        (314880, 512, 512), (577024, 512, 153)):
+        for offset, inputs, outputs in ((0, 104, 512), (53248, 512, 512),
+                                        (315392, 512, 512), (577536, 512, 152)):
             batch_weights[offset:offset + inputs * outputs] = packed[
                 offset:offset + inputs * outputs].reshape(inputs, outputs).T.ravel()
         self.batch_weights = array(batch_weights)
@@ -164,8 +164,9 @@ class NativeRollout:
 
 
     def _check(self, initial, matrices, weights):
-        if (initial.shape != (103,) or len(matrices.shape) != 3
-                or matrices.shape[1:] != (103, 256) or not 1 <= matrices.shape[0] <= 20
+        if (initial.shape != (104,) or len(matrices.shape) != 3
+                or matrices.shape[1:] != (104, 256) or matrices.shape[0] < 1
+                or matrices.size > np.iinfo(np.int32).max
                 or weights.shape != (PARAM_FLOATS,)
                 or any(v.dtype != jnp.float32 for v in (initial, matrices, weights))):
             raise ValueError('Native FP32 rollout buffer shape/dtype mismatch')
@@ -173,23 +174,28 @@ class NativeRollout:
     def forward(self, initial, matrices, weights):
         self._check(initial, matrices, weights)
         h = matrices.shape[0]
-        shapes = (jax.ShapeDtypeStruct((h, 103), jnp.float32),
+        shapes = (jax.ShapeDtypeStruct((h, 104), jnp.float32),
                   jax.ShapeDtypeStruct((h*FORWARD_WORK_PER_STEP,), jnp.float32))
         return jax.ffi.ffi_call('kcf_rollout_forward_native'+self.registration.ffi_suffix,
             shapes, vmap_method='sequential')(initial, matrices, weights,
                 dt=np.float64(self.dt), balance=np.float64(self.balance))
 
     def __call__(self, initial, matrices):
+        self._check(initial, matrices, self.packed_weights)
+        # Short handover predictions do not need the cooperative grid.
+        if matrices.shape[0] <= 8:
+            return self.batched(initial[None, :], matrices[None, ...])[0]
         return self.forward(initial, matrices, self.packed_weights)[0]
 
     def batched(self, initials, matrices):
         """Forward-only independent trajectories; no gradient primitive."""
         if (matrices.ndim != 4 or matrices.shape[0] < 1
-                or not 1 <= matrices.shape[1] <= 20 or matrices.shape[2:] != (103, 256)
-                or initials.shape != (matrices.shape[0], 103)
+                or matrices.shape[1] < 1 or matrices.shape[2:] != (104, 256)
+                or matrices.size > np.iinfo(np.int32).max
+                or initials.shape != (matrices.shape[0], 104)
                 or any(v.dtype != jnp.float32 for v in (initials, matrices))):
             raise ValueError('Native population rollout shape/dtype mismatch')
-        shape = jax.ShapeDtypeStruct(matrices.shape[:2] + (103,), jnp.float32)
+        shape = jax.ShapeDtypeStruct(matrices.shape[:2] + (104,), jnp.float32)
         return jax.ffi.ffi_call('kcf_rollout_batch_native'+self.registration.ffi_suffix,
             shape, vmap_method='sequential')(initials, matrices, self.batch_weights,
                 dt=np.float64(self.dt), balance=np.float64(self.balance))
