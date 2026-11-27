@@ -28,9 +28,10 @@ os.environ['ROS_LOCALHOST_ONLY'] = '1'
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'deploy/kcf'))
 
+from kcf_mpc.config.mpc_config import REFERENCE_MODES
+
 MODELS = ('kcf', 'unicycle')
-REFERENCES = ('fixed', 'turn_180', 'lissajous', 'waypoints', 'rounded_square',
-              'hairpin', 'slalom', 'stop_turn_go', 'star')
+REFERENCES = (*REFERENCE_MODES, 'turn_180')
 
 
 def write_json(path, value):

@@ -82,7 +82,7 @@ def saved_reference(directory, settings=None):
 
 
 def model_label(settings, path):
-    return {'kcf': 'KCF', 'single_integrator': 'Single integrator'}.get(
+    return {'kcf': 'KCF', 'unicycle': 'Unicycle'}.get(
         settings.get('prediction_model'), path.stem)
 
 

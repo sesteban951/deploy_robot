@@ -1,7 +1,7 @@
 """Controller, iCEM, execution and trajectory settings shared by KCF and unicycle.
 
 Select ``reference_mode`` below for pose holding, figure-eight, waypoints,
-the sharp-turn maneuvers or a star.
+the sharp-turn maneuvers, a star or a straight-line speed ramp.
 KCF uses the top-level cost gains; unicycle uses ``unicycle_gains``.
 """
 
@@ -14,7 +14,7 @@ from kcf_mpc.robot_config import COMMAND_BANDS
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_MODES = (
     "fixed", "lissajous", "waypoints", "rounded_square", "hairpin", "slalom", "stop_turn_go",
-    "star",
+    "star", "speed_ramp",
 )
 
 
@@ -208,7 +208,7 @@ def get_default_mpc_config(
             "enter_yaw_rate_rps": 0.5,
             "settle_seconds": 0.02,
         },
-        "reference_mode": "rounded_square",  # Any REFERENCE_MODES entry, including star.
+        "reference_mode": "rounded_square",  # Any REFERENCE_MODES entry, including star / speed_ramp.
         # Running references retain their larger validated geometry and speeds.
         # Optional WORLD-frame bounds: {center_xy: [0,0], size_xy: [5,5], margin: 0.5}.
         "reference_workspace": None,
@@ -290,6 +290,15 @@ def get_default_mpc_config(
             "yaw_rate": 1.5,  # Peak pivot rate, rad/s.
             "dwell_seconds": 0.5,
             "clockwise": False,
+        },
+        # One forward pass: start -> low -> high -> low -> stop and hold.
+        # The line spans start_pose.xy to start_pose.xy + distance*[cos(yaw),sin(yaw)].
+        "speed_ramp_reference": {
+            "start_pose": [-1.5, 0.0, 0.0],
+            "distance": 3.0,  # Total travel, including smooth start/stop, metres.
+            "minimum_speed": 0.5,
+            "maximum_speed": 2.0,  # Audited forward command ceiling, m/s.
+            "transition_seconds": 0.5,  # Each 0<->minimum_speed transition.
         },
         # Bounding box plus the iCEM command_bands union above; vy is exactly zero.
         "input_lower_bounds": (-1.0, 0.0, -2.0),

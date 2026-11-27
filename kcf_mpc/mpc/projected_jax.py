@@ -16,7 +16,7 @@ import torch
 from kcf_mpc.mpc.jax_networks import _apply_mlp, _export_mlp
 from kcf_mpc.models.projected import is_projected_g1
 from kcf_mpc.mpc.tracking import tracking_features_jax
-from kcf_mpc.mpc.single_integrator import unicycle_rollout_jax
+from kcf_mpc.mpc.unicycle import unicycle_rollout_jax
 
 
 def _unit(value, fallback):

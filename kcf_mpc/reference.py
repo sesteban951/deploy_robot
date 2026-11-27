@@ -71,6 +71,10 @@ class PlanarReference:
             self._configure_maneuver(settings.get(f"{self.mode}_reference"))
         if self.mode == "star":
             self._configure_star(settings.get("star_reference"))
+        if self.mode == "speed_ramp":
+            self._configure_speed_ramp(settings.get("speed_ramp_reference"))
+            if self._ramp_speeds.max() > settings.get("input_upper_bounds", (np.inf,))[0]:
+                raise ValueError("speed_ramp maximum_speed exceeds the MPC forward command bound")
         self._configure_workspace(settings.get("reference_workspace"))
         startup = settings.get("reference_startup")
         self.startup = None
@@ -122,6 +126,8 @@ class PlanarReference:
             return self.waypoints_reference(t)
         if self.mode == 'star':
             return self.star_reference(t)
+        if self.mode == 'speed_ramp':
+            return self.speed_ramp_reference(t)
         if self.mode in ('rounded_square', 'hairpin', 'slalom'):
             return self.turning_reference(t)
         shape = np.shape(t) + (3,)
@@ -139,6 +145,8 @@ class PlanarReference:
         """Finite path-clock duration, or None for indefinitely repeating paths."""
         if self.mode == 'slalom' and self._turn_cycles is not None:
             return float(self._turn_cycles * self.period + .5 * self._turn_stop_seconds)
+        if self.mode == 'speed_ramp':
+            return float(self._ramp_times[-1])
         return (float(self.waypoint_times[-1])
                 if self.mode in ('waypoints', 'stop_turn_go', 'star') else None)
 
@@ -187,6 +195,8 @@ class PlanarReference:
             points = self.lissajous_center + np.stack((-extent, extent))
         elif self.mode in ('waypoints', 'stop_turn_go', 'star'):
             points = self.waypoint_poses[:, :2]
+        elif self.mode == 'speed_ramp':
+            points = self.speed_ramp_reference(np.array([0., self.duration]))[0][:, :2]
         elif self.mode in ('rounded_square', 'hairpin', 'slalom'):
             if self.mode == 'slalom' and self._turn_cycles is None:
                 raise ValueError('A workspace-confined slalom requires finite cycles and stop_seconds')
@@ -521,6 +531,58 @@ class PlanarReference:
     def star_reference(self, t):
         """A finite five-point crossing star with separate forward legs and pivots."""
         return self.waypoints_reference(t)
+
+    def _configure_speed_ramp(self, configuration):
+        keys = {'start_pose', 'distance', 'minimum_speed', 'maximum_speed', 'transition_seconds'}
+        if not isinstance(configuration, dict) or set(configuration) != keys:
+            raise ValueError(f'speed_ramp_reference requires exactly {sorted(keys)}')
+        numeric_keys = ('distance', 'minimum_speed', 'maximum_speed', 'transition_seconds')
+        try:
+            self._ramp_start = np.asarray(configuration['start_pose'], dtype=float).copy()
+            distance, low, high, transition = values = np.asarray(
+                [configuration[key] for key in numeric_keys], dtype=float)
+            raw = [*np.asarray(configuration['start_pose'], dtype=object).flat,
+                   *[configuration[key] for key in numeric_keys]]
+        except (TypeError, ValueError) as error:
+            raise ValueError('speed_ramp_reference requires numeric start_pose, distance, speeds and duration') from error
+        if (self._ramp_start.shape != (3,) or values.shape != (4,)
+                or not np.isfinite(self._ramp_start).all()
+                or not np.isfinite(values).all() or np.any(values <= 0.) or high <= low
+                or any(isinstance(value, (bool, np.bool_)) for value in raw)):
+            raise ValueError('speed_ramp_reference needs finite start_pose, positive distance/speeds/duration '
+                             'and maximum_speed > minimum_speed')
+        # Each quintic speed ramp has mean (v_start + v_end)/2.
+        # Reserve distance for start/stop, then fit both low<->high ramps exactly.
+        ramp_seconds = (distance - low * transition) / (low + high)
+        if not np.isfinite(ramp_seconds) or ramp_seconds <= 0.:
+            raise ValueError('speed_ramp distance must exceed minimum_speed * transition_seconds')
+        self._ramp_times = np.r_[0., np.cumsum([transition, ramp_seconds, ramp_seconds, transition])]
+        if not np.isfinite(self._ramp_times).all():
+            raise ValueError('speed_ramp_reference has invalid path duration')
+        self._ramp_speeds = np.array([0., low, high, low, 0.])
+        self._ramp_distances = np.r_[0., np.cumsum(
+            .5 * (self._ramp_speeds[:-1] + self._ramp_speeds[1:]) * np.diff(self._ramp_times))]
+
+    def speed_ramp_reference(self, t):
+        """Analytic straight-line 0->low->high->low->0 speed profile; hold at end."""
+        t = np.asarray(t, dtype=float)
+        if not np.isfinite(t).all():
+            raise ValueError('Speed ramp query times must be finite')
+        index = np.clip(np.searchsorted(self._ramp_times, t, side='right') - 1, 0, 3)
+        duration = self._ramp_times[index + 1] - self._ramp_times[index]
+        phase = np.clip((t - self._ramp_times[index]) / duration, 0., 1.)
+        blend = phase**3 * (10. + phase * (-15. + 6. * phase))
+        integral = phase**4 * (2.5 + phase * (-3. + phase))
+        first = self._ramp_speeds[index]
+        delta = self._ramp_speeds[index + 1] - first
+        speed = first + delta * blend
+        distance = self._ramp_distances[index] + duration * (first * phase + delta * integral)
+        direction = np.array([np.cos(self._ramp_start[2]), np.sin(self._ramp_start[2])])
+        pose = np.broadcast_to(self._ramp_start, t.shape + (3,)).copy()
+        pose[..., :2] += distance[..., None] * direction
+        twist = np.zeros_like(pose)
+        twist[..., :2] = speed[..., None] * direction
+        return pose, twist
 
     def track(self, q_ref, v_ref):
         """Build ten MPC [world position, heading sine/cosine, twist, gravity] targets."""

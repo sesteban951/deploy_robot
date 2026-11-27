@@ -87,12 +87,14 @@ Loss of terminal control, stale feedback or a long loop pause disarms tracking;
 repeat `h` → `c` → `t` after recovery. These keys do not provide a physical emergency stop.
 
 To select a trajectory, add e.g. `--reference-mode lissajous` to Terminal 1.
+Use `--reference-mode speed_ramp` for the same straight-line speed ramp
+add `--unicycle` to select the unicycle predictor in simulation or on hardware.
 Use `--shadow` for prediction without actuation or FSM commands.
 
 Terminal 4 (optional logging to `logs/simulation/`):
 
 ```bash
-python deploy/logger/log.py --mode sim
+python deploy/logger/log.py --mode sim.
 ```
 
 ### Mocap input
@@ -196,6 +198,6 @@ python deploy/logger/log.py --mode hw --robot go2  # Go2 logger
 
 ```bash
 python logs/plot.py                                   # latest log
-python logs/plot_kcf.py --trace KCF_TRACE.npz --compare SI_TRACE.npz --output-dir /logs/plots
+python logs/plot_kcf.py --trace KCF_TRACE.npz --compare UNICYCLE_TRACE.npz --output-dir /logs/plots
 ```
 Omit `--compare` if there is only one run you want to visualize and add `--no-playback` for the static plots.  
