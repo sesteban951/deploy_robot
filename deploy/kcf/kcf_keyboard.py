@@ -10,7 +10,8 @@ from utils.finite_state_machine import FiniteStateMachine
 from utils.joystick_utils import JoystickState
 
 KEY_HELP = 'Keyboard: d=damp, h=home, c=control, t=KCF track; Space/x=stop; q=quit (Ctrl+C also quits).'
-BUTTONS = {'d': 'LB', 'h': 'A', 'c': 'LMB', 't': 'RMB'}
+# key -> joystick button chord; damp needs LB + RB together (utils/finite_state_machine.py)
+BUTTONS = {'d': ('LB', 'RB'), 'h': ('A',), 'c': ('LMB',), 't': ('RMB',)}
 STOP_KEYS = ' x\x1b\x03\x04q'
 
 
@@ -24,7 +25,7 @@ class KeyboardOperator:
         return self.fsm.state
 
     def stop(self):
-        self.fsm.step(JoystickState(LB=1))
+        self.fsm.step(JoystickState(LB=1, RB=1))
 
     def hold(self):
         # lost/invalid feedback: track -> control (zero twist), the walking policy keeps balancing
@@ -40,9 +41,9 @@ class KeyboardOperator:
         if not feedback_ready:
             return
         for key in keys:
-            button = BUTTONS.get(key)
-            if button is not None:
-                self.fsm.step(JoystickState(**{button: 1}))
+            chord = BUTTONS.get(key)
+            if chord is not None:
+                self.fsm.step(JoystickState(**{button: 1 for button in chord}))
 
 
 class TerminalKeyboard:
