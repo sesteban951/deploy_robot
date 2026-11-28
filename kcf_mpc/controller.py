@@ -168,6 +168,13 @@ class KCFCommand(CommandSource):
             raise ValueError("MPC input bounds exceed the simulator's command limits")
         self.tracked_dim = len(expected_tracked_indices)
         self.reference_path = PlanarReference(settings)
+        self.goal_hold_seconds = settings.get("goal_hold_seconds")
+        if self.goal_hold_seconds is not None and not (
+            isinstance(self.goal_hold_seconds, (int, float))
+            and not isinstance(self.goal_hold_seconds, bool)
+            and np.isfinite(self.goal_hold_seconds) and self.goal_hold_seconds >= 0
+        ):
+            raise ValueError("goal_hold_seconds must be None or a nonnegative number of seconds")
         self.N = self.mpc.horizon
         self.dt = self.cfg.control_dt
         self.gait_period = self.cfg.gait_period

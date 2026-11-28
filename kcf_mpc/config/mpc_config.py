@@ -231,12 +231,14 @@ def get_default_mpc_config(
         # World-frame room dimensions. Keep pelvis references 0.5 m inside
         # the walls; this validates paths, not the robot's physical footprint.
         "reference_workspace": {
-            "center_xy": [0.0, 0.0],
-            "size_xy": [5.0, 5.0],
-            "margin": 0.5,
+            "center_xy": [1.0, 0.0],
+            "size_xy": [2.0, 2.0],
+            "margin": 0.0,
         },
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
-        "reference": (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        "reference": (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        # Stand at the final pose this long, then track -> control (zero twist).
+        "goal_hold_seconds": 10.0,
         "reference_startup": {
             "hold_seconds": 0.5,
             "transition_seconds": 3.0,
@@ -244,12 +246,19 @@ def get_default_mpc_config(
             "maximum_yaw_rate": 0.6,
             # Bind to the first measured pose; leave None for live operation.
             "initial_pose": None,
+            # Walk to the start and dwell before the task: fixed starts here, paths at
+            # their own first pose. None skips staging.
+            "start_pose": (0.0, 0.0, 0.0),
+            "start_dwell_seconds": 10.0,
         },
+        # Repeating paths run `cycles` laps, then ease to a stop over stop_seconds.
         "lissajous_reference": {
-            "center_xy": [0.0, 0.0],
-            "half_width": 1.5,
-            "half_height": 0.75,
-            "omega": 0.20, # works within the current MPC input constraints
+            "center_xy": [1.0, 0.0],
+            "half_width": 0.9,
+            "half_height": 0.45,
+            "omega": 0.20, # peak yaw rate 0.63 rad/s, independent of size
+            "cycles": 2,
+            "stop_seconds": 2.0,
         },
         # Smooth start/stop path. Repeated poses create standing dwells;
         # each pose is [world X (m), world Y (m), yaw (rad)].
@@ -270,24 +279,28 @@ def get_default_mpc_config(
         # radius, not a circular-arc radius. Peak yaw rate = speed / turn_radius.
         # Quintic heading ramps make yaw rate and acceleration zero at joins.
         "rounded_square_reference": {
-            "start_pose": [-0.5, -1.3, 0.0],
-            "speed": 0.3,
-            "turn_radius": 0.5,
-            "straight_length": 1.0,
+            "start_pose": [0.9, -0.88, 0.0],
+            "speed": 0.27,
+            "turn_radius": 0.45,
+            "straight_length": 0.2,
             "clockwise": False,
+            "cycles": 2,
+            "stop_seconds": 2.0,
         },
         "hairpin_reference": {
-            "start_pose": [-0.6, -0.6, 0.0],
-            "speed": 0.3,
-            "turn_radius": 0.5,
-            "straight_length": 1.2,
+            "start_pose": [0.8, -0.36, 0.0],
+            "speed": 0.18,
+            "turn_radius": 0.3,
+            "straight_length": 0.4,
             "clockwise": False,
+            "cycles": 2,
+            "stop_seconds": 2.0,
         },
         "slalom_reference": {
-            "start_pose": [-1.6, -0.4, 0.0],
-            "speed": 0.3,
-            "turn_radius": 0.5,
-            "straight_length": 0.3,
+            "start_pose": [0.13, -0.23, 0.0],
+            "speed": 0.15,
+            "turn_radius": 0.25,
+            "straight_length": 0.2,
             "heading_amplitude": math.pi / 4.0,
             "clockwise": False,
             # A repeating slalom advances forever; finish and hold instead.
@@ -306,8 +319,8 @@ def get_default_mpc_config(
         },
         # Five crossing legs with separate stand/pivot phases at the tips.
         "star_reference": {
-            "center_xy": [0.0, 0.0],
-            "radius": 1.5,
+            "center_xy": [1.0, 0.0],
+            "radius": 0.9,
             "rotation": math.pi / 2.0,
             "speed": 0.3,
             "yaw_rate": 0.6,

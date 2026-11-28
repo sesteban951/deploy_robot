@@ -195,6 +195,24 @@ def load_run(value, *, env_index=0, label=None):
         reference_times=unique, reference_values=reference_values))
 
 
+def task_start(run):
+    """Recorded time [s] when a live run's task leaves its start pose (after staging)."""
+    if run.path.suffix != '.npz' or run.path.name == 'g1_rom_data.npz':
+        raise ValueError(f'{run.path}: --task-time needs a live MPC trace')
+    with np.load(run.path, allow_pickle=False) as data:
+        settings = json.loads(str(data['metadata']))['settings']
+        heading = float(data['measured_heading_world'][0])
+    reference = PlanarReference(settings)
+    reference.set_initial_pose([run.pose[0, 0], run.pose[0, 1], heading])
+    return reference.task_start
+
+
+def shift_run(run, offset):
+    times = lambda t: None if t is None else t - offset
+    return replace(run, times=run.times - offset, command_times=run.command_times - offset,
+                   reference_times=times(run.reference_times), reference_path=None)
+
+
 def comparison_window(runs, start=0., end=None):
     shared_end = min(run.times[-1] for run in runs)
     end = shared_end if end is None else end
@@ -341,6 +359,8 @@ def main(argv=None):
     parser.add_argument('--env-index', type=int, default=0)
     parser.add_argument('--out', type=Path, help='state plot filename (default: next to input)')
     parser.add_argument('--output-dir', type=Path, help='save rom_states.png and rom_playback_preview.png')
+    parser.add_argument('--task-time', action='store_true',
+                        help="t = 0 at each run's task start, after the walk to start_pose")
     parser.add_argument('--start', type=float, default=0.)
     parser.add_argument('--end', type=float)
     parser.add_argument('--speed', type=float, default=1.)
@@ -371,6 +391,10 @@ def main(argv=None):
         if not np.isfinite([args.speed,args.render_hz]).all() or min(args.speed,args.render_hz) <= 0:
             raise ValueError('speed and render-hz must be finite and positive')
         runs = [load_run(p, env_index=args.env_index) for p in inputs]
+        if args.task_time:
+            offsets = [task_start(r) for r in runs]
+            runs = [shift_run(r, o) for r, o in zip(runs, offsets)]
+            print('Task starts at ' + ', '.join(f'{o:.2f} s' for o in offsets) + ' after t; now t = 0')
         if args.labels:
             runs = [replace(r,label=l) for r,l in zip(runs,args.labels)]
         elif len(runs)==2 and runs[0].label==runs[1].label:
