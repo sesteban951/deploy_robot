@@ -208,12 +208,14 @@ def get_default_mpc_config(
             "enter_yaw_rate_rps": 0.5,
             "settle_seconds": 0.02,
         },
-        "reference_mode": "rounded_square",  # Any REFERENCE_MODES entry, including star / speed_ramp.
+        "reference_mode": "fixed",  # Any REFERENCE_MODES entry, including star / speed_ramp.
         # Running references retain their larger validated geometry and speeds.
         # Optional WORLD-frame bounds: {center_xy: [0,0], size_xy: [5,5], margin: 0.5}.
         "reference_workspace": None,
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
-        "reference": (3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        "reference": (2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        # Stand at the final pose this long, then track -> control (zero twist).
+        "goal_hold_seconds": 10.0,
         "reference_startup": {
             "hold_seconds": 0.5,
             "transition_seconds": 3.0,
@@ -221,6 +223,10 @@ def get_default_mpc_config(
             "maximum_yaw_rate": 1.5,
             # Bind to the first measured pose; leave None for live operation.
             "initial_pose": None,
+            # Walk to the start and dwell before the task: fixed starts here, paths at
+            # their own first pose. None skips staging.
+            "start_pose": (-0.5, 0.0, 0.0),
+            "start_dwell_seconds": 10.0,
         },
         "lissajous_reference": {
             # Tangent speed 0.529--1.131 m/s; peak driving yaw rate 0.317 rad/s.
@@ -228,6 +234,9 @@ def get_default_mpc_config(
             "half_width": 8.0,
             "half_height": 4.0,
             "omega": 0.1,
+            # Repeating paths run `cycles` laps, then ease to a stop over stop_seconds.
+            "cycles": 2,
+            "stop_seconds": 2.0,
         },
         # Smooth start/stop path. Repeated poses create standing dwells;
         # each pose is [world X (m), world Y (m), yaw (rad)].
@@ -255,6 +264,8 @@ def get_default_mpc_config(
             "turn_radius": 4.0,
             "straight_length": 4.0,
             "clockwise": False,
+            "cycles": 2,
+            "stop_seconds": 2.0,
         },
         "hairpin_reference": {
             "start_pose": [0.0, 0.0, 0.0],
@@ -262,6 +273,8 @@ def get_default_mpc_config(
             "turn_radius": 2.0,
             "straight_length": 2.0,
             "clockwise": False,
+            "cycles": 2,
+            "stop_seconds": 2.0,
         },
         "slalom_reference": {
             "start_pose": [0.0, 0.0, 0.0],
@@ -270,6 +283,9 @@ def get_default_mpc_config(
             "straight_length": 1.0,
             "heading_amplitude": math.pi / 4.0,
             "clockwise": False,
+            # One pass (12.5 m), then stop and hold.
+            "cycles": 1,
+            "stop_seconds": 1.0,
         },
         # Translate, stand, turn in place, stand, then resume. Radians for turns.
         # speed and yaw_rate are peak reference values for the quintic segments.

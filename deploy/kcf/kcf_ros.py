@@ -211,10 +211,27 @@ class KCFNode(Node):
             if self.keyboard is not None and self.enabled:
                 self.publish_operator(True, finished)
             self.status(('kcf_control; ' if self.enabled else 'shadow; ') + reason)
+            self.end_run_if_done(feedback.time)
         except Exception as error:
             self.ready = False
             self.get_logger().error(f'KCF runtime failed: {error}')
             self.invalidate('runtime_failed; restart required')
+
+    def end_run_if_done(self, feedback_time):
+        # The run ends goal_hold_seconds after the trajectory reaches its final pose.
+        hold = getattr(self.source, 'goal_hold_seconds', None)
+        if hold is None or self.keyboard_operator is None or self.keyboard_operator.state != 'track':
+            return
+        task_end = self.source.reference_path.task_end
+        if task_end is None or feedback_time - self.source.t_start < task_end + hold:
+            return
+        self.keyboard_operator.hold()
+        self.fsm, self.operator_wall = 'control', -float('inf')
+        self.invalidate('run_complete')
+        task_start = self.source.reference_path.task_start
+        print(f"KCF run complete: trajectory {task_end - task_start:.1f} s + {hold:g} s at the goal "
+              f"({task_end + hold:.1f} s after t). FSM -> control, zero twist. "
+              "Press q to save the trace and quit (robot damps).", flush=True)
 
     def publish_operator(self, connected, now):
         connected = bool(connected and self.ready and self.command_scale is not None)

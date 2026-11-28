@@ -57,6 +57,8 @@ class PlanarReference:
                     ).all()
                     or min(self.half_width, self.half_height, self.omega) <= 0.0):
                 raise ValueError("Lissajous dimensions and omega must be finite and positive")
+            self.period = 2. * np.pi / self.omega
+            self._configure_cycles(trajectory)
             try:
                 self.lissajous_center = np.asarray(trajectory.get('center_xy', [0., 0.]), dtype=float)
             except (TypeError, ValueError) as error:
@@ -90,9 +92,30 @@ class PlanarReference:
             if boolean or not np.isfinite(values).all() or values[0] < 0 or np.any(values[1:] <= 0):
                 raise ValueError('Startup hold must be nonnegative and duration/speeds positive and finite')
             self.startup = dict(zip(keys, values))
+            self._configure_start_pose(startup)
             if startup.get('initial_pose') is not None:
                 self.set_initial_pose(startup['initial_pose'])
                 self._configured_initial_pose = self._initial_pose.copy()
+
+    def _configure_start_pose(self, startup):
+        # Optional staging: walk to start_pose and dwell there before the task.
+        self._start_pose, self._start_dwell = None, 0.
+        if startup.get('start_pose') is None:
+            return
+        pose = np.asarray(startup['start_pose'], dtype=float)
+        dwell = startup.get('start_dwell_seconds', 0.)
+        if pose.shape != (3,) or not np.isfinite(pose).all():
+            raise ValueError('Startup start_pose must be a finite [x, y, yaw]')
+        if isinstance(dwell, (bool, np.bool_)) or not np.isfinite(dwell) or dwell < 0:
+            raise ValueError('Startup start_dwell_seconds must be nonnegative and finite')
+        self._check_workspace(pose[None, :2], 'Startup start_pose')
+        self._start_pose, self._start_dwell = pose, float(dwell)
+
+    def _quintic_seconds(self, delta):
+        # Quintic pose steps peak at 1.875 * displacement / duration.
+        return max(self.startup['transition_seconds'],
+                   1.875 * np.linalg.norm(delta[:2]) / self.startup['maximum_linear_speed'],
+                   1.875 * abs(delta[2]) / self.startup['maximum_yaw_rate'])
 
     def reset_initial_pose(self):
         self._initial_pose = None
@@ -104,18 +127,26 @@ class PlanarReference:
         pose = np.asarray(pose, dtype=float)
         if pose.shape != (3,) or not np.isfinite(pose).all():
             raise ValueError('Startup initial_pose must be a finite [x, y, yaw]')
-        self._check_workspace(pose[None, :2], 'Startup initial_pose')
+        if self.startup is None or self._start_pose is None:
+            self._check_workspace(pose[None, :2], 'Startup initial_pose')
         self._initial_pose = pose.copy()
         if self.startup is None:
             return
+        self._task_from, self._stage_seconds = pose.copy(), 0.
+        self._task_hold = self.startup['hold_seconds']
+        if self._start_pose is not None:
+            # fixed starts at start_pose; every path starts at its own first pose
+            start = self._start_pose if self.mode == 'fixed' else self._raw_reference(0.)[0]
+            turn = start[2] - pose[2]
+            turn = np.arctan2(np.sin(turn), np.cos(turn))
+            self._task_from = np.array([*start[:2], pose[2] + turn])
+            self._stage_seconds = self._quintic_seconds(self._task_from - pose)
+            self._task_hold += self._stage_seconds + self._start_dwell
         first, _ = self._raw_reference(0.)
-        delta = first - pose
+        delta = first - self._task_from
         heading_delta = np.arctan2(np.sin(delta[2]), np.cos(delta[2]))
         self._startup_yaw_offset = heading_delta - delta[2]
-        # Quintic pose steps peak at 1.875 * displacement / duration.
-        self._startup_duration = max(self.startup['transition_seconds'],
-            1.875 * np.linalg.norm(delta[:2]) / self.startup['maximum_linear_speed'],
-            1.875 * abs(heading_delta) / self.startup['maximum_yaw_rate'])
+        self._startup_duration = self._quintic_seconds([*delta[:2], heading_delta])
 
     def _raw_reference(self, t):
         if self.mode == 'lissajous':
@@ -135,15 +166,30 @@ class PlanarReference:
                 np.broadcast_to(self.state[3:6], shape).copy())
 
     @property
+    def task_start(self):
+        """Reference time [s] at which the task leaves the start pose (0 without startup)."""
+        return (0. if self.startup is None or self._initial_pose is None else self._task_hold)
+
+    @property
+    def task_end(self):
+        """Reference time [s] when the task reaches its final pose; None if it never ends."""
+        if self.startup is None or self._initial_pose is None:
+            return None
+        path = 0. if self.mode == 'fixed' else self.duration
+        if path is None:
+            return None
+        return self._task_hold + max(self._startup_duration, self._startup_duration / 2. + path)
+
+    @property
     def startup_delay(self):
         """Steady path-clock offset after the smooth startup finishes."""
         return (0. if self.startup is None or self._initial_pose is None else
-                self.startup['hold_seconds'] + self._startup_duration / 2.)
+                self._task_hold + self._startup_duration / 2.)
 
     @property
     def duration(self):
         """Finite path-clock duration, or None for indefinitely repeating paths."""
-        if self.mode == 'slalom' and self._turn_cycles is not None:
+        if getattr(self, '_turn_cycles', None) is not None:
             return float(self._turn_cycles * self.period + .5 * self._turn_stop_seconds)
         if self.mode == 'speed_ramp':
             return float(self._ramp_times[-1])
@@ -156,7 +202,7 @@ class PlanarReference:
         if self.startup is None or self._initial_pose is None:
             return t
         duration = self._startup_duration
-        elapsed = t - self.startup['hold_seconds']
+        elapsed = t - self._task_hold
         phase = np.clip(elapsed / duration, 0., 1.)
         integral = phase**4 * (2.5 + phase * (-3. + phase))
         return np.where(elapsed >= duration, elapsed - duration / 2., duration * integral)
@@ -274,7 +320,7 @@ class PlanarReference:
                  {'turn_radius', 'straight_length', 'clockwise'})
         if self.mode == 'slalom':
             extra = extra | {'heading_amplitude'}
-        optional = {'cycles', 'stop_seconds'} if self.mode == 'slalom' else set()
+        optional = {'cycles', 'stop_seconds'} if self.mode != 'stop_turn_go' else set()
         if not isinstance(configuration, dict) or set(configuration) - optional != common | extra:
             raise ValueError(f'{self.mode}_reference requires exactly {sorted(common | extra)}')
 
@@ -367,17 +413,35 @@ class PlanarReference:
         self.period = float(self._turn_times[-1])
         self._cycle_displacement = delta.sum(axis=0) if self.mode == 'slalom' else np.zeros(2)
         self._cycle_heading = 0. if self.mode == 'slalom' else direction * 2. * np.pi
+        self._configure_cycles(configuration)
+
+    def _configure_cycles(self, configuration):
+        # Optional finite laps: run `cycles` periods, then slow the clock to a stop.
         self._turn_cycles, self._turn_stop_seconds = None, 0.
-        if self.mode == 'slalom' and optional & set(configuration):
-            count = configuration.get('cycles')
-            if (set(configuration) & optional != optional or isinstance(count, (bool, np.bool_))
-                    or not isinstance(count, (int, np.integer)) or count < 1):
-                raise ValueError('Finite slalom requires positive integer cycles and positive stop_seconds')
-            self._turn_cycles = int(count)
-            self._turn_stop_seconds = number('stop_seconds')
-            if (not np.isfinite(self._turn_cycles * self.period)
-                    or self._turn_stop_seconds > 2. * self._turn_cycles * self.period):
-                raise ValueError('slalom stop_seconds cannot exceed twice its moving path duration')
+        optional = {'cycles', 'stop_seconds'}
+        if not optional & set(configuration):
+            return
+        count, stop = configuration.get('cycles'), configuration.get('stop_seconds')
+        if (set(configuration) & optional != optional or isinstance(count, (bool, np.bool_))
+                or not isinstance(count, (int, np.integer)) or count < 1
+                or isinstance(stop, (bool, np.bool_)) or not isinstance(stop, (int, float))
+                or not np.isfinite(stop) or stop <= 0.):
+            raise ValueError(f'Finite {self.mode} requires positive integer cycles and positive stop_seconds')
+        self._turn_cycles, self._turn_stop_seconds = int(count), float(stop)
+        if (not np.isfinite(self._turn_cycles * self.period)
+                or self._turn_stop_seconds > 2. * self._turn_cycles * self.period):
+            raise ValueError(f'{self.mode} stop_seconds cannot exceed twice its moving path duration')
+
+    def _finite_clock(self, t):
+        """Path clock and its rate; with finite cycles it eases to a stop at the last lap's end."""
+        if self._turn_cycles is None:
+            return t, np.ones_like(t)
+        stop = self._turn_stop_seconds
+        begin = self._turn_cycles * self.period - .5 * stop
+        phase = np.clip((t - begin) / stop, 0., 1.)
+        rate = 1. - phase**3 * (10. + phase * (-15. + 6. * phase))
+        integral = phase**4 * (2.5 + phase * (-3. + phase))
+        return np.minimum(t, begin + stop) - stop * integral, rate
 
     def _turn_displacement(self, index, phase):
         s = phase[..., None] * self._turn_nodes
@@ -394,15 +458,7 @@ class PlanarReference:
         if not np.isfinite(t).all():
             raise ValueError('Turning reference times must be finite')
         active = t >= 0.
-        t = np.maximum(t, 0.)
-        clock_rate = np.ones_like(t)
-        if self._turn_cycles is not None:
-            stop = self._turn_stop_seconds
-            begin = self._turn_cycles * self.period - .5 * stop
-            phase = np.clip((t - begin) / stop, 0., 1.)
-            clock_rate = 1. - phase**3 * (10. + phase * (-15. + 6. * phase))
-            integral = phase**4 * (2.5 + phase * (-3. + phase))
-            t = np.minimum(t, begin + stop) - stop * integral
+        t, clock_rate = self._finite_clock(np.maximum(t, 0.))
         cycles = np.floor(t / self.period)
         local = np.remainder(t, self.period)
         index = np.minimum(np.searchsorted(self._turn_times, local, side='right') - 1,
@@ -430,17 +486,27 @@ class PlanarReference:
             raise ValueError('Reference query times must be finite')
         if self.startup is None or self._initial_pose is None:
             return self._raw_reference(t)
-        duration = self._startup_duration
-        elapsed = t - self.startup['hold_seconds']
-        phase = np.clip(elapsed / duration, 0., 1.)
-        blend = phase**3 * (10. + phase * (-15. + 6. * phase))
-        derivative = 30. * phase**2 * (1. - phase)**2 / duration
+        blend, derivative = self._quintic(t - self._task_hold, self._startup_duration)
         # Integrate the smooth clock rate: no path jump when startup finishes.
         pose, twist = self._raw_reference(self.path_time(t))
         pose[..., 2] += self._startup_yaw_offset
-        delta = pose - self._initial_pose
-        return (self._initial_pose + blend[..., None] * delta,
-                derivative[..., None] * delta + blend[..., None]**2 * twist)
+        delta = pose - self._task_from
+        q = self._task_from + blend[..., None] * delta
+        v = derivative[..., None] * delta + blend[..., None]**2 * twist
+        if self._stage_seconds > 0:
+            # Staging: measured pose -> start pose; the dwell is the task's hold.
+            blend, derivative = self._quintic(t - self.startup['hold_seconds'], self._stage_seconds)
+            stage = self._task_from - self._initial_pose
+            staging = (t < self.startup['hold_seconds'] + self._stage_seconds)[..., None]
+            q = np.where(staging, self._initial_pose + blend[..., None] * stage, q)
+            v = np.where(staging, derivative[..., None] * stage, v)
+        return q, v
+
+    @staticmethod
+    def _quintic(elapsed, duration):
+        phase = np.clip(elapsed / duration, 0., 1.)
+        return (phase**3 * (10. + phase * (-15. + 6. * phase)),
+                30. * phase**2 * (1. - phase)**2 / duration)
 
     def waypoints_reference(self, t):
         """Quintic pose interpolation, zero twist at each node and outside the path.
@@ -467,7 +533,7 @@ class PlanarReference:
     def lissajous_reference(self, t):
         """Baseline Lissajous pose/twist in the world frame, with tangent heading."""
         a, b, w = self.half_width, self.half_height, self.omega
-        t = np.asarray(t, dtype=np.float64)
+        t, clock_rate = self._finite_clock(np.asarray(t, dtype=np.float64))
         px = self.lissajous_center[0] + a * np.sin(w * t)
         py = self.lissajous_center[1] + b * np.sin(2 * w * t)
         vx, vy = a * w * np.cos(w * t), 2 * b * w * np.cos(2 * w * t)
@@ -481,7 +547,8 @@ class PlanarReference:
                           & (theta > 0.0))
         theta = np.where(reverse_branch, theta - 2 * np.pi, theta)
         wz = (vx * ay - vy * ax) / (vx**2 + vy**2)
-        return np.stack([px, py, theta], axis=-1), np.stack([vx, vy, wz], axis=-1)
+        return (np.stack([px, py, theta], axis=-1),
+                np.stack([vx, vy, wz], axis=-1) * clock_rate[..., None])
 
     def _configure_star(self, configuration):
         keys = {'center_xy', 'radius', 'rotation', 'speed', 'yaw_rate', 'dwell_seconds', 'clockwise'}
