@@ -3,6 +3,7 @@
 # Live MuJoCo view of the pose published by estimator.py: the G1 pelvis mesh with an RGB triad (x red, y green, z blue).
 # Linear velocity is a magenta arrow, angular velocity a cyan arrow, both from the pelvis origin (world frame).
 # Drawn in the estimator's world frame; the triad at the origin (white dot) is that world frame.
+# The obstacle (Motive body obstacle_1, from the estimator's obstacle topic) is a 6 inch red ball.
 #
 ##
 
@@ -20,13 +21,17 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PointStamped
 
 # custom imports
 from estimator import ODOM_TOPIC
+from kcf_mpc.profiles import load_profile
 
 
 # G1 meshes (the pelvis meshes sit at the pelvis frame origin, as in models/g1/g1_29dof_mode11.xml)
 ASSETS_DIR = os.getenv("DEPLOY_ROOT_DIR") + "/models/g1/assets"
+
+OBSTACLE_RADIUS = 0.0762  # [m] 6 inch diameter ball
 
 # world: grid floor and the world origin triad; mocap body: the G1 pelvis mesh with its own triad
 SCENE_XML = f"""
@@ -53,6 +58,9 @@ SCENE_XML = f"""
       <geom name="y" type="capsule" fromto="0 0 0 0 0.2 0" size="0.008" rgba="0 1 0 1"/>
       <geom name="z" type="capsule" fromto="0 0 0 0 0 0.2" size="0.008" rgba="0 0 1 1"/>
     </body>
+    <body name="obstacle" mocap="true">
+      <geom name="obstacle" type="sphere" size="{OBSTACLE_RADIUS}" rgba="0.9 0.08 0.08 0"/>
+    </body>
   </worldbody>
 </mujoco>
 """
@@ -76,7 +84,7 @@ class VisualizerNode(Node):
     Keep the latest pose from the estimator's Odometry topic.
     """
 
-    def __init__(self, topic: str):
+    def __init__(self, topic: str, obstacle_topic: str):
         super().__init__('mocap_visualizer')
         self.pos = None             # (x, y, z) [m]
         self.quat = None            # (w, x, y, z)
@@ -84,6 +92,14 @@ class VisualizerNode(Node):
         self.ang = np.zeros(3)      # body-frame angular velocity [rad/s]
         self.time = None            # arrival time [s, monotonic]
         self.odom_sub = self.create_subscription(Odometry, topic, self.odom_callback, 1)
+        self.obstacle_pos = None    # (x, y, z) [m] ball center
+        self.obstacle_time = None   # arrival time [s, monotonic]
+        self.obstacle_sub = self.create_subscription(PointStamped, obstacle_topic, self.obstacle_callback, 1)
+
+    # latest obstacle center (only published while Motive tracks obstacle_1)
+    def obstacle_callback(self, msg):
+        self.obstacle_pos = (msg.point.x, msg.point.y, msg.point.z)
+        self.obstacle_time = time.monotonic()
 
     # latest pelvis pose (world -> pelvis) and body-frame twist
     def odom_callback(self, msg):
@@ -105,12 +121,14 @@ if __name__ == "__main__":
     # parse arguments
     parser = argparse.ArgumentParser(description='Visualize the pose published by estimator.py.')
     parser.add_argument('--topic', type=str, default=ODOM_TOPIC, help='nav_msgs/Odometry topic to show')
+    parser.add_argument('--profile', default='walking', help='KCF YAML profile for the obstacle topic')
     args = parser.parse_args()
+    obstacle_topic = load_profile(args.profile).obstacle['topic']
 
     # subscribe to the estimator output
     rclpy.init()
-    node = VisualizerNode(args.topic)
-    print(f"Visualizing [{args.topic}].")
+    node = VisualizerNode(args.topic, obstacle_topic)
+    print(f"Visualizing [{args.topic}] and the obstacle ball on [{obstacle_topic}].")
 
     # build the scene
     model = mujoco.MjModel.from_xml_string(SCENE_XML)
@@ -118,6 +136,8 @@ if __name__ == "__main__":
     triad_ids = [model.geom(name).id for name in ("x", "y", "z")]
     mesh_ids = [model.geom(name).id for name in ("pelvis", "pelvis_contour")]
     body_id = model.body("body").id
+    obstacle_mocap = model.body_mocapid[model.body("obstacle").id]
+    obstacle_geom = model.geom("obstacle").id
 
     # render at 60 Hz; the body fades while no pose arrives (it keeps its last pose)
     try:
@@ -132,6 +152,12 @@ if __name__ == "__main__":
                 live = node.time is not None and time.monotonic() - node.time < STALE_TIME
                 model.geom_rgba[triad_ids, 3] = 1.0 if live else 0.2
                 model.geom_rgba[mesh_ids, 3] = 0.6 if live else 0.15
+
+                # obstacle ball: hidden until obstacle_1 is seen, faded while its data is stale
+                if node.obstacle_pos is not None:
+                    data.mocap_pos[obstacle_mocap] = node.obstacle_pos
+                    fresh = time.monotonic() - node.obstacle_time < STALE_TIME
+                    model.geom_rgba[obstacle_geom, 3] = 1.0 if fresh else 0.25
                 mujoco.mj_forward(model, data)
 
                 # velocity arrows from the pelvis origin, rotated from body to world (hidden while stale)

@@ -200,7 +200,9 @@ def get_default_mpc_config(
             "factory": "kcf_mpc.mpc.tracking:InverseDistanceCost",
             "parameters": {"alpha": 600.0, "rho": 5.5, "radius": 0.75},
         },
-        "obstacle_prediction": {"max_age_seconds": 0.10},
+        # Samples older than max_age are held (last position, zero velocity) until mocap
+        # updates; velocity is a line fit over velocity_window_seconds of samples.
+        "obstacle_prediction": {"max_age_seconds": 0.10, "velocity_window_seconds": 0.20},
         # Q/Q_terminal order: [px, py, sin(theta), cos(theta), vx, vy, wz, gx, gy, gz].
         "single_integrator_gains": {
             "state_weights": (150.0, 150.0, 80.0, 80.0, 20.0, 20.0, 5.0, 100.0, 100.0, 20.0),
@@ -227,7 +229,7 @@ def get_default_mpc_config(
             "yaw_rate_damping": 0.2,
             "obstacle_distance_m": 1.50,
         },
-        "reference_mode": "star",  # See REFERENCE_MODES above.
+        "reference_mode": "stop_turn_go",  # See REFERENCE_MODES above.
         # World-frame room dimensions. Keep pelvis references 0.5 m inside
         # the walls; this validates paths, not the robot's physical footprint.
         "reference_workspace": {
@@ -238,7 +240,7 @@ def get_default_mpc_config(
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
         "reference": (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
         # Stand at the final pose this long, then track -> control (zero twist).
-        "goal_hold_seconds": 10.0,
+        "goal_hold_seconds": 120.0,
         "reference_startup": {
             "hold_seconds": 0.5,
             "transition_seconds": 3.0,
@@ -315,7 +317,8 @@ def get_default_mpc_config(
             "distance": 0.6,
             "yaw_rate": 0.6,
             "dwell_seconds": 1.0,
-            "turn_angles": [math.pi / 2.0, -math.pi / 2.0, math.pi],
+            # +x, left to +y, turn 180, back down -y, right to face -x, back to start
+            "turn_angles": [math.pi / 2.0, math.pi, -math.pi / 2.0],
         },
         # Five crossing legs with separate stand/pivot phases at the tips.
         "star_reference": {

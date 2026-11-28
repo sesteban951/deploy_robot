@@ -179,9 +179,12 @@ class KCFCommand(CommandSource):
         self.dt = self.cfg.control_dt
         self.gait_period = self.cfg.gait_period
         self.standing_hold = settings.get("standing_hold")
-        self.obstacle_max_age = float(settings.get('obstacle_prediction', {}).get('max_age_seconds', .10))
-        if not np.isfinite(self.obstacle_max_age) or self.obstacle_max_age <= 0:
-            raise ValueError('Obstacle maximum age must be finite and positive')
+        prediction = settings.get('obstacle_prediction', {})
+        self.obstacle_max_age = float(prediction.get('max_age_seconds', .10))
+        self.obstacle_velocity_window = float(prediction.get('velocity_window_seconds', .20))
+        if (not np.isfinite([self.obstacle_max_age, self.obstacle_velocity_window]).all()
+                or self.obstacle_max_age <= 0 or self.obstacle_velocity_window <= 0):
+            raise ValueError('Obstacle maximum age and velocity window must be finite and positive')
         if self.standing_hold is not None:
             hold = self.standing_hold
             if (not all(np.isfinite(value) and value > 0 for value in hold.values())
@@ -372,6 +375,7 @@ class KCFCommand(CommandSource):
         self.last_observation = None
         self._obstacle_sample = None
         self._obstacle_velocity = np.zeros(2)
+        self._obstacle_history = deque()
         self.previous_command = np.zeros(3, dtype=np.float32)
         self._standing_hold_active = False
         self._standing_hold_releasing = False
@@ -400,7 +404,11 @@ class KCFCommand(CommandSource):
             worker.invalidate()
 
     def _predict_obstacle(self, state, times):
-        """World XY forecast from measured positions on the policy clock."""
+        """World XY forecast from measured positions on the policy clock.
+
+        Velocity is a line fit over the last velocity_window seconds. During a
+        dropout (sample older than max_age) the last position is held, velocity 0.
+        """
         position = getattr(state, 'obstacle_position', None)
         if self.mpc.obstacle_cost is None:
             self._obstacle_required = False
@@ -414,23 +422,45 @@ class KCFCommand(CommandSource):
         stamp = getattr(state, 'obstacle_time', None)
         stamp = float(state.t if stamp is None else stamp)
         if (position.shape != (3,) or not np.isfinite(position).all() or not np.isfinite(stamp)
-                or stamp > state.t + 1e-8
-                or state.t - stamp > getattr(self, 'obstacle_max_age', .10) + 1e-8):
-            raise ValueError('Obstacle position/time is invalid, stale or from the future')
+                or stamp > state.t + 1e-8):
+            raise ValueError('Obstacle position/time is invalid or from the future')
+        max_age = getattr(self, 'obstacle_max_age', .10)
         previous = getattr(self, '_obstacle_sample', None)
         velocity = getattr(self, '_obstacle_velocity', np.zeros(2))
+        history = getattr(self, '_obstacle_history', None)
+        if history is None:
+            history = self._obstacle_history = deque()
         if previous is not None:
             elapsed = stamp - previous[0]
             if elapsed < 0 or (elapsed == 0 and not np.array_equal(position[:2], previous[1])):
                 raise ValueError('Obstacle measurements must have consistent increasing timestamps')
-            if elapsed > 0:
-                velocity = (position[:2] - previous[1]) / elapsed
+        if previous is None or stamp > previous[0]:
+            if history and stamp - history[-1][0] > max_age:
+                history.clear()  # Restart the fit after a dropout; never fit across the gap.
+            history.append((stamp, position[:2].copy()))
+            while stamp - history[0][0] > getattr(self, 'obstacle_velocity_window', .20) + 1e-9:
+                history.popleft()
+            velocity = self._fit_obstacle_velocity(
+                history, .5 * getattr(self, 'obstacle_velocity_window', .20))
         if not np.isfinite(velocity).all():
             raise ValueError('Obstacle velocity estimate is not finite')
         self._obstacle_sample = (stamp, position[:2].copy())
         self._obstacle_required = True
         self._obstacle_velocity = velocity.copy()
+        if state.t - stamp > max_age + 1e-8:
+            velocity = np.zeros(2)  # Held after a dropout: last position, not moving.
         return position[:2] + (np.asarray(times) - stamp)[..., None] * velocity
+
+    @staticmethod
+    def _fit_obstacle_velocity(history, min_span):
+        """Least-squares slope of XY against time; zero until samples span min_span seconds."""
+        if len(history) < 2 or history[-1][0] - history[0][0] < min_span:
+            return np.zeros(2)
+        t = np.array([sample[0] for sample in history])
+        xy = np.array([sample[1] for sample in history])
+        t = t - t.mean()
+        spread = float(t @ t)
+        return np.zeros(2) if spread <= 0 else (t @ (xy - xy.mean(axis=0))) / spread
 
     def _request(
         self, state, observation, now, *, plan_start_time=None, prefix_controls=None

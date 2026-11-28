@@ -163,11 +163,11 @@ class KCFNode(Node):
         try:
             feedback = self.decode_feedback(msg.data, self.timeout)
             feedback = self.state_provider.select(feedback, now, self.timeout)
+            # A dropout holds the last position; only a never-seen obstacle blocks tracking.
             if self.obstacle_settings['enabled'] and (
                     feedback.obstacle_position is None or feedback.obstacle_time is None
-                    or not -1e-6 <= feedback.time - feedback.obstacle_time
-                    <= self.obstacle_settings['max_age_seconds'] + 1e-8):
-                raise ValueError('waiting_for_fresh_obstacle')
+                    or feedback.time - feedback.obstacle_time < -1e-6):
+                raise ValueError(f"waiting_for_obstacle ({self.obstacle_settings['body']} not seen by mocap yet)")
         except ValueError as error:
             self.valid_feedback_wall = -float('inf')
             self.invalidate(str(error))
@@ -269,10 +269,13 @@ class KCFNode(Node):
                     connected, self.quit_requested = False, True
         fresh = (self.ready and self.command_scale is not None
                  and now - self.valid_feedback_wall < self.timeout)
+        reason = ('MPC runtime not ready' if not self.ready else
+                  'no experiment info from the policy controller yet' if self.command_scale is None else
+                  f'no fresh KCF feedback ({self.status_text})')
         if self.keyboard_operator.state == 'track' and not fresh:
             self.invalidate('feedback_timeout; re-arm required')   # holds in control (zero twist)
         if self.enabled:
-            self.keyboard_operator.update(keys or '', feedback_ready=fresh)
+            self.keyboard_operator.update(keys or '', feedback_ready=fresh, not_ready_reason=reason)
         elif keys and any(key in keys.lower() for key in ('q', '\x03', '\x04')):
             self.keyboard_operator.update('q', feedback_ready=False)
         self.quit_requested |= self.keyboard_operator.quit_requested

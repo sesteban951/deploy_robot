@@ -67,8 +67,8 @@ class Feedback:
         if abs(np.linalg.norm(a[7:11]) - 1.0) > 0.01:
             raise ValueError("pelvis quaternion must be unit wxyz")
         center, obstacle_time = (a[107:110].copy(), float(a[110])) if a.size == 111 else (None, None)
-        if obstacle_time is not None and not -1e-6 <= t - obstacle_time <= max_pose_age + 1e-8:
-            raise ValueError('Obstacle feedback is stale or from the future')
+        if obstacle_time is not None and t - obstacle_time < -1e-6:
+            raise ValueError('Obstacle feedback is from the future')
         return cls(t, pose_t, applied_t, True, a[4:40].copy(),
                    a[40:75].copy(), a[75:104].copy(), a[104:107].copy(), center, obstacle_time)
 
@@ -85,6 +85,7 @@ class ObstacleState:
     def clear(self):
         self.measurement = None
         self.policy_stamp = None
+        self.fresh = False
 
     def update(self, msg):
         p = msg.point
@@ -102,6 +103,7 @@ class ObstacleState:
         self.policy_stamp = None
 
     def sample(self, policy_time, ros_time):
+        """Last measured center and its policy-clock time; held (not timed out) during dropouts."""
         if self.last_policy_time is not None and policy_time < self.last_policy_time:
             self.policy_stamp = None
         self.last_policy_time = policy_time
@@ -109,12 +111,13 @@ class ObstacleState:
             return None, None
         stamp, position = self.measurement
         age = ros_time - stamp
-        if not np.isfinite(age) or not -1e-3 <= age <= self.max_age + 1e-8:
+        if not np.isfinite(age) or age < -1e-3:
             return None, None
         if self.policy_stamp is None:
             self.policy_stamp = float(policy_time - max(age, 0.))
-        if not -1e-6 <= policy_time - self.policy_stamp <= self.max_age + 1e-8:
+        if policy_time - self.policy_stamp < -1e-6:
             return None, None
+        self.fresh = age <= self.max_age + 1e-8
         return position.copy(), self.policy_stamp
 
 

@@ -90,6 +90,7 @@ class ControlNode(Node):
         self.qvel_joints = np.zeros(self.act_size)
         self.mocap = None          # (stamp [s, ROS clock], base [pos, quat], world linear velocity)
         self.obstacle = ObstacleState(self.kcf_profile.obstacle)
+        self.obstacle_was_fresh = False
 
         # guards: arrival time [s, monotonic] of the last IMU message, and when each stream was lost
         self.imu_wall = None
@@ -297,6 +298,12 @@ class ControlNode(Node):
         # twist; missing mocap in track gives zero velocity (never act on a stale pose)
         obstacle_position, obstacle_time = self.obstacle.sample(
             t, self.get_clock().now().nanoseconds * 1e-9)
+        if obstacle_position is not None and self.obstacle.fresh != self.obstacle_was_fresh:
+            body = self.kcf_profile.obstacle['body']
+            print(f"{body} tracked by mocap." if self.obstacle.fresh else
+                  f"WARNING: {body} lost: holding its last position ({obstacle_position[0]:.2f}, "
+                  f"{obstacle_position[1]:.2f}) until mocap sees it again.", flush=True)
+            self.obstacle_was_fresh = self.obstacle.fresh
         if self.obstacle.enabled and obstacle_position is None:
             self.gate.candidates.clear()
         self.cmd, self.command_source = self.gate.select(t, now)

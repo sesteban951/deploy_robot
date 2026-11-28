@@ -139,12 +139,12 @@ kcf:
     enabled: true
     body: obstacle_1
     topic: /deploy_kcf/obstacle
-    radius: 0.07
+    radius: 0.0762  # 6 inch diameter ball
     avoidance_radius: 0.75
     alpha: 600.0
     max_age_seconds: 0.10
     # Simulation only; hardware uses the Motive rigid-body center in world metres.
-    position: [0.0, 0.0, 0.15]
+    position: [1.0, 0.0, 0.15]  # center of the 2x2 m reference box
     velocity: [0.0, 0.0, 0.0]
     motion: cross
   artifact_sha256:

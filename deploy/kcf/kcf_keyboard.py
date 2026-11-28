@@ -31,19 +31,22 @@ class KeyboardOperator:
         # lost/invalid feedback: track -> control (zero twist), the walking policy keeps balancing
         self.fsm.step(JoystickState(LMB=1))
 
-    def update(self, keys, *, feedback_ready):
+    def update(self, keys, *, feedback_ready, not_ready_reason='KCF feedback not ready'):
         keys = keys.lower()
         # A stop anywhere in a queued batch dominates every arming key.
         if any(key in STOP_KEYS for key in keys):
             self.stop()
             self.quit_requested |= 'q' in keys or '\x03' in keys or '\x04' in keys
             return
-        if not feedback_ready:
-            return
         for key in keys:
             chord = BUTTONS.get(key)
-            if chord is not None:
-                self.fsm.step(JoystickState(**{button: 1 for button in chord}))
+            if chord is None:
+                continue
+            # d/h/c never depend on KCF; only track needs complete, fresh feedback
+            if key == 't' and not feedback_ready:
+                print(f"t ignored: {not_ready_reason}. d/h/c and Space/x/q still work.", flush=True)
+                continue
+            self.fsm.step(JoystickState(**{button: 1 for button in chord}))
 
 
 class TerminalKeyboard:
