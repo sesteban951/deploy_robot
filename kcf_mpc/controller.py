@@ -739,6 +739,13 @@ class KCFCommand(CommandSource):
             self.theta_prev = g1_world_heading(state, self.theta_prev)
             self.last_state_time = float(state.t)
             self.last_observation = observation.copy()
+            reference_time = application_time - self.t_start
+            if self.reference_path.needs_anchor(reference_time):
+                start = [float(state.q[0]), float(state.q[1]), float(self.theta_prev)]
+                self.reference_path.anchor_start(start, reference_time)
+                self.ref = np.asarray(self.reference(reference_time)[0][:2]).copy()
+                print(f"KCF start pose recorded at {reference_time:.1f} s: ({start[0]:.2f}, {start[1]:.2f}, "
+                      f"yaw {np.degrees(start[2]):.1f} deg); tracking relative to it.", flush=True)
 
         if fresh and self.standing_hold is not None:
             poses, twists = self.reference(

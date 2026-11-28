@@ -80,6 +80,7 @@ class PlanarReference:
         self._configure_workspace(settings.get("reference_workspace"))
         startup = settings.get("reference_startup")
         self.startup = None
+        self._relative, self._frame = False, None
         self._initial_pose = None
         self._configured_initial_pose = None
         if startup is not None:
@@ -93,6 +94,11 @@ class PlanarReference:
                 raise ValueError('Startup hold must be nonnegative and duration/speeds positive and finite')
             self.startup = dict(zip(keys, values))
             self._configure_start_pose(startup)
+            self._relative = startup.get('relative_start', False)
+            if not isinstance(self._relative, (bool, np.bool_)):
+                raise ValueError('Startup relative_start must be boolean')
+            if self._relative and self.mode == 'fixed' and self._start_pose is None:
+                raise ValueError('A relative fixed reference needs start_pose to define the goal relative to it')
             if startup.get('initial_pose') is not None:
                 self.set_initial_pose(startup['initial_pose'])
                 self._configured_initial_pose = self._initial_pose.copy()
@@ -118,7 +124,7 @@ class PlanarReference:
                    1.875 * abs(delta[2]) / self.startup['maximum_yaw_rate'])
 
     def reset_initial_pose(self):
-        self._initial_pose = None
+        self._initial_pose, self._frame = None, None
         if self._configured_initial_pose is not None:
             self.set_initial_pose(self._configured_initial_pose)
 
@@ -127,10 +133,16 @@ class PlanarReference:
         pose = np.asarray(pose, dtype=float)
         if pose.shape != (3,) or not np.isfinite(pose).all():
             raise ValueError('Startup initial_pose must be a finite [x, y, yaw]')
-        if self.startup is None or self._start_pose is None:
+        relative = self.startup is not None and self._relative
+        if self.startup is None or (self._start_pose is None and not relative):
             self._check_workspace(pose[None, :2], 'Startup initial_pose')
         self._initial_pose = pose.copy()
         if self.startup is None:
+            return
+        if relative:
+            # Stand here for hold_seconds; anchor_start then fixes the start frame.
+            self._task_from, self._stage_seconds = pose.copy(), 0.
+            self._task_hold, self._frame = self.startup['hold_seconds'], None
             return
         self._task_from, self._stage_seconds = pose.copy(), 0.
         self._task_hold = self.startup['hold_seconds']
@@ -142,11 +154,47 @@ class PlanarReference:
             self._task_from = np.array([*start[:2], pose[2] + turn])
             self._stage_seconds = self._quintic_seconds(self._task_from - pose)
             self._task_hold += self._stage_seconds + self._start_dwell
-        first, _ = self._raw_reference(0.)
+        self._plan_task_blend()
+
+    def _plan_task_blend(self):
+        first, _ = self._task_reference(0.)
         delta = first - self._task_from
         heading_delta = np.arctan2(np.sin(delta[2]), np.cos(delta[2]))
         self._startup_yaw_offset = heading_delta - delta[2]
         self._startup_duration = self._quintic_seconds([*delta[:2], heading_delta])
+
+    def needs_anchor(self, t):
+        """True on the first tick at or after hold_seconds in relative-start mode."""
+        return (self.startup is not None and self._relative and self._initial_pose is not None
+                and self._frame is None and t >= self.startup['hold_seconds'])
+
+    def anchor_start(self, pose, t):
+        """Record the measured [x, y, yaw] as the start; the task is moved rigidly to begin there.
+
+        fixed: start_pose -> reference is replayed from pose. Paths: their first pose lands on pose.
+        """
+        pose = np.asarray(pose, dtype=float)
+        if pose.shape != (3,) or not np.isfinite(pose).all():
+            raise ValueError('Relative start pose must be a finite [x, y, yaw]')
+        origin = self._start_pose if self.mode == 'fixed' else self._raw_reference(0.)[0]
+        turn = pose[2] - origin[2]
+        rotation = np.array([[np.cos(turn), -np.sin(turn)], [np.sin(turn), np.cos(turn)]])
+        self._frame = (origin.copy(), pose.copy(), turn, rotation)
+        self._task_from, self._task_hold = pose.copy(), max(self.startup['hold_seconds'], float(t))
+        self._plan_task_blend()
+
+    def _task_reference(self, t):
+        """Configured task, moved into the recorded start frame when relative_start is on."""
+        pose, twist = self._raw_reference(t)
+        if self._frame is None:
+            return pose, twist
+        origin, start, turn, rotation = self._frame
+        pose = pose.copy()
+        pose[..., :2] = start[:2] + (pose[..., :2] - origin[:2]) @ rotation.T
+        pose[..., 2] += turn
+        twist = twist.copy()
+        twist[..., :2] = twist[..., :2] @ rotation.T
+        return pose, twist
 
     def _raw_reference(self, t):
         if self.mode == 'lissajous':
@@ -173,7 +221,7 @@ class PlanarReference:
     @property
     def task_end(self):
         """Reference time [s] when the task reaches its final pose; None if it never ends."""
-        if self.startup is None or self._initial_pose is None:
+        if self.startup is None or self._initial_pose is None or (self._relative and self._frame is None):
             return None
         path = 0. if self.mode == 'fixed' else self.duration
         if path is None:
@@ -486,9 +534,13 @@ class PlanarReference:
             raise ValueError('Reference query times must be finite')
         if self.startup is None or self._initial_pose is None:
             return self._raw_reference(t)
+        if self._relative and self._frame is None:
+            # Before the start is recorded, every horizon sample holds the current pose.
+            shape = t.shape + (3,)
+            return np.broadcast_to(self._initial_pose, shape).copy(), np.zeros(shape)
         blend, derivative = self._quintic(t - self._task_hold, self._startup_duration)
         # Integrate the smooth clock rate: no path jump when startup finishes.
-        pose, twist = self._raw_reference(self.path_time(t))
+        pose, twist = self._task_reference(self.path_time(t))
         pose[..., 2] += self._startup_yaw_offset
         delta = pose - self._task_from
         q = self._task_from + blend[..., None] * delta

@@ -213,20 +213,22 @@ def get_default_mpc_config(
         # Optional WORLD-frame bounds: {center_xy: [0,0], size_xy: [5,5], margin: 0.5}.
         "reference_workspace": None,
         # Public target: [px, py, yaw, vx_body, vy_body, wz_body, gravity_body_xyz].
-        "reference": (2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),
+        "reference": (2.0, 1.0, 0.6747, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0),  # yaw = direction of travel
         # Stand at the final pose this long, then track -> control (zero twist).
-        "goal_hold_seconds": 10.0,
+        "goal_hold_seconds": 200.0,
         "reference_startup": {
-            "hold_seconds": 0.5,
+            "hold_seconds": 5.0,
             "transition_seconds": 3.0,
             "maximum_linear_speed": 1.0,
             "maximum_yaw_rate": 1.5,
             # Bind to the first measured pose; leave None for live operation.
             "initial_pose": None,
-            # Walk to the start and dwell before the task: fixed starts here, paths at
-            # their own first pose. None skips staging.
-            "start_pose": (-0.5, 0.0, 0.0),
-            "start_dwell_seconds": 10.0,
+            # Stand hold_seconds, record the measured pose as the start, and run the task
+            # relative to it (fixed: start_pose -> reference; paths: from their first pose).
+            "relative_start": True,
+            # Nominal start for fixed. Without relative_start the robot walks here first.
+            "start_pose": (-0.5, -1.0, 0.6747),
+            "start_dwell_seconds": 10.0,  # only used without relative_start
         },
         "lissajous_reference": {
             # Tangent speed 0.529--1.131 m/s; peak driving yaw rate 0.317 rad/s.

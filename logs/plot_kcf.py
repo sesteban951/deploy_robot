@@ -150,7 +150,7 @@ def load_run(value, *, env_index=0, label=None):
         measured = data['measured_observation'].astype(float)
         reference = data['reference'].astype(float)
         if (len(times) < 2 or measured.ndim != 2 or measured.shape[0] != len(times)
-                or measured.shape[1] not in (85, 103) or reference.ndim != 3
+                or measured.shape[1] not in (85, 103, 104) or reference.ndim != 3
                 or reference.shape[0] != len(times) or reference.shape[-1] != 10
                 or np.any(np.diff(times) < 0)):
             raise ValueError(f'{path}: expected ordered G1 states and ten reference features')
@@ -211,6 +211,22 @@ def shift_run(run, offset):
     times = lambda t: None if t is None else t - offset
     return replace(run, times=run.times - offset, command_times=run.command_times - offset,
                    reference_times=times(run.reference_times), reference_path=None)
+
+
+def align_run(run, start):
+    """Plot only: move and rotate the measured path so it begins on the reference start pose."""
+    i = min(np.searchsorted(run.times, start), len(run.times) - 1)
+    ref, _ = run.reference(run.times[i:i + 1])
+    yaw0 = np.arctan2(run.pose[i, 2], run.pose[i, 3])
+    turn = np.arctan2(ref[0, 2], ref[0, 3]) - yaw0
+    c, s = np.cos(turn), np.sin(turn)
+    xy = run.pose[:, :2] - run.pose[i, :2]
+    yaw = np.arctan2(run.pose[:, 2], run.pose[:, 3]) + turn
+    pose = np.column_stack((ref[0, 0] + c * xy[:, 0] - s * xy[:, 1],
+                            ref[0, 1] + s * xy[:, 0] + c * xy[:, 1], np.sin(yaw), np.cos(yaw)))
+    offset = np.hypot(*(run.pose[i, :2] - ref[0, :2]))
+    print(f'{run.label}: removed start offset {offset:.3f} m, {np.degrees(np.arctan2(s, c)):+.1f} deg')
+    return replace(run, pose=pose)
 
 
 def comparison_window(runs, start=0., end=None):
@@ -361,6 +377,8 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path, help='save rom_states.png and rom_playback_preview.png')
     parser.add_argument('--task-time', action='store_true',
                         help="t = 0 at each run's task start, after the walk to start_pose")
+    parser.add_argument('--align-start', action='store_true',
+                        help='plot only: shift/rotate each measured path to begin on its reference start pose')
     parser.add_argument('--start', type=float, default=0.)
     parser.add_argument('--end', type=float)
     parser.add_argument('--speed', type=float, default=1.)
@@ -400,6 +418,8 @@ def main(argv=None):
         elif len(runs)==2 and runs[0].label==runs[1].label:
             runs = [replace(r,label=f'{r.label} ({Path(p).name})') for r,p in zip(runs,inputs)]
         start, end = comparison_window(runs, args.start, args.end)
+        if args.align_start:
+            runs = [align_run(r, start) for r in runs]
         if not args.no_playback and plt.get_backend().lower() in {'agg','pdf','svg','ps','cairo','template'}:
             raise ValueError('Playback needs an interactive backend; use --no-playback for static export')
         if len(runs)==2:
